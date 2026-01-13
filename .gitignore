@@ -31,4 +31,4 @@ windeps
 *.so
 libassimp.*
 radiant
-remap
+/remap
