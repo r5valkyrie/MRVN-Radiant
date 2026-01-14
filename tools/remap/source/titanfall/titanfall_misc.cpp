@@ -269,4 +269,24 @@ void Titanfall::EmitEntityPartitions() {
 
     Titanfall::Bsp::entityPartitions = { partitions.begin(), partitions.end() };
     Titanfall::Bsp::entityPartitions.push_back('\0');  // Add null terminator
+    
+    // Add null terminators to all entity lumps - the engine requires them
+    if (Titanfall::Bsp::entities.size() > 0) {
+        Titanfall::Bsp::entities.push_back('\0');
+    }
+    if (Titanfall::Ent::env.size() > 0) {
+        Titanfall::Ent::env.push_back('\0');
+    }
+    if (Titanfall::Ent::fx.size() > 0) {
+        Titanfall::Ent::fx.push_back('\0');
+    }
+    if (Titanfall::Ent::script.size() > 0) {
+        Titanfall::Ent::script.push_back('\0');
+    }
+    if (Titanfall::Ent::snd.size() > 0) {
+        Titanfall::Ent::snd.push_back('\0');
+    }
+    if (Titanfall::Ent::spawn.size() > 0) {
+        Titanfall::Ent::spawn.push_back('\0');
+    }
 }

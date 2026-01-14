@@ -31,7 +31,15 @@
       "mcp__ida-pro-mcp-1__disasm",
       "mcp__ida-pro-mcp-1__lookup_funcs",
       "mcp__ida-pro-mcp-1__search_structs",
-      "mcp__ida-pro-mcp-1__py_eval"
+      "mcp__ida-pro-mcp-1__py_eval",
+      "Bash(compgen:*)",
+      "Bash(mcp__ida-pro-mcp__list_funcs)",
+      "mcp__ida-pro-mcp-1__find",
+      "mcp__ida-pro-mcp-1__get_bytes",
+      "mcp__ida-pro-mcp-1__xrefs_to_field",
+      "mcp__ida-pro-mcp-2__disasm",
+      "mcp__ida-pro-mcp-2__list_funcs",
+      "mcp__ida-pro-mcp-2__find_regex"
     ]
   }
 }
