@@ -178,7 +178,8 @@
 #define R5_LUMP_VERTEX_NORMALS					0x1E
 #define R5_LUMP_GAME_LUMP						0x23
 #define R5_LUMP_UNKNOWN_37						0x25
-#define R5_LUMP_UNKNOWN_38						0x26
+#define R5_LUMP_CSM_NUM_OBJ_REFS_TOTAL			0x26  // numObjRefsTotalForAabb - cumulative obj ref count per AABB node
+#define R5_LUMP_UNKNOWN_38						0x26  // Deprecated alias
 #define R5_LUMP_UNKNOWN_39						0x27
 #define R5_LUMP_PAKFILE							0x28
 #define R5_LUMP_CUBEMAPS						0x2A

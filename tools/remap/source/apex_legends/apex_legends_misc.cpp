@@ -30,7 +30,6 @@
     BeginModel
 */
 void ApexLegends::BeginModel(entity_t &entity) {
-    Sys_FPrintf( SYS_VRB, "   BeginModel: \"%s\"\n", entity.classname() );
     ApexLegends::Model_t &model = ApexLegends::Bsp::models.emplace_back();
     model.meshIndex = ApexLegends::Bsp::meshes.size();
     model.bvhNodeIndex = 0;  // Will be set by EmitBVHNode
@@ -54,7 +53,4 @@ void ApexLegends::EndModel() {
         model.minmax.extend(meshBounds.origin - meshBounds.extents);
         model.minmax.extend(meshBounds.origin + meshBounds.extents);
     }
-
-    Sys_FPrintf( SYS_VRB, "       numMeshes: %i\n", model.meshCount );
-    Sys_FPrintf( SYS_VRB, "   EndModel\n" );
 }
