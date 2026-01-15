@@ -26,6 +26,7 @@
 #include "../titanfall2/titanfall2.h"
 #include "qmath.h"
 #include <cstdint>
+#include <cmath>
 #include "../remap.h"
 #include "../lump_names.h"
 
@@ -46,6 +47,104 @@ void CompileR5BSPFile();
 #define BVH_CHILD_STATICPROP  9   // Static prop collision
 #define BVH_CHILD_HEIGHTFIELD 10  // Heightfield terrain collision
 
+// Light emit types (from decompiled code)
+enum emittype_t : int32_t {
+    emit_surface = 0,
+    emit_point = 1,
+    emit_spotlight = 2,
+    emit_skylight = 3,
+    emit_quakelight = 4,
+    emit_skyambient = 5
+};
+
+// World light flags
+constexpr int32_t WORLDLIGHT_FLAG_REALTIME         = 0x01;  // Realtime light (dynamic)
+constexpr int32_t WORLDLIGHT_FLAG_REALTIME_SHADOWS = 0x02;  // Casts realtime shadows
+constexpr int32_t WORLDLIGHT_FLAG_PBR_FALLOFF      = 0x04;  // Uses PBR falloff curve
+constexpr int32_t WORLDLIGHT_FLAG_TWEAK            = 0x80;  // Can be adjusted at runtime (tweak light)
+
+// 0x36 (54) - dworldlight_t (112 bytes)
+// World lights for dynamic lighting in the BSP
+// Layout verified from IDA reverse engineering
+#pragma pack(push, 1)
+struct WorldLight_t {
+    Vector3  origin;                          // +0x00 - light position (12 bytes)
+    Vector3  intensity;                       // +0x0C - RGB intensity (12 bytes)
+    Vector3  normal;                          // +0x18 - light direction (12 bytes)
+    int32_t  shadowUpresFactor;               // +0x24 - shadow upres factor
+    int32_t  shadowFilterSize;                // +0x28 - shadow filter size
+    float    shadowBias;                      // +0x2C - shadow map bias
+    float    bounceBoost;                     // +0x30 - bounce boost for GI
+    int32_t  type;                            // +0x34 - light type (emittype_t)
+    int32_t  style;                           // +0x38 - light style
+    float    stopdot;                         // +0x3C - inner cone cosine
+    float    stopdot2;                        // +0x40 - penumbra cosine (outer cone)
+    float    exponent;                        // +0x44 - spotlight exponent
+    float    radius;                          // +0x48 - light radius
+    float    constant_attn;                   // +0x4C - constant attenuation
+    float    linear_attn;                     // +0x50 - linear attenuation
+    float    quadratic_attn;                  // +0x54 - quadratic attenuation
+    int32_t  flags;                           // +0x58 - light flags
+    int32_t  texdata;                         // +0x5C - texture data index
+    int32_t  owner;                           // +0x60 - owner entity index
+    float    emitter_radius;                  // +0x64 - emitter radius
+    float    sun_highlight_size_or_vfog_boost;// +0x68 - sun highlight size (skylight) or vfog boost
+    float    specular_intensity;              // +0x6C - specular intensity
+};
+#pragma pack(pop)
+static_assert(sizeof(WorldLight_t) == 112, "WorldLight_t must be exactly 112 bytes");
+
+// Shadow Environment structure (lump 0x05)
+// One entry per light_environment, contains sun direction for cascaded shadow maps
+#pragma pack(push, 1)
+struct ShadowEnvironment_t {
+    uint32_t beginAabbs;         // +0x00 - start index into CSM AABB nodes
+    uint32_t beginObjRefs;       // +0x04 - start index into CSM obj references
+    uint32_t beginShadowMeshes;  // +0x08 - start index into shadow meshes
+    uint32_t endAabbs;           // +0x0C - end index into CSM AABB nodes
+    uint32_t endObjRefs;         // +0x10 - end index into CSM obj references
+    uint32_t endShadowMeshes;    // +0x14 - end index into shadow meshes
+    Vector3  shadowDir;          // +0x18 - normalized sun direction vector (points TO the sun)
+};
+#pragma pack(pop)
+static_assert(sizeof(ShadowEnvironment_t) == 36, "ShadowEnvironment_t must be exactly 36 bytes");
+
+// Shadow Mesh structure (lump 0x7F) - 12 bytes
+// References shadow mesh vertices and indices for shadow casting
+#pragma pack(push, 1)
+struct ShadowMesh_t {
+    uint32_t firstVertex;        // +0x00 - first vertex index (in opaque or alpha verts)
+    uint32_t triangleCount;      // +0x04 - number of triangles
+    uint16_t drawType;           // +0x08 - 0=world, 1=opaque, etc.
+    uint16_t materialSortIdx;    // +0x0A - material sort index (for alpha tested)
+};
+#pragma pack(pop)
+static_assert(sizeof(ShadowMesh_t) == 12, "ShadowMesh_t must be exactly 12 bytes");
+
+// Shadow Mesh Opaque Vertex (lump 0x7C) - 12 bytes, just position
+using ShadowMeshOpaqueVertex_t = Vector3;
+
+// Shadow Mesh Alpha Vertex (lump 0x7D) - 20 bytes, position + tex coords
+#pragma pack(push, 1)
+struct ShadowMeshAlphaVertex_t {
+    Vector3  position;           // +0x00 - vertex position
+    uint32_t texCoord[2];        // +0x0C - packed texture coordinates
+};
+#pragma pack(pop)
+static_assert(sizeof(ShadowMeshAlphaVertex_t) == 20, "ShadowMeshAlphaVertex_t must be exactly 20 bytes");
+
+// CSM AABB Node (lump 0x63) - 32 bytes
+// Bounding volume hierarchy for cascaded shadow map culling
+#pragma pack(push, 1)
+struct CSMAABBNode_t {
+    Vector3  mins;               // +0x00 - AABB minimum
+    uint32_t child0;             // +0x0C - child node or data index
+    Vector3  maxs;               // +0x10 - AABB maximum
+    uint32_t child1;             // +0x1C - child node or data index
+};
+#pragma pack(pop)
+static_assert(sizeof(CSMAABBNode_t) == 32, "CSMAABBNode_t must be exactly 32 bytes");
+
 namespace ApexLegends {
     void        EmitStubs();
 
@@ -59,15 +158,51 @@ namespace ApexLegends {
     int         EmitContentsMask( int mask );
     void        EmitMeshes(const entity_t &e);
     uint32_t    EmitTextureData(shaderInfo_t shader);
-    uint16_t    EmitMaterialSort(uint32_t index, int offset, int count);
+    uint16_t    EmitMaterialSort(uint32_t index, int offset, int count, int16_t lightmapIdx);
     void        EmitVertexUnlit(Shared::Vertex_t &vertex);
     void        EmitVertexLitFlat(Shared::Vertex_t &vertex);
-    void        EmitVertexLitBump(Shared::Vertex_t &vertex);
+    void        EmitVertexLitBump(Shared::Vertex_t &vertex, const Vector2 &lightmapUV);
     void        EmitVertexUnlitTS(Shared::Vertex_t &vertex);
     std::size_t EmitObjReferences(Shared::visNode_t &node);
     int         EmitVisChildrenOfTreeNode(Shared::visNode_t node);
     void        EmitVisTree();
     void        EmitLevelInfo();
+    void        EmitWorldLights();
+    void        EmitShadowEnvironments();
+    void        EmitShadowMeshes();
+    void        EmitLightmaps();
+    void        SetupSurfaceLightmaps();
+    void        ComputeLightmapLighting();
+    
+    // Lightmap UV lookup - returns UV in [0,1] range for the lightmap atlas
+    // Returns false if mesh has no lightmap allocation
+    bool        GetLightmapUV(int meshIndex, const Vector3 &worldPos, Vector2 &outUV);
+
+    // Get the lightmap page index for a mesh
+    // Returns 0 (default page) for non-lit meshes - all meshes have a valid lightmap index
+    int16_t     GetLightmapPageIndex(int meshIndex);
+
+    /*
+        vector3_from_angles
+        Converts Source engine style angles (pitch, yaw, roll) to a direction vector
+        Pitch: rotation around X axis (degrees), positive = down
+        Yaw: rotation around Z axis (degrees)
+        Roll: rotation around Y axis (degrees) - not used for direction
+    */
+    inline Vector3 vector3_from_angles(const Vector3& angles) {
+        // Convert to radians
+        const float pitch = degrees_to_radians(angles.x());
+        const float yaw = degrees_to_radians(angles.y());
+
+        // Calculate direction vector
+        // Source engine: pitch down is positive, so we negate the Z component
+        const float cp = std::cos(pitch);
+        return Vector3(
+            cp * std::cos(yaw),
+            cp * std::sin(yaw),
+            -std::sin(pitch)
+        );
+    }
 
     using Vertex_t = Vector3;
 
@@ -143,7 +278,7 @@ namespace ApexLegends {
         Vector2   uv0;
         int32_t   negativeOne;
         Vector2   uv1;
-        uint8_t   color[4];
+        uint32_t  normalIndex2;  // Second normal index with 0x80000000 flag
     };
 
     // 0x4A
@@ -163,7 +298,8 @@ namespace ApexLegends {
         Vector2   uv1;
     };
 
-    // 0x50
+    // 0x50 - Apex Legends mesh structure (28 bytes) - dmesh_t in engine
+    // Vertex types: 0=UNLIT, 1=LIT_FLAT, 2=LIT_BUMP, 3=UNLIT_TS
     struct Mesh_t {
         uint32_t  triOffset;
         uint16_t  triCount;
@@ -171,6 +307,7 @@ namespace ApexLegends {
         uint16_t  materialOffset;
         uint32_t  flags;
     };
+    static_assert(sizeof(Mesh_t) == 28, "Mesh_t must be exactly 28 bytes");
 
     // 0x52
     struct MaterialSort_t {
@@ -235,6 +372,46 @@ namespace ApexLegends {
     };
     static_assert(sizeof(CollisionVertex_t) == 12, "CollisionVertex_t must be exactly 12 bytes");
 
+    // 0x53 - Lightmap Header (8 bytes)
+    // Engine parses this in Mod_LoadLightmapHeaders
+    // Format types determine bytes per pixel in lightmap data:
+    //   Type 1/10: 8 bytes per pixel (HDR)
+    //   Type 4/8:  BC block compression 4x4
+    //   Type 5:    ASTC 5x5 blocks
+    //   Type 6:    ASTC 6x6 blocks
+    //   Type 7:    ASTC 8x8 blocks
+    //   Type 9:    12 bytes per pixel
+    #pragma pack(push, 1)
+    struct LightmapHeader_t {
+        uint8_t   type;            // 0x00: lightmap format type
+        uint8_t   compressedType;  // 0x01: compressed format type
+        uint8_t   tag;             // 0x02: tag
+        uint8_t   unknown;         // 0x03: padding/unknown
+        uint16_t  width;           // 0x04: lightmap width
+        uint16_t  height;          // 0x06: lightmap height
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(LightmapHeader_t) == 8, "LightmapHeader_t must be exactly 8 bytes");
+
+    // Lightmap format types
+    enum class LightmapType : uint8_t {
+        HDR_8BPP       = 1,   // 8 bytes per pixel (uncompressed HDR)
+        BC_4X4_A       = 4,   // BC block compression 4x4
+        ASTC_5X5       = 5,   // ASTC 5x5 blocks
+        ASTC_6X6       = 6,   // ASTC 6x6 blocks
+        ASTC_8X8       = 7,   // ASTC 8x8 blocks  
+        BC_4X4_B       = 8,   // BC block compression 4x4
+        HDR_12BPP      = 9,   // 12 bytes per pixel
+        HDR_8BPP_ALT   = 10,  // 8 bytes per pixel alternate
+    };
+
+    // Per-lightmap page data during building
+    struct LightmapPage_t {
+        uint16_t             width;
+        uint16_t             height;
+        std::vector<uint8_t> pixels;      // 8 bytes per pixel for Type 1
+    };
+
     namespace Bsp {
         inline std::vector<TextureData_t>       textureData;
         inline std::vector<Model_t>             models;
@@ -254,20 +431,39 @@ namespace ApexLegends {
         inline std::vector<CellAABBNode_t>      cellAABBNodes;
         inline std::vector<int32_t>             objReferences;
         inline std::vector<LevelInfo_t>         levelInfo;
+        inline std::vector<ShadowEnvironment_t> shadowEnvironments;
+        inline std::vector<WorldLight_t>        worldLights;
+        inline std::vector<uint32_t>            tweakLights;              // Lump 0x55 - indices of tweakable lights
 
-        // Stubs
+        // Shadow mesh lumps (0x7C-0x7F)
+        inline std::vector<ShadowMeshOpaqueVertex_t> shadowMeshOpaqueVerts;  // Lump 0x7C
+        inline std::vector<ShadowMeshAlphaVertex_t>  shadowMeshAlphaVerts;   // Lump 0x7D
+        inline std::vector<uint16_t>                 shadowMeshIndices;      // Lump 0x7E
+        inline std::vector<ShadowMesh_t>             shadowMeshes;           // Lump 0x7F
+        
+        // CSM lumps (0x63-0x64)
+        inline std::vector<CSMAABBNode_t>            csmAABBNodes;           // Lump 0x63
+        inline std::vector<uint32_t>                 csmObjRefsTotal;        // Lump 0x64
+
+        // Lightmap lumps (0x53, 0x55, 0x5A, 0x56)
+        inline std::vector<LightmapHeader_t>    lightmapHeaders;        // Lump 0x53
+        inline std::vector<uint8_t>             lightmapDataSky;        // Lump 0x55 (uncompressed)
+        inline std::vector<uint8_t>             lightmapDataRTLPage;    // Lump 0x5A
+        inline std::vector<LightmapPage_t>      lightmapPages;          // Working data during build
+
+        // Stubs (for lumps not yet implemented)
         inline std::vector<uint8_t>  lightprobeParentInfos_stub;
-        inline std::vector<uint8_t>  shadowEnvironments_stub;
         inline std::vector<uint8_t>  surfaceProperties_stub;
         inline std::vector<uint8_t>  unknown25_stub;
         inline std::vector<uint8_t>  unknown26_stub;
         inline std::vector<uint8_t>  unknown27_stub;
         inline std::vector<uint8_t>  cubemaps_stub;
-        inline std::vector<uint8_t>  worldLights_stub;
-        inline std::vector<uint8_t>  lightmapHeaders_stub;
-        inline std::vector<uint8_t>  tweakLights_stub;
-        inline std::vector<uint8_t>  lightmapDataSky_stub;
-        inline std::vector<uint8_t>  csmAABBNodes_stub;
-        inline std::vector<uint8_t>  lightmapDataRTLPage_stub;
+        
+        // Realtime lighting lumps (stubs for now)
+        inline std::vector<uint8_t>  lightprobes_stub;                  // Lump 0x65
+        inline std::vector<uint8_t>  staticPropLightprobeIndices_stub;  // Lump 0x66
+        inline std::vector<uint8_t>  lightprobeTree_stub;               // Lump 0x67
+        inline std::vector<uint8_t>  lightprobeReferences_stub;         // Lump 0x68
+        inline std::vector<uint8_t>  lightmapDataRealTimeLights_stub;   // Lump 0x69
     }
 }

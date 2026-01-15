@@ -68,6 +68,10 @@ void ApexLegends::EmitVisTree() {
 void ApexLegends::EmitMeshes(const entity_t &e) {
     Sys_Printf("  EmitMeshes: %zu meshes from Shared::meshes\n", Shared::meshes.size());
 
+    // Setup lightmaps first so we can get UV coordinates for lit vertices
+    ApexLegends::SetupSurfaceLightmaps();
+
+    int meshIndex = 0;
     for (const Shared::Mesh_t &mesh : Shared::meshes) {
         ApexLegends::Mesh_t &m = ApexLegends::Bsp::meshes.emplace_back();
         m.flags = mesh.shaderInfo->surfaceFlags;
@@ -97,8 +101,12 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
         uint16_t vertexCount = (uint16_t)mesh.vertices.size();
 
         // Emit texture related structs - need this first to get materialSortOffset
+        // Get lightmap page index for this mesh (returns 0 for non-lit meshes)
+        int16_t lightmapPageIdx = ApexLegends::GetLightmapPageIndex(meshIndex);
+
+        // Emit texture related structs
         uint32_t textureIndex = ApexLegends::EmitTextureData(*mesh.shaderInfo);
-        m.materialOffset = ApexLegends::EmitMaterialSort(textureIndex, vertexOffset, mesh.vertices.size());
+        m.materialOffset = ApexLegends::EmitMaterialSort(textureIndex, vertexOffset, mesh.vertices.size(), lightmapPageIdx);
         int materialSortOffset = ApexLegends::Bsp::materialSorts.at(m.materialOffset).vertexOffset;
         
         // Calculate relative vertex offset (relative to MaterialSort's vertexOffset)
@@ -130,7 +138,10 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
             aabb.extend(vertex.xyz);
 
             if (CHECK_FLAG(m.flags, S_VERTEX_LIT_BUMP)) {
-                ApexLegends::EmitVertexLitBump(vertex);
+                // Get lightmap UV for this vertex
+                Vector2 lightmapUV(0, 0);
+                ApexLegends::GetLightmapUV(meshIndex, vertex.xyz, lightmapUV);
+                ApexLegends::EmitVertexLitBump(vertex, lightmapUV);
             } else if (CHECK_FLAG(m.flags, S_VERTEX_UNLIT)) {
                 ApexLegends::EmitVertexUnlit(vertex);
             } else if (CHECK_FLAG(m.flags, S_VERTEX_UNLIT_TS)) {
@@ -151,6 +162,8 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
         Titanfall::MeshBounds_t &mb = Titanfall::Bsp::meshBounds.emplace_back();
         mb.origin = (aabb.maxs + aabb.mins) / 2;
         mb.extents = (aabb.maxs - aabb.mins) / 2;
+
+        meshIndex++;
     }
 
     Sys_Printf("  EmitMeshes: %zu meshes written to ApexLegends::Bsp::meshes\n", ApexLegends::Bsp::meshes.size());
@@ -210,12 +223,13 @@ uint32_t ApexLegends::EmitTextureData(shaderInfo_t shader) {
 /*
     EmitMaterialSort()
     Tries to create a material sort of the last texture
+    lightmapIdx: Index of the lightmap page (0 for default/non-lit meshes)
 */
-uint16_t ApexLegends::EmitMaterialSort(uint32_t index, int offset, int count) {
+uint16_t ApexLegends::EmitMaterialSort(uint32_t index, int offset, int count, int16_t lightmapIdx) {
         /* Check if the material sort we need already exists */
         std::size_t pos = 0;
         for (ApexLegends::MaterialSort_t &ms : ApexLegends::Bsp::materialSorts) {
-            if (ms.textureData == index && offset - ms.vertexOffset + count < 65535) {
+            if (ms.textureData == index && ms.lightmapIndex == lightmapIdx && offset - ms.vertexOffset + count < 65535) {
                 return pos;
             }
             pos++;
@@ -223,7 +237,7 @@ uint16_t ApexLegends::EmitMaterialSort(uint32_t index, int offset, int count) {
 
         ApexLegends::MaterialSort_t &ms = ApexLegends::Bsp::materialSorts.emplace_back();
         ms.textureData = index;
-        ms.lightmapIndex = -1;
+        ms.lightmapIndex = lightmapIdx;
         ms.unknown0 = 0;
         ms.unknown1 = 0;
         ms.vertexOffset = offset;
@@ -262,13 +276,17 @@ void ApexLegends::EmitVertexLitFlat(Shared::Vertex_t &vertex) {
 /*
     EmitVertexLitBump
     Saves a vertex into ApexLegends::Bsp::vertexLitBumpVertices
+    lightmapUV: Lightmap UV coordinates in [0,1] range
 */
-void ApexLegends::EmitVertexLitBump(Shared::Vertex_t &vertex) {
+void ApexLegends::EmitVertexLitBump(Shared::Vertex_t &vertex, const Vector2 &lightmapUV) {
     ApexLegends::VertexLitBump_t& lv = ApexLegends::Bsp::vertexLitBumpVertices.emplace_back();
     lv.vertexIndex = Titanfall::EmitVertex(vertex.xyz);
     lv.normalIndex = Titanfall::EmitVertexNormal(vertex.normal);
     lv.uv0         = vertex.textureUV;
-    lv.negativeOne = -1;
+    lv.negativeOne = 0x00FFFFFF;  // Special marker value (NOT -1, which causes crash)
+    lv.uv1         = lightmapUV;
+    // normalIndex2: second normal index with 0x80000000 flag - reuse same normal
+    lv.normalIndex2 = lv.normalIndex | 0x80000000;
 }
 
 
@@ -281,7 +299,7 @@ void ApexLegends::EmitVertexUnlitTS(Shared::Vertex_t &vertex) {
     ul.vertexIndex = Titanfall::EmitVertex(vertex.xyz);
     ul.normalIndex = Titanfall::EmitVertexNormal(vertex.normal);
     ul.uv0         = vertex.textureUV;
-    ul.unknown0    = 0;
+    ul.unknown0    = 0x00FFFF01;  // Special marker value (matches official BSP)
     ul.unknown1    = 0;
 }
 
@@ -389,6 +407,27 @@ void ApexLegends::EmitLevelInfo() {
     li.unk2 = 51;
     li.unk3 = 256;
     li.unk4 = 22;
+
+    // Find the last light_environment entity and extract sun direction for unk5
+    // unk5 is the sun direction vector used by the engine
+    Vector3 sunDir(0.0f, 0.0f, -1.0f);  // Default: straight down
+    for (const entity_t& e : entities) {
+        if (striEqual(e.classname(), "light_environment")) {
+            // Get sun direction from angles
+            // light_environment uses "angles" key with format "pitch yaw roll"
+            // or separate "pitch" key. The pitch key seems to be the primary one.
+            Vector3 angles = e.vectorForKey("angles");
+            float pitch = e.floatForKey("pitch", "0");
+            // If pitch key exists, it takes precedence (and is often the negative)
+            if (e.valueForKey("pitch")) {
+                angles[0] = -pitch;  // pitch key is negative of the actual pitch
+            }
+            sunDir = ApexLegends::vector3_from_angles(angles);
+        }
+    }
+    li.unk5[0] = sunDir.x();
+    li.unk5[1] = sunDir.y();
+    li.unk5[2] = sunDir.z();
 
     li.modelCount = 0;
     for( Model_t &model : ApexLegends::Bsp::models ) {

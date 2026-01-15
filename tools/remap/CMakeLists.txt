@@ -30,6 +30,7 @@ add_executable(remap
                common/vfs.cpp
                common/vfs.h
                source/apex_legends/apex_legends_collisions.cpp
+               source/apex_legends/apex_legends_lightmaps.cpp
                source/apex_legends/apex_legends_misc.cpp
                source/apex_legends/apex_legends_vis.cpp
                source/apex_legends/apex_legends.cpp
