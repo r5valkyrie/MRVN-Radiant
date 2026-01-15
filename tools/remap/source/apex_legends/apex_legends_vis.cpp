@@ -34,20 +34,30 @@
 void ApexLegends::EmitVisTree() {
     Shared::visNode_t &root = Shared::visRoot;
 
+    // Force large bounds to disable culling for debugging
+    Vector3 largeMin(-32000.0f, -32000.0f, -32000.0f);
+    Vector3 largeMax(32000.0f, 32000.0f, 32000.0f);
+
     ApexLegends::CellAABBNode_t &bn = ApexLegends::Bsp::cellAABBNodes.emplace_back();
-    bn.maxs = root.minmax.maxs;
-    bn.mins = root.minmax.mins;
-    bn.firstChild = ApexLegends::Bsp::cellAABBNodes.size();
-    bn.childCount = root.children.size();
+    bn.maxs = largeMax;
+    bn.mins = largeMin;
+    bn.firstChild = 0;  // No children - put all refs in root
+    bn.childCount = 0;
     bn.childFlags = 0x40;
+    
+    // Put ALL mesh references directly in the root node
+    bn.objRefOffset = 0;
+    bn.objRefCount = Shared::visRefs.size();
+    bn.objRefFlags = 0x40;
+    
+    // Emit all references with large bounds
+    for (Shared::visRef_t &ref : Shared::visRefs) {
+        Titanfall::ObjReferenceBounds_t &rb = Titanfall::Bsp::objReferenceBounds.emplace_back();
+        rb.maxs = largeMax;
+        rb.mins = largeMin;
 
-    if (root.refs.size()) {
-        bn.objRefOffset = EmitObjReferences(root);
-        bn.objRefCount = root.refs.size();
-        bn.objRefFlags = 0x40;
+        ApexLegends::Bsp::objReferences.emplace_back(ref.index);
     }
-
-    EmitVisChildrenOfTreeNode(Shared::visRoot);
 }
 
 
@@ -63,28 +73,53 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
         m.flags = mesh.shaderInfo->surfaceFlags;
         m.triOffset = Titanfall::Bsp::meshIndices.size();
         m.triCount = mesh.triangles.size() / 3;
-        memset(m.unknown, 0, sizeof(m.unknown));
 
         int vertexOffset;
+        uint16_t vertexType;
         if (CHECK_FLAG(m.flags, S_VERTEX_LIT_BUMP)) {
             vertexOffset = ApexLegends::Bsp::vertexLitBumpVertices.size();
+            vertexType = 2;
         } else if (CHECK_FLAG(m.flags, S_VERTEX_UNLIT)) {
             vertexOffset = ApexLegends::Bsp::vertexUnlitVertices.size();
+            vertexType = 1;
         } else if (CHECK_FLAG(m.flags, S_VERTEX_UNLIT_TS)) {
             vertexOffset = ApexLegends::Bsp::vertexUnlitTSVertices.size();
+            vertexType = 3;
         } else {
             // Default to LIT_BUMP for _wldc error material fallback (aspect 7)
             // Using UNLIT would give _wldu error material (aspect 6)
             vertexOffset = ApexLegends::Bsp::vertexLitBumpVertices.size();
+            vertexType = 2;
             m.flags |= S_VERTEX_LIT_BUMP;
             mesh.shaderInfo->surfaceFlags |= S_VERTEX_LIT_BUMP;
         }
 
+        uint16_t vertexCount = (uint16_t)mesh.vertices.size();
 
-        // Emit textrue related structs
+        // Emit texture related structs - need this first to get materialSortOffset
         uint32_t textureIndex = ApexLegends::EmitTextureData(*mesh.shaderInfo);
         m.materialOffset = ApexLegends::EmitMaterialSort(textureIndex, vertexOffset, mesh.vertices.size());
         int materialSortOffset = ApexLegends::Bsp::materialSorts.at(m.materialOffset).vertexOffset;
+        
+        // Calculate relative vertex offset (relative to MaterialSort's vertexOffset)
+        int relativeVertexOffset = vertexOffset - materialSortOffset;
+
+        // Fill in the unknown array - these fields are critical for mesh rendering
+        // unknown[0-1]: vertexOffset (relative to MaterialSort's vertexOffset, stored as uint32)
+        // unknown[2-3]: vertexCount (stored as uint32)
+        // unknown[4]: vertexType (0=LIT_FLAT, 1=UNLIT, 2=LIT_BUMP, 3=UNLIT_TS)
+        // unknown[5]: unused
+        // unknown[6-7]: const0 (must be 0xFFFFFF00 = 4294967040)
+        m.unknown[0] = (uint16_t)(relativeVertexOffset & 0xFFFF);
+        m.unknown[1] = (uint16_t)((relativeVertexOffset >> 16) & 0xFFFF);
+        m.unknown[2] = vertexCount;
+        m.unknown[3] = 0;
+        m.unknown[4] = vertexType;
+        m.unknown[5] = 0;
+        // const0 = 0xFFFFFF00 -> low 16 bits = 0xFF00, high 16 bits = 0xFFFF
+        m.unknown[6] = 0xFF00;
+        m.unknown[7] = 0xFFFF;
+        
         MinMax  aabb;
 
         // Save vertices and vertexnormals
@@ -277,7 +312,13 @@ int ApexLegends::EmitVisChildrenOfTreeNode(Shared::visNode_t node) {
         bn.maxs = n.minmax.maxs;
         bn.mins = n.minmax.mins;
         bn.childCount = n.children.size();
+        bn.firstChild = 0;  // Will be set later if there are children
         bn.childFlags = 0x40;
+        
+        // Initialize objRef fields - must be explicitly zeroed
+        bn.objRefCount = 0;
+        bn.objRefOffset = 0;
+        bn.objRefFlags = 0;
 
         if (n.refs.size()) {
             bn.objRefOffset = ApexLegends::EmitObjReferences(n);
@@ -290,7 +331,9 @@ int ApexLegends::EmitVisChildrenOfTreeNode(Shared::visNode_t node) {
         int firstChild = ApexLegends::EmitVisChildrenOfTreeNode(node.children.at(i));
 
         ApexLegends::CellAABBNode_t &bn = ApexLegends::Bsp::cellAABBNodes.at(index + i);
-        bn.firstChild = firstChild;
+        if (node.children.at(i).children.size() > 0) {
+            bn.firstChild = firstChild;
+        }
     }
 
     return index;
