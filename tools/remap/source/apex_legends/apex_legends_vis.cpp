@@ -34,9 +34,10 @@
 void ApexLegends::EmitVisTree() {
     Shared::visNode_t &root = Shared::visRoot;
 
+    //TODO: Use actual world bounds once culling is verified working
     // Force large bounds to disable culling for debugging
-    Vector3 largeMin(-32000.0f, -32000.0f, -32000.0f);
-    Vector3 largeMax(32000.0f, 32000.0f, 32000.0f);
+    Vector3 largeMin(-50000.0f, -50000.0f, -50000.0f);
+    Vector3 largeMax(50000.0f, 50000.0f, 50000.0f);
 
     ApexLegends::CellAABBNode_t &bn = ApexLegends::Bsp::cellAABBNodes.emplace_back();
     bn.maxs = largeMax;
@@ -101,7 +102,7 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
         uint16_t vertexCount = (uint16_t)mesh.vertices.size();
 
         // Emit texture related structs - need this first to get materialSortOffset
-        // Get lightmap page index for this mesh (returns 0 for non-lit meshes)
+        // Get lightmap page index for this mesh (returns 0 for stub page if no allocation)
         int16_t lightmapPageIdx = ApexLegends::GetLightmapPageIndex(meshIndex);
 
         // Emit texture related structs

@@ -93,13 +93,28 @@ namespace LightmapBuild {
 
 /*
     InitLightmapAtlas
-    Initialize a new lightmap atlas page
+    Initialize a new lightmap atlas page with bright neutral lighting
 */
 static void InitLightmapAtlas() {
     ApexLegends::LightmapPage_t page;
     page.width = MAX_LIGHTMAP_WIDTH;
     page.height = MAX_LIGHTMAP_HEIGHT;
-    page.pixels.resize(page.width * page.height * 8, 0);  // 8 bytes per texel
+    
+    // Initialize with bright neutral lighting (not black!)
+    // This ensures any unused texels still look properly lit
+    size_t dataSize = page.width * page.height * 8;
+    page.pixels.resize(dataSize);
+    for (size_t i = 0; i < dataSize; i += 8) {
+        // Bright neutral HDR value (gamma-corrected white/gray)
+        page.pixels[i + 0] = 180;  // R - bright gray
+        page.pixels[i + 1] = 180;  // G
+        page.pixels[i + 2] = 180;  // B
+        page.pixels[i + 3] = 255;  // A
+        page.pixels[i + 4] = 180;  // R HDR
+        page.pixels[i + 5] = 180;  // G HDR
+        page.pixels[i + 6] = 180;  // B HDR
+        page.pixels[i + 7] = 128;  // Neutral multiplier
+    }
     ApexLegends::Bsp::lightmapPages.push_back(page);
     
     // Initialize usage bitmap
@@ -356,8 +371,9 @@ void ApexLegends::ComputeLightmapLighting() {
                     }
                 }
                 
-                // Add ambient
-                color = color + Vector3(0.05f, 0.05f, 0.05f);
+                // Add ambient - higher value prevents completely dark areas
+                // This is a base ambient that ensures surfaces are always visible
+                color = color + Vector3(0.25f, 0.25f, 0.25f);
                 
                 // Store in luxel array
                 surf.luxels[y * surf.rect.width + x] = color;
@@ -376,28 +392,36 @@ void ApexLegends::ComputeLightmapLighting() {
     
     Based on reverse engineering of Apex engine's lightmap format.
     Format appears to be RGBE-style or similar HDR encoding.
+    
+    The engine expects reasonably bright values - minimum ambient of ~0.5
+    prevents surfaces from appearing completely dark.
 */
 static void EncodeHDRTexel(const Vector3 &color, uint8_t *out) {
-    // Clamp and scale color values
-    float r = std::max(0.0f, std::min(color.x(), 10.0f));
-    float g = std::max(0.0f, std::min(color.y(), 10.0f));
-    float b = std::max(0.0f, std::min(color.z(), 10.0f));
+    // Add minimum ambient to prevent completely dark areas
+    // This ensures even unlit areas have some visibility
+    constexpr float MIN_AMBIENT = 0.1f;
+    
+    // Clamp and scale color values with minimum ambient
+    float r = std::max(MIN_AMBIENT, std::min(color.x() + MIN_AMBIENT, 10.0f));
+    float g = std::max(MIN_AMBIENT, std::min(color.y() + MIN_AMBIENT, 10.0f));
+    float b = std::max(MIN_AMBIENT, std::min(color.z() + MIN_AMBIENT, 10.0f));
     
     // Simple encoding: first 3 bytes are base color (gamma corrected)
     // remaining bytes appear to be additional HDR data
     
-    // Apply gamma correction (2.2)
+    // Apply gamma correction (2.2) 
     r = std::pow(r, 1.0f / 2.2f);
     g = std::pow(g, 1.0f / 2.2f);
     b = std::pow(b, 1.0f / 2.2f);
     
-    // Scale to 0-255
-    out[0] = (uint8_t)(r * 255.0f);
-    out[1] = (uint8_t)(g * 255.0f);
-    out[2] = (uint8_t)(b * 255.0f);
+    // Scale to 0-255, clamping to avoid overflow
+    out[0] = (uint8_t)std::min(255.0f, r * 255.0f);
+    out[1] = (uint8_t)std::min(255.0f, g * 255.0f);
+    out[2] = (uint8_t)std::min(255.0f, b * 255.0f);
     out[3] = 255;  // Alpha or exponent
     
-    // Second half appears to be for HDR range/bounce lighting
+    // Second half: HDR/bounce lighting data
+    // Copy same values for consistent lighting
     out[4] = out[0];
     out[5] = out[1];
     out[6] = out[2];
@@ -430,11 +454,27 @@ void ApexLegends::EmitLightmaps() {
         header.tag = 0;
         header.unknown = 0;
         header.width = 256;
-        header.height = 216;
+        header.height = 256;
         ApexLegends::Bsp::lightmapHeaders.push_back(header);
         
-        // Create matching data (256 * 216 * 8 = 442368 bytes)
-        ApexLegends::Bsp::lightmapDataSky.resize(442368, 0);
+        // Create matching data with BRIGHT neutral lighting (not black!)
+        // 256 * 256 * 8 = 524288 bytes
+        // Each 8-byte texel should be bright white/neutral to avoid dark surfaces
+        size_t dataSize = 256 * 256 * 8;
+        ApexLegends::Bsp::lightmapDataSky.resize(dataSize);
+        for (size_t i = 0; i < dataSize; i += 8) {
+            // Bright neutral HDR value (gamma-corrected white)
+            // First 4 bytes: base color RGBA
+            ApexLegends::Bsp::lightmapDataSky[i + 0] = 200;  // R - bright but not pure white
+            ApexLegends::Bsp::lightmapDataSky[i + 1] = 200;  // G
+            ApexLegends::Bsp::lightmapDataSky[i + 2] = 200;  // B
+            ApexLegends::Bsp::lightmapDataSky[i + 3] = 255;  // A
+            // Second 4 bytes: HDR multiplier/bounce data
+            ApexLegends::Bsp::lightmapDataSky[i + 4] = 200;  // R HDR
+            ApexLegends::Bsp::lightmapDataSky[i + 5] = 200;  // G HDR
+            ApexLegends::Bsp::lightmapDataSky[i + 6] = 200;  // B HDR
+            ApexLegends::Bsp::lightmapDataSky[i + 7] = 128;  // Neutral multiplier
+        }
         
         // RTL page lump must be empty (0 bytes) or a multiple of 126 bytes
         // Leave it empty since we have no RTL data
@@ -521,8 +561,10 @@ bool ApexLegends::GetLightmapUV(int meshIndex, const Vector3 &worldPos, Vector2 
         }
     }
     
-    // No lightmap for this mesh
-    outUV = Vector2(0, 0);
+    // No lightmap for this mesh - return center of lightmap page
+    // This samples from the bright stub lightmap instead of the corner
+    // Using 0.5 ensures we sample from the middle where lighting is uniform
+    outUV = Vector2(0.5f, 0.5f);
     return false;
 }
 
@@ -530,7 +572,8 @@ bool ApexLegends::GetLightmapUV(int meshIndex, const Vector3 &worldPos, Vector2 
 /*
     GetLightmapPageIndex
     Get the lightmap page index for a mesh
-    Returns -1 if mesh has no lightmap
+    Returns 0 (stub page) if mesh has no specific lightmap allocation
+    The stub lightmap page always exists with bright neutral lighting
 */
 int16_t ApexLegends::GetLightmapPageIndex(int meshIndex) {
     for (const SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
@@ -538,5 +581,7 @@ int16_t ApexLegends::GetLightmapPageIndex(int meshIndex) {
             return static_cast<int16_t>(surf.rect.pageIndex);
         }
     }
-    return -1;  // No lightmap
+    // Return 0 (default stub page) for meshes without specific lightmap allocation
+    // This ensures all LIT_BUMP meshes have a valid bright lightmap
+    return 0;
 }

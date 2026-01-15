@@ -135,7 +135,7 @@ void WriteR5BSPFile(const char *filename) {
     }
 
     AddLump(file, header.lumps[R5_LUMP_UNKNOWN_37],              ApexLegends::Bsp::unknown25_stub);            // stub
-    AddLump(file, header.lumps[R5_LUMP_UNKNOWN_38],              ApexLegends::Bsp::unknown26_stub);            // stub
+    AddLump(file, header.lumps[R5_LUMP_UNKNOWN_38],              ApexLegends::Bsp::csmNumObjRefsTotalForAabb); // CSM num obj refs total per AABB node
     AddLump(file, header.lumps[R5_LUMP_UNKNOWN_39],              ApexLegends::Bsp::unknown27_stub);            // stub
     AddLump(file, header.lumps[R5_LUMP_CUBEMAPS],                ApexLegends::Bsp::cubemaps_stub);             // stub
     AddLump(file, header.lumps[R5_LUMP_WORLD_LIGHTS],            ApexLegends::Bsp::worldLights);
@@ -331,13 +331,7 @@ void ApexLegends::EmitStubs() {
         };
         ApexLegends::Bsp::unknown25_stub = { data.begin(), data.end() };
     }
-    // Unknown 0x26
-    {
-        constexpr std::array<uint8_t, 4> data = {
-            0x00, 0x00, 0x00, 0x00
-        };
-        ApexLegends::Bsp::unknown26_stub = { data.begin(), data.end() };
-    }
+    // Lump 0x26 (CSM_NUM_OBJ_REFS_TOTAL) is now dynamically generated in EmitShadowMeshes()
     // Unknown 0x27
     {
         constexpr std::array<uint8_t, 402> data = {
@@ -680,6 +674,7 @@ void ApexLegends::EmitShadowMeshes() {
     ApexLegends::Bsp::shadowMeshes.clear();
     ApexLegends::Bsp::csmAABBNodes.clear();
     ApexLegends::Bsp::csmObjRefsTotal.clear();
+    ApexLegends::Bsp::csmNumObjRefsTotalForAabb.clear();
     
     // We'll create one shadow mesh per world mesh (model 0)
     // For simplicity, we iterate the meshes from model 0 (worldspawn)
@@ -825,18 +820,42 @@ void ApexLegends::EmitShadowMeshes() {
     for (uint32_t i = 0; i < ApexLegends::Bsp::shadowMeshes.size(); i++) {
         ApexLegends::Bsp::csmObjRefsTotal.push_back(i);
     }
+
+    // Force large bounds to disable culling for debugging
+    Vector3 largeMin(-50000.0f, -50000.0f, -50000.0f);
+    Vector3 largeMax(50000.0f, 50000.0f, 50000.0f);
     
     // Create a single root CSM AABB node that encompasses all geometry
     if (!ApexLegends::Bsp::shadowMeshOpaqueVerts.empty()) {
         // Create root node with world bounds
         CSMAABBNode_t rootNode = {};
-        rootNode.mins = worldBounds.mins;
-        rootNode.maxs = worldBounds.maxs;
-        // For a leaf node: child0 high bit set + start index, child1 = count
-        rootNode.child0 = 0x80000000;  // Leaf flag, start at obj ref 0
-        rootNode.child1 = static_cast<uint32_t>(ApexLegends::Bsp::csmObjRefsTotal.size());  // Number of obj refs
+
+        //TODO: Use actual world bounds once CSM culling is verified working
+        rootNode.mins = largeMin; //worldBounds.mins;
+        rootNode.maxs = largeMax; //worldBounds.maxs;
+        
+        // CSM AABB node format (based on engine decompilation):
+        // child0 (offset 0x0C):
+        //   - Bits 0-7: Number of child nodes (0 for leaf)
+        //   - Bits 8-31: First child node index
+        // child1 (offset 0x1C):
+        //   - Bits 0-7: Object ref count (for leaf nodes when child0 low byte is 0)
+        //   - Bits 8-30: First obj ref index
+        //
+        // For a leaf node: child0 = 0, child1 = (startIndex << 8) | count
+        
+        uint32_t objRefCount = static_cast<uint32_t>(ApexLegends::Bsp::csmObjRefsTotal.size());
+        uint32_t startIndex = 0;
+        
+        rootNode.child0 = 0;  // 0 children (leaf node)
+        rootNode.child1 = (startIndex << 8) | (objRefCount & 0xFF);  // start index in high bits, count in low byte
         
         ApexLegends::Bsp::csmAABBNodes.push_back(rootNode);
+        
+        // numObjRefsTotalForAabb is used for internal nodes (when child0 low byte > 0)
+        // For leaf nodes the count comes from child1's low byte, but we still need
+        // an entry in this array for each node
+        ApexLegends::Bsp::csmNumObjRefsTotalForAabb.push_back(objRefCount);
     }
     
     Sys_Printf("  Emitted %zu shadow meshes (%u triangles, %u vertices)\n",
@@ -915,4 +934,15 @@ void ApexLegends::EmitShadowEnvironments() {
     }
 
     Sys_Printf("  Emitted %zu shadow environments\n", ApexLegends::Bsp::shadowEnvironments.size());
+    
+    // IMPORTANT: Compiled maps don't have light_environment_volume brush entities.
+    // The engine uses these volumes to determine per-environment shadow bounds when
+    // static_shadow_bounds_per_env=1. Without proper volumes, shadows will appear
+    // as a dark square following the player.
+    // 
+    // WORKAROUND: Set the console variable "static_shadow_bounds_per_env 0" to use
+    // world min/max bounds instead of per-environment headbox bounds.
+    if (ApexLegends::Bsp::shadowEnvironments.size() > 0) {
+        Sys_Printf("  NOTE: Use 'static_shadow_bounds_per_env 0' to avoid shadow artifacts\n");
+    }
 }

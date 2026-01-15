@@ -441,9 +441,10 @@ namespace ApexLegends {
         inline std::vector<uint16_t>                 shadowMeshIndices;      // Lump 0x7E
         inline std::vector<ShadowMesh_t>             shadowMeshes;           // Lump 0x7F
         
-        // CSM lumps (0x63-0x64)
+        // CSM lumps (0x26, 0x63-0x64)
         inline std::vector<CSMAABBNode_t>            csmAABBNodes;           // Lump 0x63
         inline std::vector<uint32_t>                 csmObjRefsTotal;        // Lump 0x64
+        inline std::vector<uint32_t>                 csmNumObjRefsTotalForAabb;  // Lump 0x26 - cumulative obj ref count per node
 
         // Lightmap lumps (0x53, 0x55, 0x5A, 0x56)
         inline std::vector<LightmapHeader_t>    lightmapHeaders;        // Lump 0x53
@@ -455,7 +456,6 @@ namespace ApexLegends {
         inline std::vector<uint8_t>  lightprobeParentInfos_stub;
         inline std::vector<uint8_t>  surfaceProperties_stub;
         inline std::vector<uint8_t>  unknown25_stub;
-        inline std::vector<uint8_t>  unknown26_stub;
         inline std::vector<uint8_t>  unknown27_stub;
         inline std::vector<uint8_t>  cubemaps_stub;
         
