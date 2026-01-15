@@ -231,7 +231,9 @@ void Titanfall::EndModel() {
     Titanfall::Model_t &model = Titanfall::Bsp::models.back();
     model.meshCount = (uint32_t)Titanfall::Bsp::meshes.size() - model.firstMesh;
 
-    for (Titanfall::MeshBounds_t &meshBounds : Titanfall::Bsp::meshBounds) {
+    // Only include mesh bounds for meshes belonging to this model
+    for( uint32_t i = model.firstMesh; i < model.firstMesh + model.meshCount; i++ ) {
+        Titanfall::MeshBounds_t &meshBounds = Titanfall::Bsp::meshBounds.at(i);
         model.minmax.extend(meshBounds.origin - meshBounds.extents);
         model.minmax.extend(meshBounds.origin + meshBounds.extents);
     }

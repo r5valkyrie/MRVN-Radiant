@@ -48,7 +48,9 @@ void ApexLegends::EndModel() {
     ApexLegends::Model_t &model = ApexLegends::Bsp::models.back();
     model.meshCount = ApexLegends::Bsp::meshes.size() - model.meshIndex;
 
-    for( Titanfall::MeshBounds_t &meshBounds : Titanfall::Bsp::meshBounds ) {
+    // Only include mesh bounds for meshes belonging to this model
+    for( int32_t i = model.meshIndex; i < model.meshIndex + model.meshCount; i++ ) {
+        Titanfall::MeshBounds_t &meshBounds = Titanfall::Bsp::meshBounds.at(i);
         model.minmax.extend(meshBounds.origin - meshBounds.extents);
         model.minmax.extend(meshBounds.origin + meshBounds.extents);
     }

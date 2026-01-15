@@ -328,6 +328,9 @@ namespace ApexLegends {
         uint32_t  objRefCount : 8;
         uint32_t  objRefOffset : 16;
         uint32_t  objRefFlags : 8;
+        
+        CellAABBNode_t() : mins(), childCount(0), firstChild(0), childFlags(0),
+                          maxs(), objRefCount(0), objRefOffset(0), objRefFlags(0) {}
     };
 
     // 0x7B
