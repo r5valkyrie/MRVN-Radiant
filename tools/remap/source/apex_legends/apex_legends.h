@@ -57,6 +57,12 @@ enum emittype_t : int32_t {
     emit_skyambient = 5
 };
 
+// World light flags
+constexpr int32_t WORLDLIGHT_FLAG_REALTIME         = 0x01;  // Realtime light (dynamic)
+constexpr int32_t WORLDLIGHT_FLAG_REALTIME_SHADOWS = 0x02;  // Casts realtime shadows
+constexpr int32_t WORLDLIGHT_FLAG_PBR_FALLOFF      = 0x04;  // Uses PBR falloff curve
+constexpr int32_t WORLDLIGHT_FLAG_TWEAK            = 0x80;  // Can be adjusted at runtime (tweak light)
+
 // 0x36 (54) - dworldlight_t (112 bytes)
 // World lights for dynamic lighting in the BSP
 // Layout verified from IDA reverse engineering
@@ -292,7 +298,8 @@ namespace ApexLegends {
         Vector2   uv1;
     };
 
-    // 0x50
+    // 0x50 - Apex Legends mesh structure (28 bytes) - dmesh_t in engine
+    // Vertex types: 0=UNLIT, 1=LIT_FLAT, 2=LIT_BUMP, 3=UNLIT_TS
     struct Mesh_t {
         uint32_t  triOffset;
         uint16_t  triCount;
@@ -300,6 +307,7 @@ namespace ApexLegends {
         uint16_t  materialOffset;
         uint32_t  flags;
     };
+    static_assert(sizeof(Mesh_t) == 28, "Mesh_t must be exactly 28 bytes");
 
     // 0x52
     struct MaterialSort_t {
@@ -422,6 +430,7 @@ namespace ApexLegends {
         inline std::vector<LevelInfo_t>         levelInfo;
         inline std::vector<ShadowEnvironment_t> shadowEnvironments;
         inline std::vector<WorldLight_t>        worldLights;
+        inline std::vector<uint32_t>            tweakLights;              // Lump 0x55 - indices of tweakable lights
 
         // Shadow mesh lumps (0x7C-0x7F)
         inline std::vector<ShadowMeshOpaqueVertex_t> shadowMeshOpaqueVerts;  // Lump 0x7C
@@ -446,6 +455,12 @@ namespace ApexLegends {
         inline std::vector<uint8_t>  unknown26_stub;
         inline std::vector<uint8_t>  unknown27_stub;
         inline std::vector<uint8_t>  cubemaps_stub;
-        inline std::vector<uint8_t>  tweakLights_stub;
+        
+        // Realtime lighting lumps (stubs for now)
+        inline std::vector<uint8_t>  lightprobes_stub;                  // Lump 0x65
+        inline std::vector<uint8_t>  staticPropLightprobeIndices_stub;  // Lump 0x66
+        inline std::vector<uint8_t>  lightprobeTree_stub;               // Lump 0x67
+        inline std::vector<uint8_t>  lightprobeReferences_stub;         // Lump 0x68
+        inline std::vector<uint8_t>  lightmapDataRealTimeLights_stub;   // Lump 0x69
     }
 }

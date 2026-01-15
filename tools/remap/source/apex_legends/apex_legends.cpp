@@ -162,10 +162,18 @@ void WriteR5BSPFile(const char *filename) {
         ApexLegends::Bsp::lightmapHeaders.size(),
         ApexLegends::Bsp::lightmapDataSky.size());
     AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_HEADERS],        ApexLegends::Bsp::lightmapHeaders);
-    AddLump(file, header.lumps[R5_LUMP_TWEAK_LIGHTS],            ApexLegends::Bsp::tweakLights_stub);          // stub
+    AddLump(file, header.lumps[R5_LUMP_TWEAK_LIGHTS],            ApexLegends::Bsp::tweakLights);
     AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_DATA_SKY],       ApexLegends::Bsp::lightmapDataSky);
     AddLump(file, header.lumps[R5_LUMP_CSM_AABB_NODES],          ApexLegends::Bsp::csmAABBNodes);
     AddLump(file, header.lumps[R5_LUMP_CSM_OBJ_REFERENCES],      ApexLegends::Bsp::csmObjRefsTotal);
+    
+    // Lightprobe lumps (stubs for now - needed for realtime lighting)
+    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBES],                    ApexLegends::Bsp::lightprobes_stub);
+    AddLump(file, header.lumps[R5_LUMP_STATIC_PROP_LIGHTPROBE_INDICES], ApexLegends::Bsp::staticPropLightprobeIndices_stub);
+    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBE_TREE],                ApexLegends::Bsp::lightprobeTree_stub);
+    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBE_REFERENCES],          ApexLegends::Bsp::lightprobeReferences_stub);
+    AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_DATA_REAL_TIME_LIGHTS], ApexLegends::Bsp::lightmapDataRealTimeLights_stub);
+    
     AddLump(file, header.lumps[R5_LUMP_CELL_BSP_NODES],          Titanfall::Bsp::cellBSPNodes_stub);           // stub
     AddLump(file, header.lumps[R5_LUMP_CELLS],                   Titanfall::Bsp::cells_stub);                  // stub
     AddLump(file, header.lumps[R5_LUMP_OCCLUSION_MESH_VERTICES], Titanfall::Bsp::occlusionMeshVertices);
@@ -408,17 +416,11 @@ void ApexLegends::EmitWorldLights() {
             } else {
                 type = emit_point;
             }
-        } else if (striEqual(classname, "light_spotlight")) {
+        } else if (striEqual(classname, "light_spotlight") || striEqual(classname, "light_spot")) {
             type = emit_spotlight;
         } else if (striEqual(classname, "light_environment")) {
             isLightEnvironment = true;
         } else {
-            continue;
-        }
-
-        // Skip if light is configured to be off
-        const char* styleStr = e.valueForKey("style");
-        if (styleStr && striEqual(styleStr, "0")) {
             continue;
         }
 
@@ -567,9 +569,19 @@ void ApexLegends::EmitWorldLights() {
             
             // Parse flags from entity properties
             int flags = 0;
-            if (e.intForKey("realtime")) flags |= 0x1;
-            if (e.intForKey("realtime_shadows")) flags |= 0x2;
-            if (e.intForKey("_pbr_falloff")) flags |= 0x4;
+            bool isRealtime = e.intForKey("realtime") != 0;
+            bool hasRealtimeShadows = e.intForKey("realtime_shadows") != 0;
+            bool isPbrFalloff = e.intForKey("_pbr_falloff") != 0 || e.valueForKey("_pbr_falloff") == nullptr;  // Default to PBR
+            bool isTweakable = e.intForKey("tweakable") != 0;
+            
+            if (isRealtime) flags |= WORLDLIGHT_FLAG_REALTIME;
+            if (hasRealtimeShadows) flags |= WORLDLIGHT_FLAG_REALTIME_SHADOWS;
+            if (isPbrFalloff) flags |= WORLDLIGHT_FLAG_PBR_FALLOFF;
+            if (isTweakable || isRealtime) flags |= WORLDLIGHT_FLAG_TWEAK;  // Realtime lights are tweakable
+            
+            // Add additional common flags based on official maps (bit 3 and 4 often set)
+            flags |= 0x08;  // Bit 3 - commonly set in official maps
+            flags |= 0x10;  // Bit 4 - commonly set in official maps
             
             WorldLight_t light = {};
             light.origin = origin;
@@ -630,10 +642,19 @@ void ApexLegends::EmitWorldLights() {
         ApexLegends::Bsp::worldLights.push_back(light);
     }
 
-    Sys_Printf("  Emitted %zu world lights (%zu light environments, %zu other)\n", 
+    // Generate tweak lights list - indices of all lights with WORLDLIGHT_FLAG_TWEAK set
+    ApexLegends::Bsp::tweakLights.clear();
+    for (uint32_t i = 0; i < ApexLegends::Bsp::worldLights.size(); i++) {
+        if (ApexLegends::Bsp::worldLights[i].flags & WORLDLIGHT_FLAG_TWEAK) {
+            ApexLegends::Bsp::tweakLights.push_back(i);
+        }
+    }
+
+    Sys_Printf("  Emitted %zu world lights (%zu light environments, %zu other, %zu tweakable)\n", 
                ApexLegends::Bsp::worldLights.size(),
                skyAmbientLights.size(),
-               otherLights.size());
+               otherLights.size(),
+               ApexLegends::Bsp::tweakLights.size());
 }
 
 /*
