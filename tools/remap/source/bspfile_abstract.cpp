@@ -193,78 +193,69 @@ void WriteEntFileHeader(FILE *file) {
     Writes .ent files used by .bsp
 */
 void WriteEntFiles(const char *path) {
+
+    Sys_Printf("--- Writing .ent files ---\n");
+
     // env
     if (Titanfall::Ent::env.size()) {
         auto name = StringOutputStream(1024)(PathExtensionless(path), "_env.ent");
-        Sys_Printf("Writing %s... ", name.c_str());
+        Sys_FPrintf(SYS_VRB, "Writing _env.ent\n");
 
         FILE *file = SafeOpenWrite(name);
         WriteEntFileHeader(file);
         SafeWrite(file, Titanfall::Ent::env.data(), Titanfall::Ent::env.size());
         fclose(file);
-
-        Sys_Printf("Success!\n");
     }
     // fx
     if (Titanfall::Ent::fx.size()) {
         auto name = StringOutputStream(1024)(PathExtensionless(path), "_fx.ent");
-        Sys_Printf("Writing %s... ", name.c_str());
+        Sys_FPrintf(SYS_VRB, "Writing _fx.ent\n");
 
         FILE *file = SafeOpenWrite(name);
         WriteEntFileHeader(file);
         SafeWrite(file, Titanfall::Ent::fx.data(), Titanfall::Ent::fx.size());
         fclose(file);
-
-        Sys_Printf("Success!\n");
     }
     // script
     if (Titanfall::Ent::script.size()) {
         auto name = StringOutputStream(1024)(PathExtensionless(path), "_script.ent");
-        Sys_Printf("Writing %s... ", name.c_str());
+        Sys_FPrintf(SYS_VRB, "Writing _script.ent\n");
 
         FILE *file = SafeOpenWrite(name);
         WriteEntFileHeader(file);
         SafeWrite(file, Titanfall::Ent::script.data(), Titanfall::Ent::script.size());
         fclose(file);
-
-        Sys_Printf("Success!\n");
     }
     // snd
     if (Titanfall::Ent::snd.size()) {
         auto name = StringOutputStream(1024)(PathExtensionless(path), "_snd.ent");
-        Sys_Printf("Writing %s... ", name.c_str());
+        Sys_FPrintf(SYS_VRB, "Writing _snd.ent\n");
 
         FILE *file = SafeOpenWrite(name);
         WriteEntFileHeader(file);
         SafeWrite(file, Titanfall::Ent::snd.data(), Titanfall::Ent::snd.size());
         fclose(file);
-
-        Sys_Printf("Success!\n");
     }
     // spawn
     if (Titanfall::Ent::spawn.size()) {
         auto name = StringOutputStream(1024)(PathExtensionless(path), "_spawn.ent");
-        Sys_Printf("Writing %s... ", name.c_str());
+        Sys_FPrintf(SYS_VRB, "Writing _spawn.ent\n");
 
         FILE *file = SafeOpenWrite(name);
         WriteEntFileHeader(file);
         SafeWrite(file, Titanfall::Ent::spawn.data(), Titanfall::Ent::spawn.size());
         fclose(file);
-
-        Sys_Printf("Success!\n");
     }
     // extra
     // has contents only when -onlyentities argument is used, doesn't get referenced by the BSP!
     if (Titanfall::Ent::extra.size()) {
         auto name = StringOutputStream(1024)(PathExtensionless(path), "_extra.ent");
-        Sys_Printf("Writing %s... ", name.c_str());
+        Sys_FPrintf(SYS_VRB, "Writing _extra.ent\n");
 
         FILE* file = SafeOpenWrite(name);
         WriteEntFileHeader(file);
         SafeWrite(file, Titanfall::Ent::extra.data(), Titanfall::Ent::extra.size());
         fclose(file);
-
-        Sys_Printf("Success!\n");
     }
 }
 

@@ -67,10 +67,10 @@ void ApexLegends::EmitVisTree() {
     writes the mesh list to the bsp
 */
 void ApexLegends::EmitMeshes(const entity_t &e) {
-    Sys_Printf("  EmitMeshes: %zu meshes from Shared::meshes\n", Shared::meshes.size());
-
     // Setup lightmaps first so we can get UV coordinates for lit vertices
     ApexLegends::SetupSurfaceLightmaps();
+
+    Sys_FPrintf(SYS_VRB, "--- Emitting Meshes ---\n");
 
     int meshIndex = 0;
     for (const Shared::Mesh_t &mesh : Shared::meshes) {
@@ -167,7 +167,11 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
         meshIndex++;
     }
 
-    Sys_Printf("  EmitMeshes: %zu meshes written to ApexLegends::Bsp::meshes\n", ApexLegends::Bsp::meshes.size());
+    Sys_FPrintf(SYS_VRB, "  Emitted %zu meshes\n", ApexLegends::Bsp::meshes.size());
+    Sys_FPrintf(SYS_VRB, "    VertexUnlit: %zu vertices\n", ApexLegends::Bsp::vertexUnlitVertices.size());
+    Sys_FPrintf(SYS_VRB, "    VertexLitFlat: %zu vertices\n", ApexLegends::Bsp::vertexLitFlatVertices.size());
+    Sys_FPrintf(SYS_VRB, "    VertexLitBump: %zu vertices\n", ApexLegends::Bsp::vertexLitBumpVertices.size());
+    Sys_FPrintf(SYS_VRB, "    VertexUnlitTS: %zu vertices\n", ApexLegends::Bsp::vertexUnlitTSVertices.size());
 }
 
 
@@ -199,9 +203,6 @@ uint32_t ApexLegends::EmitTextureData(shaderInfo_t shader) {
 
     // Wasn't already saved, save it
     index = ApexLegends::Bsp::textureData.size();
-
-    // Debug: log texture emission
-    Sys_Printf("  Emitting texture: %s (flags: 0x%X)\n", tex.c_str(), shader.surfaceFlags);
 
     // Add to Table
     StringOutputStream data;
@@ -452,7 +453,7 @@ void ApexLegends::EmitStaticProp(entity_t &e) {
         return;
     }
 
-    Sys_Printf("Emitting static prop: %s\n", model);
+    Sys_FPrintf(SYS_VRB, "  Emitting static prop: %s\n", model);
 
     for(std::size_t i = 0; i < Titanfall::Bsp::gameLumpPaths.size(); i++) {
         Titanfall::GameLumpPath_t &path = Titanfall::Bsp::gameLumpPaths.at(i);

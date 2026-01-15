@@ -850,25 +850,16 @@ namespace {
                 g_collisionTris.push_back(tri);
             }
         }
-
-        if (skippedDegenerate > 0) {
-            Sys_FPrintf(SYS_VRB, "  Filtered %d degenerate triangles (%.1f%%)\n",
-                       skippedDegenerate, 100.0f * skippedDegenerate / totalTris);
-        }
-        Sys_Printf("  Collected %zu collision triangles (from %d total)\n",
-                   g_collisionTris.size(), totalTris);
     }
-
 }
 
 void ApexLegends::EmitBVHNode() {
-    Sys_FPrintf(SYS_VRB, "Building BVH4 collision tree...\n");
+    Sys_FPrintf(SYS_VRB, "--- Emitting Collision BVH ---\n");
 
     if (ApexLegends::Bsp::collisionVertices.empty()) {
         ApexLegends::CollisionVertex_t dummy;
         dummy.x = dummy.y = dummy.z = 0.0f;
         ApexLegends::Bsp::collisionVertices.push_back(dummy);
-        Sys_FPrintf(SYS_VRB, "  Reserved collision vertex index 0 with dummy (0,0,0)\n");
     }
 
     ApexLegends::Model_t& model = ApexLegends::Bsp::models.back();
@@ -929,10 +920,6 @@ void ApexLegends::EmitBVHNode() {
     model.vertexIndex = renderVertexCount + g_modelCollisionVertexBase;
     model.bvhFlags = 0;
 
-    Sys_FPrintf(SYS_VRB, "  BVH origin: (%.1f, %.1f, %.1f), scale: %g, vertexBase: %u (render: %u + coll: %u)\n",
-               center.x(), center.y(), center.z(), bvhScale,
-               model.vertexIndex, renderVertexCount, g_modelCollisionVertexBase);
-
     std::vector<int> allTriIndices(g_collisionTris.size());
     std::iota(allTriIndices.begin(), allTriIndices.end(), 0);
 
@@ -955,10 +942,9 @@ void ApexLegends::EmitBVHNode() {
     int rootNodeIndex = EmitBVH4Nodes(rootBuildIndex, leafDataOffset);
     (void)rootNodeIndex;
 
-    Sys_FPrintf(SYS_VRB, "  Emitted %zu BVH nodes, %zu leaf data entries, %zu packed vertices\n",
-               ApexLegends::Bsp::bvhNodes.size() - model.bvhNodeIndex,
-               ApexLegends::Bsp::bvhLeafDatas.size() - model.bvhLeafIndex,
-               ApexLegends::Bsp::collisionVertices.size() - g_modelCollisionVertexBase);
+    Sys_FPrintf(SYS_VRB, "  Emitted %zu BVH nodes\n", ApexLegends::Bsp::bvhNodes.size() - model.bvhNodeIndex);
+    Sys_FPrintf(SYS_VRB, "  Emitted %zu BVH leaf data entries\n", ApexLegends::Bsp::bvhLeafDatas.size() - model.bvhLeafIndex);
+    Sys_FPrintf(SYS_VRB, "  Emitted %zu collision vertices\n", ApexLegends::Bsp::collisionVertices.size() - g_modelCollisionVertexBase);
 
     g_bvhBuildNodes.clear();
     g_collisionTris.clear();

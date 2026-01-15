@@ -93,26 +93,33 @@ namespace LightmapBuild {
 
 /*
     InitLightmapAtlas
-    Initialize a new lightmap atlas page with bright neutral lighting
+    Initialize a new lightmap atlas page with neutral base lighting.
+    
+    The engine applies emit_skyambient and emit_skylight dynamically from
+    worldLights lump, so lightmaps should be neutral - not pre-baked with
+    ambient color. This allows _ambient/_light changes in .ent files to
+    take effect immediately in-game.
 */
 static void InitLightmapAtlas() {
     ApexLegends::LightmapPage_t page;
     page.width = MAX_LIGHTMAP_WIDTH;
     page.height = MAX_LIGHTMAP_HEIGHT;
     
-    // Initialize with bright neutral lighting (not black!)
-    // This ensures any unused texels still look properly lit
+    // Use neutral gray - engine adds dynamic ambient/sun on top
+    // This is the base that indirect/bounced lighting would add to
+    uint8_t neutralValue = 128;  // Neutral gray (0.5 after gamma)
+    
     size_t dataSize = page.width * page.height * 8;
     page.pixels.resize(dataSize);
     for (size_t i = 0; i < dataSize; i += 8) {
-        // Bright neutral HDR value (gamma-corrected white/gray)
-        page.pixels[i + 0] = 180;  // R - bright gray
-        page.pixels[i + 1] = 180;  // G
-        page.pixels[i + 2] = 180;  // B
+        // Neutral base - dynamic lighting adds on top
+        page.pixels[i + 0] = neutralValue;
+        page.pixels[i + 1] = neutralValue;
+        page.pixels[i + 2] = neutralValue;
         page.pixels[i + 3] = 255;  // A
-        page.pixels[i + 4] = 180;  // R HDR
-        page.pixels[i + 5] = 180;  // G HDR
-        page.pixels[i + 6] = 180;  // B HDR
+        page.pixels[i + 4] = neutralValue;
+        page.pixels[i + 5] = neutralValue;
+        page.pixels[i + 6] = neutralValue;
         page.pixels[i + 7] = 128;  // Neutral multiplier
     }
     ApexLegends::Bsp::lightmapPages.push_back(page);
@@ -304,27 +311,39 @@ void ApexLegends::SetupSurfaceLightmaps() {
         meshIndex++;
     }
     
-    Sys_Printf("  Allocated %d surfaces to %d lightmap pages\n", 
-               litSurfaces, (int)ApexLegends::Bsp::lightmapPages.size());
+    Sys_Printf("     %9d lit surfaces\n", litSurfaces);
+    Sys_Printf("     %9d lightmap pages\n", (int)ApexLegends::Bsp::lightmapPages.size());
 }
 
 
 /*
     ComputeLightmapLighting
-    Ray trace from worldlights to compute lighting for each texel
+    Compute lighting for each texel.
+    
+    IMPORTANT: emit_skyambient and emit_skylight are applied DYNAMICALLY by the engine
+    from the worldLights lump (0x36). Changing _ambient/_light in the .ent file updates
+    the map in real-time because the engine reads these values at runtime.
+    
+    Lightmaps should only contain:
+    - Indirect/bounced lighting (requires full radiosity, not implemented)
+    - Static point/spot light contributions that aren't realtime
+    
+    For now, we provide a neutral base that the engine's dynamic lighting adds to.
 */
 void ApexLegends::ComputeLightmapLighting() {
     Sys_Printf("--- ComputeLightmapLighting ---\n");
     
+    // NOTE: We do NOT bake emit_skyambient or emit_skylight here!
+    // The engine applies these dynamically from worldLights lump.
+    // This is why changing _ambient/_light in .ent files works on official maps.
+    
     if (ApexLegends::Bsp::worldLights.empty()) {
-        Sys_Printf("  No worldlights, using ambient lighting\n");
+        Sys_Printf("  No worldlights found\n");
     }
     
     int totalTexels = 0;
     
     for (SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
-        const Shared::Mesh_t &mesh = Shared::meshes[surf.meshIndex];
-        
         // For each texel
         for (int y = 0; y < surf.rect.height; y++) {
             for (int x = 0; x < surf.rect.width; x++) {
@@ -339,41 +358,68 @@ void ApexLegends::ComputeLightmapLighting() {
                 // Offset slightly along normal to avoid self-intersection
                 worldPos = worldPos + surf.plane.normal() * 0.1f;
                 
-                // Accumulate lighting from all worldlights
-                Vector3 color(0, 0, 0);
+                // Start with neutral base - engine adds dynamic ambient/sun on top
+                // A small base value prevents completely black areas
+                Vector3 color(0.1f, 0.1f, 0.1f);
                 
+                // Only bake NON-realtime static lights (point lights, spotlights)
+                // Skip emit_skyambient and emit_skylight - they're dynamic!
                 for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
+                    // Skip sky lighting - applied dynamically by engine
+                    if (light.type == emit_skyambient || light.type == emit_skylight) {
+                        continue;
+                    }
+                    
+                    // Skip realtime lights - they're computed per-frame
+                    if (light.flags & WORLDLIGHT_FLAG_REALTIME) {
+                        continue;
+                    }
+                    
                     Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
-                    // intensity is the RGB color/intensity combined
                     Vector3 lightColor = light.intensity;
                     
-                    if (light.type == emit_skylight) {
-                        // Directional sun light
-                        Vector3 sunDir = light.normal;
-                        float NdotL = vector3_dot(surf.plane.normal(), -sunDir);
-                        
-                        if (NdotL > 0) {
-                            // Simple sun contribution (no shadow tracing for now)
-                            color = color + lightColor * NdotL;
-                        }
-                    } else if (light.type == emit_point) {
-                        // Point light
+                    if (light.type == emit_point) {
+                        // Static point light
                         Vector3 toLight = lightPos - worldPos;
                         float dist = vector3_length(toLight);
-                        Vector3 lightDir = toLight / dist;
+                        if (dist < 0.001f) continue;
                         
+                        Vector3 lightDir = toLight / dist;
                         float NdotL = vector3_dot(surf.plane.normal(), lightDir);
-                        if (NdotL > 0 && dist > 0) {
-                            // Inverse square falloff
-                            float atten = 1.0f / (1.0f + dist * dist * 0.001f);
-                            color = color + lightColor * NdotL * atten;
+                        
+                        if (NdotL > 0) {
+                            float atten = 1.0f;
+                            if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+                                atten = 1.0f / (light.constant_attn + 
+                                               light.linear_attn * dist + 
+                                               light.quadratic_attn * dist * dist);
+                            } else {
+                                atten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                            }
+                            color = color + lightColor * NdotL * atten * 100.0f;
+                        }
+                    } else if (light.type == emit_spotlight) {
+                        // Static spotlight
+                        Vector3 toLight = lightPos - worldPos;
+                        float dist = vector3_length(toLight);
+                        if (dist < 0.001f) continue;
+                        
+                        Vector3 lightDir = toLight / dist;
+                        float NdotL = vector3_dot(surf.plane.normal(), lightDir);
+                        
+                        if (NdotL > 0) {
+                            float spotDot = vector3_dot(-lightDir, light.normal);
+                            if (spotDot > light.stopdot2) {
+                                float spotAtten = 1.0f;
+                                if (spotDot < light.stopdot) {
+                                    spotAtten = (spotDot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                                }
+                                float distAtten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                                color = color + lightColor * NdotL * spotAtten * distAtten * 100.0f;
+                            }
                         }
                     }
                 }
-                
-                // Add ambient - higher value prevents completely dark areas
-                // This is a base ambient that ensures surfaces are always visible
-                color = color + Vector3(0.25f, 0.25f, 0.25f);
                 
                 // Store in luxel array
                 surf.luxels[y * surf.rect.width + x] = color;
@@ -382,7 +428,7 @@ void ApexLegends::ComputeLightmapLighting() {
         }
     }
     
-    Sys_Printf("  Computed lighting for %d texels\n", totalTexels);
+    Sys_Printf("     %9d texels computed\n", totalTexels);
 }
 
 
@@ -391,41 +437,57 @@ void ApexLegends::ComputeLightmapLighting() {
     Encode a floating-point RGB color to the 8-byte HDR format
     
     Based on reverse engineering of Apex engine's lightmap format.
-    Format appears to be RGBE-style or similar HDR encoding.
+    The 8-byte format appears to be:
+    - Bytes 0-2: Base RGB color (gamma corrected, sRGB)
+    - Byte 3: Alpha (always 255)
+    - Bytes 4-6: HDR/indirect RGB (can differ from base for bounce lighting)
+    - Byte 7: HDR exponent/multiplier (128 = 1.0x, higher = brighter)
     
-    The engine expects reasonably bright values - minimum ambient of ~0.5
-    prevents surfaces from appearing completely dark.
+    Input color is in linear HDR space from ComputeLightmapLighting()
+    which already includes ambient from light_environment.
 */
 static void EncodeHDRTexel(const Vector3 &color, uint8_t *out) {
-    // Add minimum ambient to prevent completely dark areas
-    // This ensures even unlit areas have some visibility
-    constexpr float MIN_AMBIENT = 0.1f;
+    // Input color already has ambient baked in from ComputeLightmapLighting
+    // Just need to tonemap and encode
     
-    // Clamp and scale color values with minimum ambient
-    float r = std::max(MIN_AMBIENT, std::min(color.x() + MIN_AMBIENT, 10.0f));
-    float g = std::max(MIN_AMBIENT, std::min(color.y() + MIN_AMBIENT, 10.0f));
-    float b = std::max(MIN_AMBIENT, std::min(color.z() + MIN_AMBIENT, 10.0f));
+    // Find the maximum component to determine if we need HDR scaling
+    float maxComponent = std::max({color.x(), color.y(), color.z(), 0.001f});
     
-    // Simple encoding: first 3 bytes are base color (gamma corrected)
-    // remaining bytes appear to be additional HDR data
+    // HDR exponent: if color exceeds 1.0, we need to scale up the multiplier
+    // Multiplier of 128 = 1.0x, 255 = ~2.0x, 64 = 0.5x
+    float hdrScale = 1.0f;
+    uint8_t hdrExponent = 128;  // Default 1.0x
     
-    // Apply gamma correction (2.2) 
+    if (maxComponent > 1.0f) {
+        // Need HDR - scale color down and boost exponent
+        hdrScale = 1.0f / maxComponent;
+        // Map maxComponent to exponent: 128 + log2(maxComponent) * 32
+        // This gives us ~4 stops of HDR range
+        float logScale = std::log2(maxComponent);
+        hdrExponent = (uint8_t)std::min(255.0f, 128.0f + logScale * 32.0f);
+    }
+    
+    // Apply HDR scaling and clamp to [0, 1]
+    float r = std::min(1.0f, std::max(0.0f, color.x() * hdrScale));
+    float g = std::min(1.0f, std::max(0.0f, color.y() * hdrScale));
+    float b = std::min(1.0f, std::max(0.0f, color.z() * hdrScale));
+    
+    // Apply gamma correction (linear to sRGB)
     r = std::pow(r, 1.0f / 2.2f);
     g = std::pow(g, 1.0f / 2.2f);
     b = std::pow(b, 1.0f / 2.2f);
     
-    // Scale to 0-255, clamping to avoid overflow
-    out[0] = (uint8_t)std::min(255.0f, r * 255.0f);
-    out[1] = (uint8_t)std::min(255.0f, g * 255.0f);
-    out[2] = (uint8_t)std::min(255.0f, b * 255.0f);
-    out[3] = 255;  // Alpha or exponent
+    // Scale to 0-255
+    out[0] = (uint8_t)(r * 255.0f);
+    out[1] = (uint8_t)(g * 255.0f);
+    out[2] = (uint8_t)(b * 255.0f);
+    out[3] = 255;  // Alpha
     
-    // Second half: HDR/bounce lighting data
-    // Copy same values for consistent lighting
+    // HDR/indirect lighting (same as direct for now, could add bounce)
     out[4] = out[0];
     out[5] = out[1];
     out[6] = out[2];
-    out[7] = 128;  // Neutral HDR multiplier
+    out[7] = hdrExponent;  // HDR multiplier
 }
 
 
@@ -436,13 +498,14 @@ static void EncodeHDRTexel(const Vector3 &color, uint8_t *out) {
     Note: SetupSurfaceLightmaps() must be called before this, which happens
     in EmitMeshes() to ensure UV coordinates are available during vertex emission.
 */
-void ApexLegends::EmitLightmaps() {
-    Sys_Printf("--- EmitLightmaps ---\n");
-    
+void ApexLegends::EmitLightmaps() 
+{
     // Compute lighting if we have surfaces allocated
     if (!LightmapBuild::surfaces.empty()) {
         ComputeLightmapLighting();
     }
+
+    Sys_Printf("--- EmitLightmaps ---\n");
     
     // If no lightmaps were generated, create a minimal stub
     if (ApexLegends::Bsp::lightmapPages.empty()) {
@@ -457,22 +520,19 @@ void ApexLegends::EmitLightmaps() {
         header.height = 256;
         ApexLegends::Bsp::lightmapHeaders.push_back(header);
         
-        // Create matching data with BRIGHT neutral lighting (not black!)
-        // 256 * 256 * 8 = 524288 bytes
-        // Each 8-byte texel should be bright white/neutral to avoid dark surfaces
+        // Neutral stub lightmap - engine applies dynamic ambient/sun from worldLights
+        // This allows _ambient/_light changes in .ent files to work immediately
+        uint8_t neutralValue = 128;  // Neutral gray
         size_t dataSize = 256 * 256 * 8;
         ApexLegends::Bsp::lightmapDataSky.resize(dataSize);
         for (size_t i = 0; i < dataSize; i += 8) {
-            // Bright neutral HDR value (gamma-corrected white)
-            // First 4 bytes: base color RGBA
-            ApexLegends::Bsp::lightmapDataSky[i + 0] = 200;  // R - bright but not pure white
-            ApexLegends::Bsp::lightmapDataSky[i + 1] = 200;  // G
-            ApexLegends::Bsp::lightmapDataSky[i + 2] = 200;  // B
+            ApexLegends::Bsp::lightmapDataSky[i + 0] = neutralValue;
+            ApexLegends::Bsp::lightmapDataSky[i + 1] = neutralValue;
+            ApexLegends::Bsp::lightmapDataSky[i + 2] = neutralValue;
             ApexLegends::Bsp::lightmapDataSky[i + 3] = 255;  // A
-            // Second 4 bytes: HDR multiplier/bounce data
-            ApexLegends::Bsp::lightmapDataSky[i + 4] = 200;  // R HDR
-            ApexLegends::Bsp::lightmapDataSky[i + 5] = 200;  // G HDR
-            ApexLegends::Bsp::lightmapDataSky[i + 6] = 200;  // B HDR
+            ApexLegends::Bsp::lightmapDataSky[i + 4] = neutralValue;
+            ApexLegends::Bsp::lightmapDataSky[i + 5] = neutralValue;
+            ApexLegends::Bsp::lightmapDataSky[i + 6] = neutralValue;
             ApexLegends::Bsp::lightmapDataSky[i + 7] = 128;  // Neutral multiplier
         }
         
@@ -524,9 +584,8 @@ void ApexLegends::EmitLightmaps() {
     // For now, leave empty since we don't generate RTL data
     ApexLegends::Bsp::lightmapDataRTLPage.clear();
     
-    Sys_Printf("  Emitted %zu lightmap pages (%zu bytes)\n",
-               ApexLegends::Bsp::lightmapHeaders.size(),
-               ApexLegends::Bsp::lightmapDataSky.size());
+    Sys_Printf("     %9zu lightmap pages\n", ApexLegends::Bsp::lightmapHeaders.size());
+    Sys_Printf("     %9zu bytes data\n", ApexLegends::Bsp::lightmapDataSky.size());
 }
 
 /*
