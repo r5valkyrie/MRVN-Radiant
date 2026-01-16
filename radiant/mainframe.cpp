@@ -898,6 +898,7 @@ void create_file_menu( QMenuBar *menubar ){
 //	create_menu_item_with_mnemonic( menu, "&Refresh models", "RefreshReferences" );
 //	menu->addSeparator();
 	create_menu_item_with_mnemonic( menu, "&Pointfile", "TogglePointfile" );
+	create_menu_item_with_mnemonic( menu, "&Light Probes", "ToggleLightProbes" );
 	menu->addSeparator();
 	MRU_constructMenu( menu );
 	menu->addSeparator();

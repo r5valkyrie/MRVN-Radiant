@@ -1759,6 +1759,78 @@ static bool IsPositionInsideSolid(const Vector3 &pos, float testDist = 32.0f) {
 }
 
 /*
+    GetDistanceToNearestSurface
+    Returns approximate distance to nearest geometry in any direction.
+    Also returns push direction to move away from surfaces.
+*/
+static float GetDistanceToNearestSurface(const Vector3 &pos, Vector3 &outPushDir) {
+    float minDist = FLT_MAX;
+    outPushDir = Vector3(0, 0, 0);
+    
+    // Test cardinal directions
+    const Vector3 testDirs[6] = {
+        Vector3(1, 0, 0), Vector3(-1, 0, 0),
+        Vector3(0, 1, 0), Vector3(0, -1, 0),
+        Vector3(0, 0, 1), Vector3(0, 0, -1)
+    };
+    
+    for (int i = 0; i < 6; i++) {
+        const Vector3 &dir = testDirs[i];
+        float offset = 2.0f;
+        
+        // Use Embree for precise distance if available
+        if (EmbreeTrace::IsSceneReady()) {
+            float hitDist;
+            Vector3 hitNormal;
+            int meshIndex;
+            if (EmbreeTrace::TraceRay(pos + dir * offset, dir, 512.0f, hitDist, hitNormal, meshIndex)) {
+                if (hitDist < minDist) {
+                    minDist = hitDist;
+                    outPushDir = dir * -1.0f;  // Push away from nearest surface
+                }
+            }
+        } else {
+            // Fallback: binary search to find approximate distance
+            for (float testDist = 16.0f; testDist <= 512.0f; testDist *= 2.0f) {
+                if (TraceRayAgainstMeshes(pos + dir * offset, dir, testDist)) {
+                    if (testDist < minDist) {
+                        minDist = testDist;
+                        outPushDir = dir * -1.0f;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    return minDist;
+}
+
+/*
+    PushProbeAwayFromSurfaces
+    Move probe position to maintain minimum distance from geometry.
+*/
+static Vector3 PushProbeAwayFromSurfaces(const Vector3 &pos, float minDistance) {
+    Vector3 result = pos;
+    
+    // Iteratively push away from surfaces
+    for (int iter = 0; iter < 4; iter++) {
+        Vector3 pushDir;
+        float nearestDist = GetDistanceToNearestSurface(result, pushDir);
+        
+        if (nearestDist >= minDistance) {
+            break;  // Far enough from surfaces
+        }
+        
+        // Push position away from nearest surface
+        float pushAmount = minDistance - nearestDist + 8.0f;  // Extra padding
+        result = result + pushDir * pushAmount;
+    }
+    
+    return result;
+}
+
+/*
     GenerateProbePositionsVoronoi
     Generate light probe positions using Voronoi-based adaptive placement.
     
@@ -1817,12 +1889,20 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     std::vector<Vector3> candidatePositions;
     candidatePositions.reserve(geometrySamples.size());
     
+    constexpr float MIN_SURFACE_DISTANCE = 72.0f;  // Minimum distance from any surface
+    
     for (const Vector3 &sample : geometrySamples) {
         // Offset sample upward (probes should be in playable space, not embedded in geometry)
-        Vector3 probePos = sample + Vector3(0, 0, 64.0f);
+        Vector3 probePos = sample + Vector3(0, 0, 96.0f);  // Start higher
         
         // Check if this position is valid (not inside solid)
-        if (!IsPositionInsideSolid(probePos, 48.0f)) {
+        if (IsPositionInsideSolid(probePos, 48.0f)) continue;
+        
+        // Push probe away from nearby surfaces to ensure minimum distance
+        probePos = PushProbeAwayFromSurfaces(probePos, MIN_SURFACE_DISTANCE);
+        
+        // Re-check validity after pushing
+        if (!IsPositionInsideSolid(probePos, 32.0f)) {
             candidatePositions.push_back(probePos);
         }
     }
@@ -1963,9 +2043,17 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     std::vector<Vector3> finalPositions;
     finalPositions.reserve(centroids.size());
     
-    for (const Vector3 &centroid : centroids) {
+    constexpr float FINAL_MIN_SURFACE_DISTANCE = 64.0f;
+    
+    for (Vector3 centroid : centroids) {
         // Skip if inside solid
         if (IsPositionInsideSolid(centroid, 32.0f)) continue;
+        
+        // Push centroid away from surfaces
+        centroid = PushProbeAwayFromSurfaces(centroid, FINAL_MIN_SURFACE_DISTANCE);
+        
+        // Re-check if still valid after pushing
+        if (IsPositionInsideSolid(centroid, 24.0f)) continue;
         
         // Skip if too close to an existing probe
         bool tooClose = false;
@@ -1980,6 +2068,80 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
         if (!tooClose) {
             finalPositions.push_back(centroid);
         }
+    }
+    
+    // =========================================================================
+    // Step 6: Add probes at shadow/light transition boundaries
+    // =========================================================================
+    Sys_Printf("     Adding probes at shadow boundaries...\n");
+    
+    std::vector<Vector3> shadowBoundaryProbes;
+    
+    // For each final probe, test if there are significant lighting differences
+    // at nearby positions - this indicates a shadow boundary that needs more probes
+    for (size_t i = 0; i < finalPositions.size(); i++) {
+        const Vector3 &pos = finalPositions[i];
+        
+        // Test visibility to sky in 8 horizontal directions
+        int sunlitCount = 0;
+        const float testDist = 8192.0f;
+        
+        for (int dir = 0; dir < 8; dir++) {
+            float angle = dir * M_PI / 4.0f;
+            Vector3 testDir(std::cos(angle) * 0.5f, std::sin(angle) * 0.5f, 0.707f);  // 45 degree upward
+            
+            Vector3 rayOrigin = pos + testDir * 2.0f;
+            if (!TraceRayAgainstMeshes(rayOrigin, testDir, testDist)) {
+                sunlitCount++;
+            }
+        }
+        
+        // If partially occluded (some rays hit, some don't), we're near a shadow boundary
+        if (sunlitCount > 0 && sunlitCount < 8) {
+            // Add extra probes nearby to capture the gradient
+            for (int dir = 0; dir < 4; dir++) {
+                float angle = dir * M_PI / 2.0f;
+                Vector3 offset(std::cos(angle) * 64.0f, std::sin(angle) * 64.0f, 0);
+                Vector3 newPos = pos + offset;
+                
+                // Validate new position
+                if (IsPositionInsideSolid(newPos, 24.0f)) continue;
+                
+                // Push away from surfaces
+                newPos = PushProbeAwayFromSurfaces(newPos, FINAL_MIN_SURFACE_DISTANCE);
+                if (IsPositionInsideSolid(newPos, 16.0f)) continue;
+                
+                // Check distance from all existing probes
+                bool tooClose = false;
+                for (const Vector3 &existing : finalPositions) {
+                    Vector3 delta = newPos - existing;
+                    if (vector3_dot(delta, delta) < 48.0f * 48.0f) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                for (const Vector3 &existing : shadowBoundaryProbes) {
+                    if (tooClose) break;
+                    Vector3 delta = newPos - existing;
+                    if (vector3_dot(delta, delta) < 48.0f * 48.0f) {
+                        tooClose = true;
+                    }
+                }
+                
+                if (!tooClose) {
+                    shadowBoundaryProbes.push_back(newPos);
+                }
+            }
+        }
+    }
+    
+    // Add shadow boundary probes to final list
+    for (const Vector3 &sbp : shadowBoundaryProbes) {
+        finalPositions.push_back(sbp);
+    }
+    
+    if (!shadowBoundaryProbes.empty()) {
+        Sys_Printf("     Added %zu shadow boundary probes\n", shadowBoundaryProbes.size());
     }
     
     probePositions = std::move(finalPositions);
@@ -2209,6 +2371,46 @@ void ApexLegends::EmitLightProbes() {
     Sys_Printf("     %9zu light probes\n", ApexLegends::Bsp::lightprobes.size());
     Sys_Printf("     %9zu probe references\n", ApexLegends::Bsp::lightprobeReferences.size());
     Sys_Printf("     %9zu tree nodes\n", ApexLegends::Bsp::lightprobeTree.size());
+    
+    // Export probe positions for visualization in Radiant
+    if (!ApexLegends::Bsp::lightprobeReferences.empty()) {
+        // Write .probes file (simple XYZ format, one probe per line)
+        const auto probesFilename = StringStream(source, ".probes");
+        FILE *probesFile = fopen(probesFilename, "w");
+        if (probesFile) {
+            Sys_Printf("     Writing probe positions to %s\n", probesFilename.c_str());
+            
+            // Header comment
+            fprintf(probesFile, "# Light probe positions exported by remap\n");
+            fprintf(probesFile, "# Format: X Y Z [R G B] (RGB is average ambient color, optional)\n");
+            fprintf(probesFile, "# Total probes: %zu\n", ApexLegends::Bsp::lightprobeReferences.size());
+            
+            for (size_t i = 0; i < ApexLegends::Bsp::lightprobeReferences.size(); i++) {
+                const LightProbeRef_t &ref = ApexLegends::Bsp::lightprobeReferences[i];
+                
+                // Get the probe's ambient color from spherical harmonics (DC term)
+                float r = 0.5f, g = 0.5f, b = 0.5f;  // default gray
+                if (ref.lightProbeIndex < ApexLegends::Bsp::lightprobes.size()) {
+                    const LightProbe_v50_t &probe = ApexLegends::Bsp::lightprobes[ref.lightProbeIndex];
+                    // SH DC term is the average ambient - extract from coefficient 0
+                    // ambientSH[channel][coefficient] where channel 0=R, 1=G, 2=B
+                    // The DC coefficient (index 0) represents average irradiance
+                    r = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[0][0] / 32767.0f));
+                    g = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[1][0] / 32767.0f));
+                    b = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[2][0] / 32767.0f));
+                }
+                
+                fprintf(probesFile, "%.2f %.2f %.2f %.3f %.3f %.3f\n", 
+                        ref.origin[0], ref.origin[1], ref.origin[2],
+                        r, g, b);
+            }
+            
+            fclose(probesFile);
+            Sys_Printf("     Probe positions exported for Radiant visualization\n");
+        } else {
+            Sys_Warning("Could not write probe file: %s\n", probesFilename.c_str());
+        }
+    }
 }
 
 
