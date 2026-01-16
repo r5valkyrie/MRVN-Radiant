@@ -357,16 +357,30 @@ Shared::visNode_t Shared::MakeVisTree(std::vector<Shared::visRef_t> refs, float 
         }
     }
 
-    if (bestCost >= parentCost) {
-        if (refs.size() > 255) {
-            Sys_FPrintf(SYS_ERR, "CellAABBNode references more than 255 refs\n");
-        }
-
+    // If cost doesn't improve AND we have 255 or fewer refs, we can stop splitting
+    if (bestCost >= parentCost && refs.size() <= 255) {
         for (Shared::visRef_t &ref : refs) {
             node.refs.emplace_back(ref);
         }
-
         return node;
+    }
+    
+    // If we have more than 255 refs, we MUST split even if cost doesn't improve
+    // Force a median split on the longest axis if SAH didn't find a good split
+    if (bestCost >= parentCost && refs.size() > 255) {
+        // Find longest axis
+        Vector3 extent = minmax.maxs - minmax.mins;
+        bestAxis = 0;
+        if (extent[1] > extent[bestAxis]) bestAxis = 1;
+        if (extent[2] > extent[bestAxis]) bestAxis = 2;
+        
+        // Use median position along that axis
+        std::vector<float> positions;
+        for (const Shared::visRef_t &ref : refs) {
+            positions.push_back((ref.minmax.mins[bestAxis] + ref.minmax.maxs[bestAxis]) * 0.5f);
+        }
+        std::sort(positions.begin(), positions.end());
+        bestPos = positions[positions.size() / 2];
     }
 
     MinMax  nodes[2];

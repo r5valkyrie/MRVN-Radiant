@@ -20,7 +20,7 @@ This guide covers how to build MRVN-Radiant from source on Windows and Linux.
    cd MRVN-Radiant
    ```
 
-2. Download dependencies from [MRVN-WinDeps](https://github.com/MRVN-Radiant/MRVN-WinDeps) (latest release):
+2. Download dependencies from [MRVN-WinDeps](https://github.com/r5valkyrie/MRVN-WinDeps) (latest release):
    - Extract `windeps.7z` into the repository root (so `windeps/` is next to `CMakeLists.txt`)
    - Extract **one** of the following into the `install/` folder:
      - `install.7z` — for Release builds

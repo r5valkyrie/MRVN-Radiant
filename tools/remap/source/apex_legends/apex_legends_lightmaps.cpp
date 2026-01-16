@@ -38,6 +38,7 @@
 
 #include "../remap.h"
 #include "../bspfile_abstract.h"
+#include "../embree_trace.h"
 #include "apex_legends.h"
 #include <algorithm>
 #include <cmath>
@@ -930,7 +931,7 @@ void ApexLegends::ComputeLightmapLighting() {
     Sys_Printf("--- ComputeLightmapLighting ---\n");
     
     // Build edge sharing data for phong shading
-    BuildEdgeSharing();
+    //BuildEdgeSharing();
     
     // NOTE: We do NOT bake emit_skyambient or emit_skylight here!
     // The engine applies these dynamically from worldLights lump.
@@ -1518,9 +1519,8 @@ static bool RayTriangleIntersect(const Vector3 &rayOrigin, const Vector3 &rayDir
     return t > EPSILON;  // Hit in front of ray origin
 }
 
-// Trace a ray against all mesh geometry
-// Returns true if something is hit within maxDist
-static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, float maxDist) {
+// Fallback brute-force ray tracing (used when Embree is not available)
+static bool TraceRayAgainstMeshes_Fallback(const Vector3 &origin, const Vector3 &dir, float maxDist) {
     float closestHit = maxDist;
     
     for (const Shared::Mesh_t &mesh : Shared::meshes) {
@@ -1559,6 +1559,19 @@ static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, flo
     }
     
     return false;  // No hit, ray reaches destination
+}
+
+// Trace a ray against all mesh geometry
+// Uses Embree BVH acceleration when available, falls back to brute force
+// Returns true if something is hit within maxDist
+static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, float maxDist) {
+    // Use Embree if scene is ready (much faster - O(log n) vs O(n))
+    if (EmbreeTrace::IsSceneReady()) {
+        return EmbreeTrace::TestVisibility(origin, dir, maxDist);
+    }
+    
+    // Fallback to brute force ray tracing
+    return TraceRayAgainstMeshes_Fallback(origin, dir, maxDist);
 }
 
 // =============================================================================

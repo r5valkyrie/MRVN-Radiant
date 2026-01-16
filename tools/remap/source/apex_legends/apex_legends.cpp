@@ -24,6 +24,7 @@
 
 #include "../remap.h"
 #include "../bspfile_abstract.h"
+#include "../embree_trace.h"
 #include <ctime>
 #include <cstdio>
 #include <unordered_map>
@@ -245,8 +246,17 @@ void CompileR5BSPFile() {
     ApexLegends::EmitCubemaps();           // Cubemap sample positions
     ApexLegends::EmitShadowMeshes();
     ApexLegends::EmitShadowEnvironments();
+    
+    // Initialize Embree for accelerated ray tracing (used by lightmaps and light probes)
+    if (EmbreeTrace::Init()) {
+        EmbreeTrace::BuildScene(true);  // Build BVH, skip sky meshes for shadow rays
+    }
+    
     ApexLegends::EmitLightmaps();
     ApexLegends::EmitLightProbes();        // Light probes for ambient lighting
+    
+    // Clean up Embree resources
+    EmbreeTrace::Shutdown();
 
     //TODO: Implement real-time lightmaps
     //ApexLegends::EmitRealTimeLightmaps();  // Per-texel RTL data

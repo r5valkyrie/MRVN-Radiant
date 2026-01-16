@@ -1,3 +1,22 @@
+# Optional Embree support for accelerated ray tracing
+option(USE_EMBREE "Use Intel Embree for accelerated ray tracing" ON)
+
+if(USE_EMBREE)
+    # For Visual Studio, look in windeps folder first
+    if(MSVC)
+        set(embree_DIR "${CMAKE_SOURCE_DIR}/windeps/embree/lib/cmake/embree-4.4.0")
+    endif()
+    
+    find_package(embree 4 QUIET)
+    if(embree_FOUND)
+        message(STATUS "Embree found: ${embree_DIR}")
+        add_compile_definitions(USE_EMBREE)
+    else()
+        message(STATUS "Embree not found - using fallback ray tracing")
+        set(USE_EMBREE OFF)
+    endif()
+endif()
+
 add_executable(remap
                common/bitflags.h
                common/cmdlib.cpp
@@ -29,6 +48,8 @@ add_executable(remap
                common/unzip.h
                common/vfs.cpp
                common/vfs.h
+               source/embree_trace.cpp
+               source/embree_trace.h
                source/apex_legends/apex_legends_collisions.cpp
                source/apex_legends/apex_legends_lightmaps.cpp
                source/apex_legends/apex_legends_misc.cpp
@@ -122,5 +143,23 @@ target_link_libraries(remap
                       ${ZLIB_LIBRARIES}
                       ${LIBXML2_LIBRARIES}
                      )
+
+# Link Embree if available
+if(USE_EMBREE AND embree_FOUND)
+    target_link_libraries(remap embree)
+    
+    # Copy Embree DLLs to output directory (Windows only)
+    if(WIN32)
+        set(EMBREE_BIN_DIR "${CMAKE_SOURCE_DIR}/windeps/embree/bin")
+        add_custom_command(TARGET remap POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${EMBREE_BIN_DIR}/embree4.dll"
+                "${EMBREE_BIN_DIR}/tbb12.dll"
+                "${EMBREE_BIN_DIR}/tbbmalloc.dll"
+                $<TARGET_FILE_DIR:remap>
+            COMMENT "Copying Embree DLLs..."
+        )
+    endif()
+endif()
 
 set_target_properties(remap PROPERTIES LINK_FLAGS "-Wl,-rpath,./")
