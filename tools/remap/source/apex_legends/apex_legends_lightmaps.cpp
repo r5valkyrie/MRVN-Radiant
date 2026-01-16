@@ -723,6 +723,82 @@ static SkyEnvironment GetSkyEnvironment() {
     return sky;
 }
 
+// Simple ray-triangle intersection using Möller–Trumbore algorithm
+// Returns true if ray hits triangle, sets t to distance
+static bool RayTriangleIntersect(const Vector3 &rayOrigin, const Vector3 &rayDir,
+                                  const Vector3 &v0, const Vector3 &v1, const Vector3 &v2,
+                                  float &t) {
+    const float EPSILON = 0.0001f;
+    
+    Vector3 edge1 = v1 - v0;
+    Vector3 edge2 = v2 - v0;
+    Vector3 h = vector3_cross(rayDir, edge2);
+    float a = vector3_dot(edge1, h);
+    
+    if (a > -EPSILON && a < EPSILON)
+        return false;  // Ray parallel to triangle
+    
+    float f = 1.0f / a;
+    Vector3 s = rayOrigin - v0;
+    float u = f * vector3_dot(s, h);
+    
+    if (u < 0.0f || u > 1.0f)
+        return false;
+    
+    Vector3 q = vector3_cross(s, edge1);
+    float v = f * vector3_dot(rayDir, q);
+    
+    if (v < 0.0f || u + v > 1.0f)
+        return false;
+    
+    t = f * vector3_dot(edge2, q);
+    
+    return t > EPSILON;  // Hit in front of ray origin
+}
+
+// Trace a ray against all mesh geometry
+// Returns true if something is hit within maxDist
+static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, float maxDist) {
+    float closestHit = maxDist;
+    
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        // Skip sky surfaces - we want to detect hitting sky as "not blocked"
+        if (mesh.shaderInfo && (mesh.shaderInfo->compileFlags & C_SKY))
+            continue;
+        
+        // Quick bounds check
+        // Expand bounds slightly for the ray
+        MinMax expandedBounds = mesh.minmax;
+        expandedBounds.mins -= Vector3(1, 1, 1);
+        expandedBounds.maxs += Vector3(1, 1, 1);
+        
+        // Simple ray-box intersection check for early out
+        // Check if origin is inside or ray intersects box
+        bool mayIntersect = true;
+        for (int axis = 0; axis < 3; axis++) {
+            if (origin[axis] < expandedBounds.mins[axis] && dir[axis] <= 0) mayIntersect = false;
+            if (origin[axis] > expandedBounds.maxs[axis] && dir[axis] >= 0) mayIntersect = false;
+        }
+        if (!mayIntersect) continue;
+        
+        // Test all triangles in mesh
+        for (size_t i = 0; i + 2 < mesh.triangles.size(); i += 3) {
+            const Vector3 &v0 = mesh.vertices[mesh.triangles[i]].xyz;
+            const Vector3 &v1 = mesh.vertices[mesh.triangles[i + 1]].xyz;
+            const Vector3 &v2 = mesh.vertices[mesh.triangles[i + 2]].xyz;
+            
+            float t;
+            if (RayTriangleIntersect(origin, dir, v0, v1, v2, t)) {
+                if (t < closestHit) {
+                    return true;  // Found a hit, ray is blocked
+                }
+            }
+        }
+    }
+    
+    return false;  // No hit, ray reaches destination
+}
+
 // Test if a position can see the sky (is outdoors)
 // Returns: 0.0 = fully indoors, 1.0 = fully outdoors, in between = partial
 static float TestSkyVisibility(const Vector3 &origin) {
@@ -732,43 +808,21 @@ static float TestSkyVisibility(const Vector3 &origin) {
     
     int skyHits = 0;
     
-    // Directions: up, and 45-degree angles in 8 directions
+    // Directions: up, and slightly tilted in various directions
     static const Vector3 skyDirs[] = {
-        Vector3(0, 0, 1),                           // Straight up
-        Vector3(0.3f, 0, 0.95f),                   // Slightly tilted
-        Vector3(-0.3f, 0, 0.95f),
-        Vector3(0, 0.3f, 0.95f),
-        Vector3(0, -0.3f, 0.95f),
-        Vector3(0.2f, 0.2f, 0.96f),
-        Vector3(-0.2f, 0.2f, 0.96f),
-        Vector3(0.2f, -0.2f, 0.96f),
+        vector3_normalised(Vector3(0, 0, 1)),
+        vector3_normalised(Vector3(0.3f, 0, 0.95f)),
+        vector3_normalised(Vector3(-0.3f, 0, 0.95f)),
+        vector3_normalised(Vector3(0, 0.3f, 0.95f)),
+        vector3_normalised(Vector3(0, -0.3f, 0.95f)),
+        vector3_normalised(Vector3(0.2f, 0.2f, 0.96f)),
+        vector3_normalised(Vector3(-0.2f, 0.2f, 0.96f)),
+        vector3_normalised(Vector3(0.2f, -0.2f, 0.96f)),
     };
     
-    trace_t trace;
-    memset(&trace, 0, sizeof(trace));
-    trace.testOcclusion = true;
-    trace.forceSunlight = false;
-    trace.testAll = true;       // Continue through sky surfaces
-    trace.recvShadows = 1;
-    trace.numSurfaces = 0;
-    trace.surfaces = nullptr;
-    trace.numLights = 0;
-    trace.lights = nullptr;
-    trace.twoSided = false;
-    trace.inhibitRadius = 1.0f;  // Ignore geometry very close to origin
-    
     for (int i = 0; i < NUM_SKY_RAYS; i++) {
-        trace.origin = origin;
-        trace.end = origin + skyDirs[i] * SKY_TRACE_DIST;
-        trace.cluster = -1;  // Don't use cluster culling
-        trace.normal = skyDirs[i];
-        trace.color = Vector3(1, 1, 1);
-        
-        SetupTrace(&trace);
-        TraceLine(&trace);
-        
-        // If we hit sky or nothing (went to end), we can see sky
-        if (!trace.opaque || (trace.compileFlags & C_SKY)) {
+        // If ray is NOT blocked, we can see the sky
+        if (!TraceRayAgainstMeshes(origin, skyDirs[i], SKY_TRACE_DIST)) {
             skyHits++;
         }
     }
@@ -781,33 +835,11 @@ static float TestSkyVisibility(const Vector3 &origin) {
 static float TestSunVisibility(const Vector3 &origin, const Vector3 &sunDir) {
     const float SUN_TRACE_DIST = 16384.0f;  // Sun is very far away
     
-    trace_t trace;
-    memset(&trace, 0, sizeof(trace));
-    trace.testOcclusion = true;
-    trace.forceSunlight = false;
-    trace.testAll = true;       // Continue through sky
-    trace.recvShadows = 1;
-    trace.numSurfaces = 0;
-    trace.surfaces = nullptr;
-    trace.numLights = 0;
-    trace.lights = nullptr;
-    trace.twoSided = false;
-    trace.inhibitRadius = 1.0f;
+    // Trace toward the sun (opposite of sun direction since sunDir points from sun TO world)
+    Vector3 toSun = vector3_normalised(sunDir * -1.0f);
     
-    // Trace toward the sun (opposite of sun direction since sunDir points away from sun)
-    Vector3 toSun = sunDir * -1.0f;  // Negate because sunDir points from sun TO world
-    
-    trace.origin = origin;
-    trace.end = origin + toSun * SUN_TRACE_DIST;
-    trace.cluster = -1;
-    trace.normal = toSun;
-    trace.color = Vector3(1, 1, 1);
-    
-    SetupTrace(&trace);
-    TraceLine(&trace);
-    
-    // If we hit sky or nothing, we can see the sun
-    if (!trace.opaque || (trace.compileFlags & C_SKY)) {
+    // If ray is NOT blocked, we can see the sun
+    if (!TraceRayAgainstMeshes(origin, toSun, SUN_TRACE_DIST)) {
         return 1.0f;
     }
     
@@ -876,55 +908,41 @@ void ApexLegends::EmitLightProbes() {
     ApexLegends::Bsp::lightprobeParentInfos.clear();
     ApexLegends::Bsp::staticPropLightprobeIndices.clear();
     
-    // Calculate world bounds from all meshes
-    MinMax worldBounds;
-    for (const Shared::Mesh_t &mesh : Shared::meshes) {
-        worldBounds.extend(mesh.minmax.mins);
-        worldBounds.extend(mesh.minmax.maxs);
-    }
-    
-    // If no geometry, create a minimal bounds
-    if (!worldBounds.valid()) {
-        worldBounds.extend(Vector3(-1024, -1024, -512));
-        worldBounds.extend(Vector3(1024, 1024, 512));
-    }
-    
-    // Grid spacing for probes (units between probes)
-    const float PROBE_SPACING = 512.0f;  // One probe every 512 units
-    const float PROBE_Z_SPACING = 256.0f;  // Tighter vertical spacing
-    
-    // Calculate grid dimensions
-    Vector3 size = worldBounds.maxs - worldBounds.mins;
-    int gridX = std::max(2, (int)std::ceil(size.x() / PROBE_SPACING) + 1);
-    int gridY = std::max(2, (int)std::ceil(size.y() / PROBE_SPACING) + 1);
-    int gridZ = std::max(2, (int)std::ceil(size.z() / PROBE_Z_SPACING) + 1);
-    
-    // Limit grid size to prevent excessive probes
-    const int MAX_GRID = 16;
-    gridX = std::min(gridX, MAX_GRID);
-    gridY = std::min(gridY, MAX_GRID);
-    gridZ = std::min(gridZ, MAX_GRID / 2);  // Less vertical variation needed
-    
-    Sys_Printf("     Probe grid: %d x %d x %d = %d probes\n", gridX, gridY, gridZ, gridX * gridY * gridZ);
-    
-    // Compute actual spacing based on grid
-    float spacingX = size.x() / std::max(1, gridX - 1);
-    float spacingY = size.y() / std::max(1, gridY - 1);
-    float spacingZ = size.z() / std::max(1, gridZ - 1);
-    
-    // Create probes on a 3D grid
+    // Collect probe positions from info_lightprobe entities
     std::vector<Vector3> probePositions;
     
-    for (int z = 0; z < gridZ; z++) {
-        for (int y = 0; y < gridY; y++) {
-            for (int x = 0; x < gridX; x++) {
-                Vector3 pos;
-                pos[0] = worldBounds.mins.x() + x * spacingX;
-                pos[1] = worldBounds.mins.y() + y * spacingY;
-                pos[2] = worldBounds.mins.z() + z * spacingZ;
-                probePositions.push_back(pos);
+    for (const entity_t &entity : entities) {
+        const char *classname = entity.classname();
+        if (striEqual(classname, "info_lightprobe")) {
+            Vector3 origin;
+            if (entity.read_keyvalue(origin, "origin")) {
+                probePositions.push_back(origin);
             }
         }
+    }
+    
+    // If no info_lightprobe entities, create a single probe at world center
+    if (probePositions.empty()) {
+        Sys_Printf("     No info_lightprobe entities found, creating single probe at world center\n");
+        
+        // Calculate world bounds from all meshes
+        MinMax worldBounds;
+        for (const Shared::Mesh_t &mesh : Shared::meshes) {
+            worldBounds.extend(mesh.minmax.mins);
+            worldBounds.extend(mesh.minmax.maxs);
+        }
+        
+        // If no geometry, create a minimal bounds
+        if (!worldBounds.valid()) {
+            worldBounds.extend(Vector3(-1024, -1024, -512));
+            worldBounds.extend(Vector3(1024, 1024, 512));
+        }
+        
+        // Single probe at center
+        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
+        probePositions.push_back(center);
+    } else {
+        Sys_Printf("     Found %zu info_lightprobe entities\n", probePositions.size());
     }
     
     // Create base probe with SH data from sky
@@ -940,36 +958,24 @@ void ApexLegends::EmitLightProbes() {
     LogSkyEnvironment(sky);
     
     // Compute per-probe SH based on visibility
-    Sys_Printf("     Computing per-probe visibility...\n");
-    
-    int outdoorProbes = 0;
-    int indoorProbes = 0;
-    int shadowedProbes = 0;
+    Sys_Printf("     Computing probe lighting (%zu probes)...\n", probePositions.size());
     
     for (size_t i = 0; i < probePositions.size(); i++) {
         const Vector3 &pos = probePositions[i];
         
         // TODO: Enable visibility testing once trace nodes are set up
         // For now, use fixed values (outdoor, sunlit)
-        // float skyVis = TestSkyVisibility(pos);
-        // float sunVis = TestSunVisibility(pos, sky.sunDir);
-        float skyVis = 1.0f;  // Assume outdoor
-        float sunVis = 1.0f;  // Assume sunlit
+        float skyVis = TestSkyVisibility(pos);
+        float sunVis = TestSunVisibility(pos, sky.sunDir);
+        //float skyVis = 1.0f;  // Assume outdoor
+        //float sunVis = 1.0f;  // Assume sunlit
         
         // Create probe with appropriate SH
         LightProbe_v50_t probe = baseProbe;
         ComputeProbeSH(probe, pos, sky, skyVis, sunVis);
         
         ApexLegends::Bsp::lightprobes.push_back(probe);
-        
-        // Statistics
-        if (skyVis > 0.5f) outdoorProbes++;
-        else indoorProbes++;
-        if (sunVis < 0.5f) shadowedProbes++;
     }
-    
-    Sys_Printf("     Probe visibility: %d outdoor, %d indoor, %d shadowed\n", 
-               outdoorProbes, indoorProbes, shadowedProbes);
     
     // Create probe references (position + probe index)
     for (size_t i = 0; i < probePositions.size(); i++) {
