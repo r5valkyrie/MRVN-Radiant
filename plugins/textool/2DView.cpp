@@ -170,16 +170,16 @@ bool C2DView::OnMouseMove( int xPos, int yPos ){
 	return false;
 }
 
-bool C2DView::OnKeyDown( char *s ){
+bool C2DView::OnKeyDown( char *s ){ //ToDo: Swap out ZoomIn() for a new keybind
 	if ( ViewState == View_Idle ) {
 		if ( !strcmp( s,"Insert" ) ) {
 			ZoomOut();
 			return true;
 		}
-		if ( !strcmp( s,"Delete" ) ) {
+		/*if ( !strcmp( s,"Delete" ) ) {
 			ZoomIn();
 			return true;
-		}
+		}*/
 	}
 	return false;
 }

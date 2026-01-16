@@ -1297,7 +1297,6 @@ void Misc_registerShortcuts(){
 	command_connect_accelerator( "Redo2" );
 	command_connect_accelerator( "UnSelectSelection2" );
 	command_connect_accelerator( "DeleteSelection2" );
-
 }
 
 

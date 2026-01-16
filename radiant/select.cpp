@@ -1876,7 +1876,7 @@ void Select_registerCommands(){
 	GlobalCommands_insert( "CloneSelection", FreeCaller<Selection_Clone>(), QKeySequence( "Space" ) );
 	GlobalCommands_insert( "CloneSelectionAndMakeUnique", FreeCaller<Selection_Clone_MakeUnique>(), QKeySequence( "Shift+Space" ) );
 	GlobalCommands_insert( "DeleteSelection2", FreeCaller<deleteSelection>(), QKeySequence( "Backspace" ) );
-	GlobalCommands_insert( "DeleteSelection", FreeCaller<deleteSelection>(), QKeySequence( "Z" ) );
+	GlobalCommands_insert( "DeleteSelection", FreeCaller<deleteSelection>(), QKeySequence( "Delete" ) );
 	GlobalCommands_insert( "RepeatTransforms", FreeCaller<RepeatTransforms>(), QKeySequence( "Ctrl+R" ) );
 //	GlobalCommands_insert( "ParentSelection", FreeCaller<Scene_parentSelected>() );
 	GlobalCommands_insert( "UnSelectSelection2", FreeCaller<Selection_Deselect>(), QKeySequence( "Escape" ) );
