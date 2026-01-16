@@ -42,6 +42,10 @@
 #include <algorithm>
 #include <cmath>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // Maximum lightmap page dimensions
 constexpr uint16_t MAX_LIGHTMAP_WIDTH = 1024;
 constexpr uint16_t MAX_LIGHTMAP_HEIGHT = 1024;
@@ -675,7 +679,32 @@ struct SkyEnvironment {
     bool valid;                // Whether sky data was found
 };
 
-// Extract sky environment from worldlights (called once)
+// Parse "_light" key format: "R G B brightness" (e.g., "255 252 242 510")
+// Returns normalized RGB color (0-1) and brightness multiplier
+static bool ParseLightKey(const char *value, Vector3 &outColor, float &outBrightness) {
+    if (!value || !value[0]) return false;
+    
+    float r, g, b, brightness;
+    if (sscanf(value, "%f %f %f %f", &r, &g, &b, &brightness) == 4) {
+        // Normalize RGB from 0-255 to 0-1
+        outColor[0] = r;
+        outColor[1] = g;
+        outColor[2] = b;
+        outBrightness = brightness;
+        return true;
+    }
+    // Try 3-component format (no brightness)
+    if (sscanf(value, "%f %f %f", &r, &g, &b) == 3) {
+        outColor[0] = r;
+        outColor[1] = g;
+        outColor[2] = b;
+        outBrightness = 1.0f;
+        return true;
+    }
+    return false;
+}
+
+// Extract sky environment from light_environment entity and worldlights (called once)
 static SkyEnvironment GetSkyEnvironment() {
     SkyEnvironment sky;
     sky.ambientColor = Vector3(0.65f, 0.55f, 0.45f);  // Default warm outdoor
@@ -687,29 +716,79 @@ static SkyEnvironment GetSkyEnvironment() {
     bool foundSkyAmbient = false;
     bool foundSkyLight = false;
     
-    for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
-        if (light.type == 5 && !foundSkyAmbient) {  // emit_skyambient
-            float maxIntensity = std::max({light.intensity[0], light.intensity[1], light.intensity[2], 1.0f});
-            sky.ambientColor[0] = light.intensity[0] / maxIntensity;
-            sky.ambientColor[1] = light.intensity[1] / maxIntensity;
-            sky.ambientColor[2] = light.intensity[2] / maxIntensity;
-            foundSkyAmbient = true;
-        }
-        if (light.type == 3 && !foundSkyLight) {  // emit_skylight (sun)
-            sky.sunDir = Vector3(light.normal[0], light.normal[1], light.normal[2]);
-            float len = std::sqrt(sky.sunDir[0]*sky.sunDir[0] + sky.sunDir[1]*sky.sunDir[1] + sky.sunDir[2]*sky.sunDir[2]);
-            if (len > 0.001f) {
-                sky.sunDir = sky.sunDir * (1.0f / len);
+    // First, try to get data directly from light_environment entity
+    // This is more reliable as it reads the raw _light and _ambient keys
+    for (const entity_t &entity : entities) {
+        const char *classname = entity.classname();
+        if (striEqual(classname, "light_environment")) {
+            // Get sun color from _light key (format: "R G B brightness")
+            const char *lightValue = entity.valueForKey("_light");
+            Vector3 lightColor;
+            float brightness;
+            if (ParseLightKey(lightValue, lightColor, brightness)) {
+                sky.sunColor = lightColor;
+                // Scale intensity - typical _light brightness ~200-1000
+                // We want sunIntensity to be around 2-4 for good contrast
+                sky.sunIntensity = brightness / 50.0f;
+                sky.sunIntensity = std::min(5.0f, std::max(1.0f, sky.sunIntensity));
+                foundSkyLight = true;
+                Sys_Printf("     Found light_environment _light: %s\n", lightValue);
             }
-            float maxIntensity = std::max({light.intensity[0], light.intensity[1], light.intensity[2], 1.0f});
-            sky.sunColor[0] = light.intensity[0] / maxIntensity;
-            sky.sunColor[1] = light.intensity[1] / maxIntensity;
-            sky.sunColor[2] = light.intensity[2] / maxIntensity;
-            // Scale intensity - typical emit_skylight has intensity ~200-1000
-            // We want sunIntensity to be around 2-4 for good contrast
-            sky.sunIntensity = maxIntensity / 50.0f;
-            sky.sunIntensity = std::min(5.0f, std::max(1.0f, sky.sunIntensity));
-            foundSkyLight = true;
+            
+            // Get ambient color from _ambient key
+            const char *ambientValue = entity.valueForKey("_ambient");
+            Vector3 ambientColor;
+            float ambientBrightness;
+            if (ParseLightKey(ambientValue, ambientColor, ambientBrightness)) {
+                sky.ambientColor = ambientColor;
+                foundSkyAmbient = true;
+                Sys_Printf("     Found light_environment _ambient: %s\n", ambientValue);
+            }
+            
+            // Get sun direction from angles or pitch/SunSpreadAngle
+            Vector3 angles;
+            if (entity.read_keyvalue(angles, "angles")) {
+                // Convert angles to direction vector
+                float pitch = angles[0] * (M_PI / 180.0f);
+                float yaw = angles[1] * (M_PI / 180.0f);
+                sky.sunDir[0] = std::cos(yaw) * std::cos(pitch);
+                sky.sunDir[1] = std::sin(yaw) * std::cos(pitch);
+                sky.sunDir[2] = -std::sin(pitch);
+                float len = std::sqrt(sky.sunDir[0]*sky.sunDir[0] + sky.sunDir[1]*sky.sunDir[1] + sky.sunDir[2]*sky.sunDir[2]);
+                if (len > 0.001f) {
+                    sky.sunDir = sky.sunDir * (1.0f / len);
+                }
+            }
+            
+            break;  // Only use first light_environment
+        }
+    }
+    
+    // Fallback: try to get data from worldlights if not found in entity
+    if (!foundSkyAmbient || !foundSkyLight) {
+        for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
+            if (light.type == 5 && !foundSkyAmbient) {  // emit_skyambient
+                float maxIntensity = std::max({light.intensity[0], light.intensity[1], light.intensity[2], 1.0f});
+                sky.ambientColor[0] = light.intensity[0] / maxIntensity;
+                sky.ambientColor[1] = light.intensity[1] / maxIntensity;
+                sky.ambientColor[2] = light.intensity[2] / maxIntensity;
+                foundSkyAmbient = true;
+            }
+            if (light.type == 3 && !foundSkyLight) {  // emit_skylight (sun)
+                sky.sunDir = Vector3(light.normal[0], light.normal[1], light.normal[2]);
+                float len = std::sqrt(sky.sunDir[0]*sky.sunDir[0] + sky.sunDir[1]*sky.sunDir[1] + sky.sunDir[2]*sky.sunDir[2]);
+                if (len > 0.001f) {
+                    sky.sunDir = sky.sunDir * (1.0f / len);
+                }
+                float maxIntensity = std::max({light.intensity[0], light.intensity[1], light.intensity[2], 1.0f});
+                sky.sunColor[0] = light.intensity[0] / maxIntensity;
+                sky.sunColor[1] = light.intensity[1] / maxIntensity;
+                sky.sunColor[2] = light.intensity[2] / maxIntensity;
+                // Scale intensity - typical emit_skylight has intensity ~200-1000
+                sky.sunIntensity = maxIntensity / 50.0f;
+                sky.sunIntensity = std::min(5.0f, std::max(1.0f, sky.sunIntensity));
+                foundSkyLight = true;
+            }
         }
     }
     
