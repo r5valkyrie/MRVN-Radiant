@@ -1731,76 +1731,247 @@ static void ConvertCubeToSphericalHarmonics(const Vector3 lightBoxColor[6],
 }
 
 /*
-    GenerateProbeGrid
-    Generate light probe positions on an adaptive 3D grid.
-    Adapted from Source SDK's per-leaf volume heuristic.
+    IsPositionInsideSolid
+    Check if a position is inside solid geometry using 6-directional ray tests.
 */
-static void GenerateProbeGrid(const MinMax &worldBounds, 
-                               std::vector<Vector3> &probePositions) {
-    Vector3 size = worldBounds.maxs - worldBounds.mins;
+static bool IsPositionInsideSolid(const Vector3 &pos, float testDist = 32.0f) {
+    // Trace in all 6 cardinal directions - if all hit nearby, we're inside solid
+    bool hitPosX = TraceRayAgainstMeshes(pos, Vector3(1, 0, 0), testDist);
+    bool hitNegX = TraceRayAgainstMeshes(pos, Vector3(-1, 0, 0), testDist);
+    bool hitPosY = TraceRayAgainstMeshes(pos, Vector3(0, 1, 0), testDist);
+    bool hitNegY = TraceRayAgainstMeshes(pos, Vector3(0, -1, 0), testDist);
+    bool hitPosZ = TraceRayAgainstMeshes(pos, Vector3(0, 0, 1), testDist);
+    bool hitNegZ = TraceRayAgainstMeshes(pos, Vector3(0, 0, -1), testDist);
     
-    // Calculate grid dimensions based on world size
-    int gridX = std::max(1, std::min(LIGHT_PROBE_MAX_PER_AXIS, 
-                         (int)std::ceil(size[0] / LIGHT_PROBE_GRID_SPACING)));
-    int gridY = std::max(1, std::min(LIGHT_PROBE_MAX_PER_AXIS, 
-                         (int)std::ceil(size[1] / LIGHT_PROBE_GRID_SPACING)));
-    int gridZ = std::max(1, std::min(LIGHT_PROBE_MAX_PER_AXIS, 
-                         (int)std::ceil(size[2] / LIGHT_PROBE_GRID_SPACING)));
+    return hitPosX && hitNegX && hitPosY && hitNegY && hitPosZ && hitNegZ;
+}
+
+/*
+    GenerateProbePositionsVoronoi
+    Generate light probe positions using Voronoi-based adaptive placement.
     
-    // Actual spacing
-    float spacingX = size[0] / std::max(1, gridX);
-    float spacingY = size[1] / std::max(1, gridY);
-    float spacingZ = size[2] / std::max(1, gridZ);
+    This approach:
+    1. Samples geometry surfaces (mesh vertices, face centers) as seed points
+    2. Clusters seeds using K-means to find natural groupings
+    3. Uses Lloyd relaxation to optimize probe positions
+    4. Results in more probes where geometry is dense, fewer in open areas
     
-    Sys_Printf("     Grid dimensions: %d x %d x %d (%d total)\n", 
-               gridX, gridY, gridZ, gridX * gridY * gridZ);
+    Much better quality than uniform grid for complex maps.
+*/
+static void GenerateProbePositionsVoronoi(const MinMax &worldBounds, 
+                                          std::vector<Vector3> &probePositions) {
+    Sys_Printf("     Generating Voronoi-based probe positions...\n");
     
-    // Generate probe positions
-    for (int z = 0; z <= gridZ; z++) {
-        for (int y = 0; y <= gridY; y++) {
-            for (int x = 0; x <= gridX; x++) {
-                Vector3 pos;
-                pos[0] = worldBounds.mins[0] + x * spacingX;
-                pos[1] = worldBounds.mins[1] + y * spacingY;
-                pos[2] = worldBounds.mins[2] + z * spacingZ;
-                
-                // Offset slightly inward from bounds
-                if (x == 0) pos[0] += 16.0f;
-                if (x == gridX) pos[0] -= 16.0f;
-                if (y == 0) pos[1] += 16.0f;
-                if (y == gridY) pos[1] -= 16.0f;
-                if (z == 0) pos[2] += 16.0f;
-                if (z == gridZ) pos[2] -= 16.0f;
-                
-                // Check if position is inside solid geometry
-                // Skip if inside a mesh (basic rejection)
-                bool insideSolid = false;
-                Vector3 testDir(0, 0, 1);
-                
-                // Simple test: trace up and down, if both hit we might be inside
-                bool hitUp = TraceRayAgainstMeshes(pos, Vector3(0, 0, 1), 64.0f);
-                bool hitDown = TraceRayAgainstMeshes(pos, Vector3(0, 0, -1), 64.0f);
-                if (hitUp && hitDown) {
-                    // Additional check - trace in horizontal directions
-                    bool hitPosX = TraceRayAgainstMeshes(pos, Vector3(1, 0, 0), 32.0f);
-                    bool hitNegX = TraceRayAgainstMeshes(pos, Vector3(-1, 0, 0), 32.0f);
-                    bool hitPosY = TraceRayAgainstMeshes(pos, Vector3(0, 1, 0), 32.0f);
-                    bool hitNegY = TraceRayAgainstMeshes(pos, Vector3(0, -1, 0), 32.0f);
-                    
-                    // If blocked in all directions very close, probably inside solid
-                    if (hitPosX && hitNegX && hitPosY && hitNegY) {
-                        insideSolid = true;
-                    }
-                }
-                
-                if (!insideSolid) {
-                    probePositions.push_back(pos);
-                }
+    // =========================================================================
+    // Step 1: Collect geometry sample points
+    // =========================================================================
+    std::vector<Vector3> geometrySamples;
+    geometrySamples.reserve(65536);
+    
+    // Sample mesh vertices and face centers
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        // Skip meshes with specific material properties (like skybox)
+        // Add all vertices as samples
+        for (size_t v = 0; v < mesh.vertices.size(); v++) {
+            // Subsample - take every Nth vertex to avoid explosion
+            if (v % 4 == 0) {
+                geometrySamples.push_back(mesh.vertices[v].xyz);
             }
+        }
+        
+        // Add face centers
+        for (size_t t = 0; t + 2 < mesh.triangles.size(); t += 3) {
+            const Vector3 &v0 = mesh.vertices[mesh.triangles[t + 0]].xyz;
+            const Vector3 &v1 = mesh.vertices[mesh.triangles[t + 1]].xyz;
+            const Vector3 &v2 = mesh.vertices[mesh.triangles[t + 2]].xyz;
+            Vector3 center = (v0 + v1 + v2) * (1.0f / 3.0f);
+            geometrySamples.push_back(center);
         }
     }
     
-    Sys_Printf("     Generated %zu valid probe positions\n", probePositions.size());
+    Sys_Printf("     Collected %zu geometry samples\n", geometrySamples.size());
+    
+    if (geometrySamples.empty()) {
+        // Fallback: use world center
+        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
+        probePositions.push_back(center);
+        Sys_Printf("     No geometry samples, using world center\n");
+        return;
+    }
+    
+    // =========================================================================
+    // Step 2: Offset samples above surfaces for probe positions
+    // =========================================================================
+    std::vector<Vector3> candidatePositions;
+    candidatePositions.reserve(geometrySamples.size());
+    
+    for (const Vector3 &sample : geometrySamples) {
+        // Offset sample upward (probes should be in playable space, not embedded in geometry)
+        Vector3 probePos = sample + Vector3(0, 0, 64.0f);
+        
+        // Check if this position is valid (not inside solid)
+        if (!IsPositionInsideSolid(probePos, 48.0f)) {
+            candidatePositions.push_back(probePos);
+        }
+    }
+    
+    Sys_Printf("     %zu valid candidate positions after solid rejection\n", candidatePositions.size());
+    
+    if (candidatePositions.empty()) {
+        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
+        probePositions.push_back(center);
+        return;
+    }
+    
+    // =========================================================================
+    // Step 3: K-means clustering to find probe centroids
+    // =========================================================================
+    // Target probe count based on world size and geometry density
+    Vector3 size = worldBounds.maxs - worldBounds.mins;
+    float worldVolume = size[0] * size[1] * size[2];
+    float avgDimension = std::cbrt(worldVolume);
+    
+    // Aim for roughly GRID_SPACING spacing, but let geometry density influence
+    int targetProbes = std::max(8, std::min(2048, 
+        (int)(worldVolume / (LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING))));
+    
+    // Increase target if we have dense geometry
+    float densityFactor = std::min(4.0f, (float)candidatePositions.size() / 1000.0f);
+    targetProbes = std::min(2048, (int)(targetProbes * (1.0f + densityFactor)));
+    
+    Sys_Printf("     Target probe count: %d (world avg dimension: %.0f)\n", targetProbes, avgDimension);
+    
+    // Initialize K-means centroids using K-means++ seeding
+    std::vector<Vector3> centroids;
+    centroids.reserve(targetProbes);
+    
+    // First centroid: random sample
+    centroids.push_back(candidatePositions[0]);
+    
+    // K-means++ seeding: each new centroid is chosen with probability proportional
+    // to squared distance from nearest existing centroid
+    std::vector<float> minDistSq(candidatePositions.size(), FLT_MAX);
+    
+    while (centroids.size() < (size_t)targetProbes && centroids.size() < candidatePositions.size()) {
+        // Update minimum distances
+        const Vector3 &lastCentroid = centroids.back();
+        float totalWeight = 0;
+        
+        for (size_t i = 0; i < candidatePositions.size(); i++) {
+            Vector3 delta = candidatePositions[i] - lastCentroid;
+            float distSq = vector3_dot(delta, delta);
+            minDistSq[i] = std::min(minDistSq[i], distSq);
+            totalWeight += minDistSq[i];
+        }
+        
+        if (totalWeight < 0.001f) break;
+        
+        // Pick next centroid with probability proportional to D^2
+        float threshold = (float)(centroids.size() * 7919 % 10000) / 10000.0f * totalWeight;
+        float cumulative = 0;
+        size_t chosen = 0;
+        
+        for (size_t i = 0; i < candidatePositions.size(); i++) {
+            cumulative += minDistSq[i];
+            if (cumulative >= threshold) {
+                chosen = i;
+                break;
+            }
+        }
+        
+        centroids.push_back(candidatePositions[chosen]);
+        
+        // Progress indicator
+        if (centroids.size() % 100 == 0) {
+            Sys_Printf("       Seeded %zu / %d centroids...\n", centroids.size(), targetProbes);
+        }
+    }
+    
+    Sys_Printf("     Seeded %zu initial centroids, running Lloyd relaxation...\n", centroids.size());
+    
+    // =========================================================================
+    // Step 4: Lloyd relaxation (K-means iterations)
+    // =========================================================================
+    constexpr int MAX_LLOYD_ITERATIONS = 10;
+    
+    std::vector<int> assignments(candidatePositions.size(), -1);
+    std::vector<Vector3> newCentroids(centroids.size());
+    std::vector<int> clusterCounts(centroids.size());
+    
+    for (int iter = 0; iter < MAX_LLOYD_ITERATIONS; iter++) {
+        // Assign each candidate to nearest centroid
+        for (size_t i = 0; i < candidatePositions.size(); i++) {
+            float minDist = FLT_MAX;
+            int nearest = 0;
+            
+            for (size_t c = 0; c < centroids.size(); c++) {
+                Vector3 delta = candidatePositions[i] - centroids[c];
+                float dist = vector3_dot(delta, delta);
+                if (dist < minDist) {
+                    minDist = dist;
+                    nearest = static_cast<int>(c);
+                }
+            }
+            
+            assignments[i] = nearest;
+        }
+        
+        // Compute new centroids as cluster means
+        std::fill(newCentroids.begin(), newCentroids.end(), Vector3(0, 0, 0));
+        std::fill(clusterCounts.begin(), clusterCounts.end(), 0);
+        
+        for (size_t i = 0; i < candidatePositions.size(); i++) {
+            int c = assignments[i];
+            newCentroids[c] = newCentroids[c] + candidatePositions[i];
+            clusterCounts[c]++;
+        }
+        
+        // Update centroids
+        float maxMove = 0;
+        for (size_t c = 0; c < centroids.size(); c++) {
+            if (clusterCounts[c] > 0) {
+                Vector3 updated = newCentroids[c] * (1.0f / clusterCounts[c]);
+                Vector3 delta = updated - centroids[c];
+                float moveDist = static_cast<float>(vector3_dot(delta, delta));
+                maxMove = std::max(maxMove, moveDist);
+                centroids[c] = updated;
+            }
+        }
+        
+        // Convergence check
+        if (maxMove < 1.0f) {
+            Sys_Printf("     Lloyd converged after %d iterations\n", iter + 1);
+            break;
+        }
+    }
+    
+    // =========================================================================
+    // Step 5: Filter final positions and enforce minimum spacing
+    // =========================================================================
+    std::vector<Vector3> finalPositions;
+    finalPositions.reserve(centroids.size());
+    
+    for (const Vector3 &centroid : centroids) {
+        // Skip if inside solid
+        if (IsPositionInsideSolid(centroid, 32.0f)) continue;
+        
+        // Skip if too close to an existing probe
+        bool tooClose = false;
+        for (const Vector3 &existing : finalPositions) {
+            Vector3 delta = centroid - existing;
+            if (vector3_dot(delta, delta) < LIGHT_PROBE_MIN_SPACING * LIGHT_PROBE_MIN_SPACING) {
+                tooClose = true;
+                break;
+            }
+        }
+        
+        if (!tooClose) {
+            finalPositions.push_back(centroid);
+        }
+    }
+    
+    probePositions = std::move(finalPositions);
+    Sys_Printf("     Generated %zu Voronoi-based probe positions\n", probePositions.size());
 }
 
 /*
@@ -1934,9 +2105,9 @@ void ApexLegends::EmitLightProbes() {
     if (!probePositions.empty()) {
         Sys_Printf("     Found %zu info_lightprobe entities\n", probePositions.size());
     } else {
-        // No manual probes - generate adaptive grid (Source SDK style)
-        Sys_Printf("     No info_lightprobe entities, generating adaptive grid...\n");
-        GenerateProbeGrid(worldBounds, probePositions);
+        // No manual probes - generate Voronoi-based adaptive placement
+        Sys_Printf("     No info_lightprobe entities, generating Voronoi-based placement...\n");
+        GenerateProbePositionsVoronoi(worldBounds, probePositions);
     }
     
     // Ensure we have at least one probe
@@ -2063,125 +2234,84 @@ struct RTLPage_t {
     int count;  // How many lights are in this page (0-63)
 };
 
+// Per-texel RTL info during computation
+struct TexelRTLInfo_t {
+    Vector3 worldPos;       // World position of this texel
+    Vector3 normal;         // Surface normal at this texel
+    bool valid;             // Is this texel part of a surface?
+};
+
+// Check if an RTL light can potentially affect a texel
+static bool CanLightAffectTexel(const WorldLight_t &light, const Vector3 &texelPos, 
+                                 const Vector3 &texelNormal, float maxRadius) {
+    Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
+    Vector3 toLight = lightPos - texelPos;
+    float distSq = vector3_dot(toLight, toLight);
+    float dist = sqrtf(distSq);
+    
+    // Range check - use light radius or maxRadius as fallback
+    float effectiveRadius = (light.radius > 0) ? light.radius : maxRadius;
+    if (dist > effectiveRadius) {
+        return false;
+    }
+    
+    // Facing check - light must be in front of surface
+    Vector3 toLightDir = toLight * (1.0f / std::max(dist, 0.001f));
+    float facing = vector3_dot(texelNormal, toLightDir);
+    if (facing <= 0.0f) {
+        return false;
+    }
+    
+    // For spotlights, check cone angle
+    if (light.type == 2) {  // emit_spotlight
+        Vector3 lightDir(light.normal[0], light.normal[1], light.normal[2]);
+        Vector3 negToLight = toLightDir * -1.0f;
+        float spotDot = vector3_dot(lightDir, negToLight);
+        
+        // Outside outer cone - no effect
+        if (spotDot < light.stopdot2) {
+            return false;
+        }
+    }
+    
+    // Visibility check - trace from texel to light
+    // Offset start position along normal to avoid self-intersection
+    Vector3 traceStart = texelPos + texelNormal * 1.0f;
+    Vector3 traceDir = vector3_normalised(lightPos - traceStart);
+    float traceDist = vector3_length(lightPos - traceStart) - 1.0f;
+    
+    if (traceDist > 0 && TraceRayAgainstMeshes(traceStart, traceDir, traceDist)) {
+        return false;  // Blocked by geometry
+    }
+    
+    return true;
+}
+
 void ApexLegends::EmitRealTimeLightmaps() {
     Sys_Printf("--- EmitRealTimeLightmaps ---\n");
     
+    // Clear RTL lumps - let engine use fallback textures
+    // When m_InitialRealTimeLightData is null, engine uses:
+    //   - Texture 0: TEXTURE_WHITE_UINT (0xFFFFFFFF = no RTL masking)
+    //   - Texture 1: TEXTURE_BLACK
+    //   - Texture 2: TEXTURE_BLACK
+    // This avoids striping artifacts from incorrect BC-compressed texture data
     ApexLegends::Bsp::lightmapDataRealTimeLights.clear();
     ApexLegends::Bsp::lightmapDataRTLPage.clear();
     
-    // Collect all RTL worldlights
-    // Based on analysis of official maps, ALL point/spot lights (types 1 and 2)
-    // are included in RTL pages - the WORLDLIGHT_FLAG_REALTIME flag is NOT used
-    // to determine RTL inclusion. Sky lights (types 3, 5) are excluded.
-    std::vector<uint16_t> rtlLightIndices;
-    for (size_t i = 0; i < ApexLegends::Bsp::worldLights.size(); i++) {
-        const WorldLight_t &light = ApexLegends::Bsp::worldLights[i];
-        // Include point lights (type 1) and spotlights (type 2)
-        // Exclude skylight (type 3), surface (type 4), skyambient (type 5)
-        if (light.type == 1 || light.type == 2) {  // emit_point or emit_spotlight
-            rtlLightIndices.push_back(static_cast<uint16_t>(i));
+    // Count RTL-capable lights for info
+    size_t rtlLightCount = 0;
+    for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
+        if (light.type == 1 || light.type == 2) {  // point or spotlight
+            rtlLightCount++;
         }
     }
     
-    Sys_Printf("     %9zu RTL worldlights found\n", rtlLightIndices.size());
+    Sys_Printf("     %9zu RTL-capable lights (using engine fallback)\n", rtlLightCount);
+    Sys_Printf("     RTL data: disabled (engine will use default textures)\n");
     
-    // If no RTL lights, emit empty lumps (valid - engine handles this)
-    if (rtlLightIndices.empty() || ApexLegends::Bsp::lightmapHeaders.empty()) {
-        Sys_Printf("     RTL data: empty (no RTL lights or no lightmaps)\n");
-        return;
-    }
-    
-    // Build RTL pages (63 lights per page)
-    std::vector<RTLPage_t> rtlPages;
-    {
-        RTLPage_t currentPage = {};
-        currentPage.count = 0;
-        
-        for (size_t i = 0; i < rtlLightIndices.size(); i++) {
-            if (currentPage.count >= 63) {
-                rtlPages.push_back(currentPage);
-                currentPage = {};
-                currentPage.count = 0;
-            }
-            currentPage.lightIndices[currentPage.count++] = rtlLightIndices[i];
-        }
-        
-        // Push the last page if it has any lights
-        if (currentPage.count > 0) {
-            // Fill remaining slots with 0xFFFF (invalid)
-            for (int j = currentPage.count; j < 63; j++) {
-                currentPage.lightIndices[j] = 0xFFFF;
-            }
-            rtlPages.push_back(currentPage);
-        }
-    }
-    
-    Sys_Printf("     %9zu RTL pages created\n", rtlPages.size());
-    
-    // Serialize RTL pages to lump 0x7A (126 bytes per page = 63 uint16)
-    ApexLegends::Bsp::lightmapDataRTLPage.resize(rtlPages.size() * 126);
-    for (size_t p = 0; p < rtlPages.size(); p++) {
-        uint8_t *pageData = &ApexLegends::Bsp::lightmapDataRTLPage[p * 126];
-        for (int i = 0; i < 63; i++) {
-            uint16_t idx = rtlPages[p].lightIndices[i];
-            pageData[i * 2 + 0] = idx & 0xFF;
-            pageData[i * 2 + 1] = (idx >> 8) & 0xFF;
-        }
-    }
-    
-    // Generate per-texel RTL data for each lightmap
-    // For each lightmap, calculate which RTL lights can affect each texel
-    size_t totalTexels = 0;
-    size_t affectedTexels = 0;
-    
-    for (const LightmapHeader_t &header : ApexLegends::Bsp::lightmapHeaders) {
-        int width = header.width;
-        int height = header.height;
-        int texelCount = width * height;
-        int alignedWidth = (width + 3) & ~3;
-        int alignedHeight = (height + 3) & ~3;
-        int alignedSize = alignedWidth * alignedHeight;
-        
-        // Size formula from engine (Mod_LoadLightmapDataRealTimeLights):
-        // For BSP-embedded lumps (non-RPak): 2*(alignedSize + 2*texelCount) + (alignedSize >> 1)
-        // External RPak lumps use just: 2*(alignedSize + 2*texelCount)
-        // We're writing BSP file, so use non-RPak formula
-        int rpakSize = 2 * (alignedSize + 2 * texelCount);
-        int rtlDataSize = rpakSize + (alignedSize >> 1);  // Non-RPak format
-        
-        size_t startOffset = ApexLegends::Bsp::lightmapDataRealTimeLights.size();
-        ApexLegends::Bsp::lightmapDataRealTimeLights.resize(startOffset + rtlDataSize);
-        uint8_t *rtlData = &ApexLegends::Bsp::lightmapDataRealTimeLights[startOffset];
-        
-        // Initialize entire buffer to zero first
-        memset(rtlData, 0, rtlDataSize);
-        
-        // Per-texel data: 4 bytes each, format is FF FF FF 00 for "no RTL lights"
-        for (int t = 0; t < texelCount; t++) {
-            int offset = t * 4;
-            rtlData[offset + 0] = 0xFF;  // mask byte 0
-            rtlData[offset + 1] = 0xFF;  // mask byte 1
-            rtlData[offset + 2] = 0xFF;  // mask byte 2
-            rtlData[offset + 3] = 0x00;  // page index (0 = no page)
-        }
-        
-        // The remaining bytes (2*alignedSize + alignedSize/2) are BC-compressed mask data
-        // Already zeroed by memset above - zero means no RTL masks
-        
-        totalTexels += texelCount;
-        
-        // TODO: For full implementation, we would:
-        // 1. For each texel, compute world position from lightmap UV
-        // 2. For each RTL light, check if it can reach this texel (visibility + range)
-        // 3. Build a bitmask of which lights in the page affect the texel
-        // 4. Encode: byte 0 = offset, bytes 1-2 = mask bits, byte 3 = page index
-        //
-        // For now, we emit "no RTL lights affect any texel" which is valid
-        // and allows the map to load - RTL lights will be evaluated uniformly
-    }
-    
-    Sys_Printf("     %9zu bytes RTL data (%zu texels)\n", 
-               ApexLegends::Bsp::lightmapDataRealTimeLights.size(), totalTexels);
-    Sys_Printf("     %9zu bytes RTL pages (%zu pages)\n",
-               ApexLegends::Bsp::lightmapDataRTLPage.size(), rtlPages.size());
+    // TODO: Full RTL implementation requires:
+    // 1. Proper BC7 compression for texture 1 (light influence gradients)
+    // 2. Proper BC4 compression for texture 2 (additional mask data)
+    // Without proper BC-compressed textures, the engine shows striping artifacts
 }
