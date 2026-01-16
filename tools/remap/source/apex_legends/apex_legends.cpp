@@ -245,7 +245,7 @@ void CompileR5BSPFile() {
     ApexLegends::EmitShadowEnvironments();
     ApexLegends::EmitLightmaps();
     ApexLegends::EmitLightProbes();        // Light probes for ambient lighting
-    //ApexLegends::EmitRealTimeLightmaps();  // Per-texel RTL data
+    ApexLegends::EmitRealTimeLightmaps();  // Per-texel RTL data
 
     Titanfall::EmitStubs();
     ApexLegends::EmitStubs();

@@ -705,8 +705,10 @@ static SkyEnvironment GetSkyEnvironment() {
             sky.sunColor[0] = light.intensity[0] / maxIntensity;
             sky.sunColor[1] = light.intensity[1] / maxIntensity;
             sky.sunColor[2] = light.intensity[2] / maxIntensity;
-            sky.sunIntensity = maxIntensity / 100.0f;
-            sky.sunIntensity = std::min(3.0f, std::max(0.5f, sky.sunIntensity));
+            // Scale intensity - typical emit_skylight has intensity ~200-1000
+            // We want sunIntensity to be around 2-4 for good contrast
+            sky.sunIntensity = maxIntensity / 50.0f;
+            sky.sunIntensity = std::min(5.0f, std::max(1.0f, sky.sunIntensity));
             foundSkyLight = true;
         }
     }
@@ -846,14 +848,26 @@ static float TestSunVisibility(const Vector3 &origin, const Vector3 &sunDir) {
     return 0.0f;
 }
 
+// Helper to clamp float to int16 range before casting
+static int16_t ClampToInt16(float value) {
+    return static_cast<int16_t>(std::clamp(value, -32768.0f, 32767.0f));
+}
+
 // Compute SH coefficients for a single probe based on position and visibility
 static void ComputeProbeSH(LightProbe_v50_t &probe, const Vector3 &position, 
                            const SkyEnvironment &sky, float skyVis, float sunVis) {
-    // The engine divides int16 SH values by 8192
-    // DC of 8192 = 1.0 normalized, but in practice need higher for visibility
-    const float shScale = 68192.0f;
+    // Based on official map analysis (bright outdoor probes):
+    // - DC values: 2000-4000 for sunlit outdoor areas
+    // - Directional values: 1500-2500 (about 50-70% of DC)
+    // - With ambient color ~0.5-0.65, shScale should be ~4000-6000
+    const float shScale = 10000.0f;
     
-    // Base ambient varies by sky visibility:
+    // Directional scale - controls shadow intensity on entities
+    // Higher = more contrast between sun-facing and shadow sides
+    // Official maps show directional ~50-70% of DC magnitude
+    const float dirMultiplier = 0.6f;
+    
+    // Base ambient varies by sky vi`sibility:
     // - Outdoors (skyVis=1): full ambient color
     // - Indoors (skyVis=0): reduced ambient (darker, cooler tint for indoor shadow)
     const float indoorAmbientScale = 0.35f;  // Indoor areas get 35% of outdoor ambient
@@ -867,35 +881,37 @@ static void ComputeProbeSH(LightProbe_v50_t &probe, const Vector3 &position,
     
     // Directional SH (sun shading) only applies if sun is visible
     // If sun is blocked, directional components are zero (flat ambient lighting)
-    const float dirScale = shScale * sky.sunIntensity * 0.6f * sunVis;
+    // This creates the shadow effect on entities - surfaces facing away from sun are darker
+    const float dirScale = shScale * dirMultiplier * sunVis;
     
     // Directional coefficients from sun direction
     float dirX = -sky.sunDir[0];
     float dirY = -sky.sunDir[1];
     float dirZ = -sky.sunDir[2];
     
-    // Red channel
-    probe.ambientSH[0][0] = static_cast<int16_t>(dirX * sky.sunColor[0] * dirScale);  // R X
-    probe.ambientSH[0][1] = static_cast<int16_t>(dirY * sky.sunColor[0] * dirScale);  // R Y
-    probe.ambientSH[0][2] = static_cast<int16_t>(dirZ * sky.sunColor[0] * dirScale);  // R Z
-    probe.ambientSH[0][3] = static_cast<int16_t>(effectiveAmbient[0] * shScale);       // R DC
+    // Red channel - clamp all values to int16 range
+    probe.ambientSH[0][0] = ClampToInt16(dirX * sky.sunColor[0] * dirScale);  // R X
+    probe.ambientSH[0][1] = ClampToInt16(dirY * sky.sunColor[0] * dirScale);  // R Y
+    probe.ambientSH[0][2] = ClampToInt16(dirZ * sky.sunColor[0] * dirScale);  // R Z
+    probe.ambientSH[0][3] = ClampToInt16(effectiveAmbient[0] * shScale);       // R DC
     
     // Green channel
-    probe.ambientSH[1][0] = static_cast<int16_t>(dirX * sky.sunColor[1] * dirScale);  // G X
-    probe.ambientSH[1][1] = static_cast<int16_t>(dirY * sky.sunColor[1] * dirScale);  // G Y
-    probe.ambientSH[1][2] = static_cast<int16_t>(dirZ * sky.sunColor[1] * dirScale);  // G Z
-    probe.ambientSH[1][3] = static_cast<int16_t>(effectiveAmbient[1] * shScale);       // G DC
+    probe.ambientSH[1][0] = ClampToInt16(dirX * sky.sunColor[1] * dirScale);  // G X
+    probe.ambientSH[1][1] = ClampToInt16(dirY * sky.sunColor[1] * dirScale);  // G Y
+    probe.ambientSH[1][2] = ClampToInt16(dirZ * sky.sunColor[1] * dirScale);  // G Z
+    probe.ambientSH[1][3] = ClampToInt16(effectiveAmbient[1] * shScale);       // G DC
     
     // Blue channel
-    probe.ambientSH[2][0] = static_cast<int16_t>(dirX * sky.sunColor[2] * dirScale);  // B X
-    probe.ambientSH[2][1] = static_cast<int16_t>(dirY * sky.sunColor[2] * dirScale);  // B Y
-    probe.ambientSH[2][2] = static_cast<int16_t>(dirZ * sky.sunColor[2] * dirScale);  // B Z
-    probe.ambientSH[2][3] = static_cast<int16_t>(effectiveAmbient[2] * shScale);       // B DC
+    probe.ambientSH[2][0] = ClampToInt16(dirX * sky.sunColor[2] * dirScale);  // B X
+    probe.ambientSH[2][1] = ClampToInt16(dirY * sky.sunColor[2] * dirScale);  // B Y
+    probe.ambientSH[2][2] = ClampToInt16(dirZ * sky.sunColor[2] * dirScale);  // B Z
+    probe.ambientSH[2][3] = ClampToInt16(effectiveAmbient[2] * shScale);       // B DC
 }
 
 // Legacy function for logging (called once to print sky info)
 static void LogSkyEnvironment(const SkyEnvironment &sky) {
     Sys_Printf("     Sun direction: (%.2f, %.2f, %.2f)\n", sky.sunDir[0], sky.sunDir[1], sky.sunDir[2]);
+    Sys_Printf("     Sun intensity: %.2f, color: (%.2f, %.2f, %.2f)\n", sky.sunIntensity, sky.sunColor[0], sky.sunColor[1], sky.sunColor[2]);
     Sys_Printf("     Ambient color: (%.2f, %.2f, %.2f)\n", sky.ambientColor[0], sky.ambientColor[1], sky.ambientColor[2]);
 }
 
