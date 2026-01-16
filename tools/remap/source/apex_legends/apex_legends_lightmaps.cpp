@@ -931,7 +931,7 @@ void ApexLegends::ComputeLightmapLighting() {
     Sys_Printf("--- ComputeLightmapLighting ---\n");
     
     // Build edge sharing data for phong shading
-    //BuildEdgeSharing();
+    BuildEdgeSharing();
     
     // NOTE: We do NOT bake emit_skyambient or emit_skylight here!
     // The engine applies these dynamically from worldLights lump.
