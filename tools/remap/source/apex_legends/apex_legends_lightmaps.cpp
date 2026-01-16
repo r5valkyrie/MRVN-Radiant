@@ -41,6 +41,8 @@
 #include "apex_legends.h"
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -56,6 +58,99 @@ constexpr float LIGHTMAP_SAMPLE_SIZE = 16.0f;
 // Minimum allocation size for lightmap rectangles
 constexpr int MIN_LIGHTMAP_WIDTH = 4;
 constexpr int MIN_LIGHTMAP_HEIGHT = 4;
+
+// =============================================================================
+// ENHANCED LIGHTING FEATURES (adapted from Source SDK VRAD concepts)
+// =============================================================================
+
+// Supersampling settings
+constexpr int SUPERSAMPLE_LEVEL = 2;        // 2x2 = 4 samples per texel (set to 1 to disable)
+constexpr float SUPERSAMPLE_JITTER = 0.25f; // Jitter amount for AA samples
+
+// Radiosity settings
+constexpr int RADIOSITY_BOUNCES = 2;        // Number of light bounces (0 = direct only)
+constexpr float RADIOSITY_SCALE = 0.5f;     // Energy retention per bounce
+constexpr int RADIOSITY_SAMPLES = 32;       // Hemisphere samples for indirect lighting
+
+// Phong shading settings (smooth normal interpolation)
+constexpr float PHONG_ANGLE_THRESHOLD = 45.0f;  // Degrees - edges sharper than this won't smooth
+constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(45 degrees)
+
+
+/*
+    EdgeKey_t
+    Hash key for edge lookup (vertex pair, order-independent)
+*/
+struct EdgeKey_t {
+    uint64_t v0, v1;  // Sorted vertex indices
+    
+    EdgeKey_t(size_t a, size_t b) {
+        if (a < b) { v0 = a; v1 = b; }
+        else { v0 = b; v1 = a; }
+    }
+    
+    bool operator==(const EdgeKey_t &other) const {
+        return v0 == other.v0 && v1 == other.v1;
+    }
+};
+
+struct EdgeKeyHash {
+    size_t operator()(const EdgeKey_t &k) const {
+        return std::hash<uint64_t>()(k.v0) ^ (std::hash<uint64_t>()(k.v1) << 1);
+    }
+};
+
+
+/*
+    EdgeShare_t
+    Tracks faces that share an edge (for smooth normal interpolation)
+    Adapted from Source SDK's edgeshare_t
+*/
+struct EdgeShare_t {
+    int meshIndex[2];           // Indices of meshes sharing this edge
+    int triangleIndex[2];       // Triangle indices within each mesh
+    Vector3 interfaceNormal;    // Blended normal at the edge
+    bool coplanar;              // Are the faces coplanar?
+    int numFaces;               // How many faces share this edge (1 or 2)
+};
+
+
+/*
+    FaceNeighbor_t
+    Per-mesh neighbor information for smooth shading
+    Adapted from Source SDK's faceneighbor_t
+*/
+struct FaceNeighbor_t {
+    std::vector<int> neighborMeshes;    // Neighboring meshes that share vertices
+    std::vector<Vector3> vertexNormals; // Smoothed normal per vertex
+    Vector3 faceNormal;                 // Flat face normal
+};
+
+
+// Global edge sharing data for phong shading
+namespace PhongData {
+    std::unordered_map<EdgeKey_t, EdgeShare_t, EdgeKeyHash> edgeShare;
+    std::vector<FaceNeighbor_t> faceNeighbors;
+    bool initialized = false;
+}
+
+
+// Global radiosity patch data
+namespace RadiosityData {
+    struct Patch_t {
+        Vector3 origin;         // Center of patch
+        Vector3 normal;         // Patch normal
+        Vector3 reflectivity;   // Surface reflectivity (from texture)
+        Vector3 totalLight;     // Accumulated direct + indirect light
+        Vector3 directLight;    // Direct lighting only
+        float area;             // Patch area in world units
+        int meshIndex;          // Which mesh this patch belongs to
+        int luxelIndex;         // Which luxel this is
+    };
+    
+    std::vector<Patch_t> patches;
+    bool initialized = false;
+}
 
 
 /*
@@ -80,7 +175,10 @@ struct SurfaceLightmap_t {
     Plane3f plane;              // Surface plane
     Vector3 tangent;            // U direction in world space
     Vector3 bitangent;          // V direction in world space
+    float uMin, uMax;           // Tangent-space U bounds (for proper UV normalization)
+    float vMin, vMax;           // Tangent-space V bounds (for proper UV normalization)
     std::vector<Vector3> luxels; // Per-texel lighting values (RGB HDR)
+    std::vector<Vector3> luxelNormals;  // Per-texel interpolated normals (for phong shading)
 };
 
 
@@ -279,15 +377,23 @@ void ApexLegends::SetupSurfaceLightmaps() {
         Vector3 tangent, bitangent;
         ComputeSurfaceBasis(plane, tangent, bitangent);
         
-        // Calculate lightmap size based on surface area
-        float uExtent = 0, vExtent = 0;
+        // Calculate lightmap size based on surface area in tangent space
+        // Track both min and max to properly handle surfaces where vertices
+        // can be on the negative side of the tangent/bitangent from bounds.mins
+        float uMin = FLT_MAX, uMax = -FLT_MAX;
+        float vMin = FLT_MAX, vMax = -FLT_MAX;
         for (const Shared::Vertex_t &vert : mesh.vertices) {
             Vector3 localPos = vert.xyz - bounds.mins;
             float u = vector3_dot(localPos, tangent);
             float v = vector3_dot(localPos, bitangent);
-            uExtent = std::max(uExtent, std::abs(u));
-            vExtent = std::max(vExtent, std::abs(v));
+            uMin = std::min(uMin, u);
+            uMax = std::max(uMax, u);
+            vMin = std::min(vMin, v);
+            vMax = std::max(vMax, v);
         }
+        
+        float uExtent = uMax - uMin;
+        float vExtent = vMax - vMin;
         
         int lmWidth = std::max(MIN_LIGHTMAP_WIDTH, (int)std::ceil(uExtent / LIGHTMAP_SAMPLE_SIZE) + 1);
         int lmHeight = std::max(MIN_LIGHTMAP_HEIGHT, (int)std::ceil(vExtent / LIGHTMAP_SAMPLE_SIZE) + 1);
@@ -308,7 +414,12 @@ void ApexLegends::SetupSurfaceLightmaps() {
         surfLM.plane = plane;
         surfLM.tangent = tangent;
         surfLM.bitangent = bitangent;
+        surfLM.uMin = uMin;
+        surfLM.uMax = uMax;
+        surfLM.vMin = vMin;
+        surfLM.vMax = vMax;
         surfLM.luxels.resize(rect.width * rect.height, Vector3(0, 0, 0));
+        surfLM.luxelNormals.resize(rect.width * rect.height, plane.normal());
         
         LightmapBuild::surfaces.push_back(surfLM);
         litSurfaces++;
@@ -317,6 +428,373 @@ void ApexLegends::SetupSurfaceLightmaps() {
     
     Sys_Printf("     %9d lit surfaces\n", litSurfaces);
     Sys_Printf("     %9d lightmap pages\n", (int)ApexLegends::Bsp::lightmapPages.size());
+}
+
+
+// =============================================================================
+// PHONG SHADING / SMOOTH NORMAL INTERPOLATION
+// Adapted from Source SDK VRAD's PairEdges() and GetPhongNormal()
+// =============================================================================
+
+/*
+    BuildEdgeSharing
+    Build edge-to-face mapping for smooth normal interpolation across mesh edges.
+    This allows lighting to smoothly transition across connected surfaces.
+*/
+static void BuildEdgeSharing() {
+    if (PhongData::initialized) return;
+    
+    Sys_Printf("     Building edge sharing for smooth normals...\n");
+    
+    PhongData::edgeShare.clear();
+    PhongData::faceNeighbors.clear();
+    PhongData::faceNeighbors.resize(Shared::meshes.size());
+    
+    // Build edge map: for each edge, track which meshes/triangles use it
+    for (size_t meshIdx = 0; meshIdx < Shared::meshes.size(); meshIdx++) {
+        const Shared::Mesh_t &mesh = Shared::meshes[meshIdx];
+        
+        // Skip non-lit surfaces
+        if (!CHECK_FLAG(mesh.shaderInfo->surfaceFlags, S_VERTEX_LIT_BUMP)) {
+            continue;
+        }
+        
+        // Compute face normal
+        Vector3 faceNormal(0, 0, 1);
+        if (mesh.triangles.size() >= 3) {
+            const Vector3 &v0 = mesh.vertices[mesh.triangles[0]].xyz;
+            const Vector3 &v1 = mesh.vertices[mesh.triangles[1]].xyz;
+            const Vector3 &v2 = mesh.vertices[mesh.triangles[2]].xyz;
+            faceNormal = vector3_normalised(vector3_cross(v1 - v0, v2 - v0));
+        }
+        PhongData::faceNeighbors[meshIdx].faceNormal = faceNormal;
+        PhongData::faceNeighbors[meshIdx].vertexNormals.resize(mesh.vertices.size(), faceNormal);
+        
+        // Process each triangle's edges
+        for (size_t i = 0; i + 2 < mesh.triangles.size(); i += 3) {
+            int triIdx = static_cast<int>(i / 3);
+            
+            // Three edges per triangle
+            for (int e = 0; e < 3; e++) {
+                size_t idx0 = mesh.triangles[i + e];
+                size_t idx1 = mesh.triangles[i + ((e + 1) % 3)];
+                
+                // Create a unique key based on vertex positions (quantized)
+                const Vector3 &p0 = mesh.vertices[idx0].xyz;
+                const Vector3 &p1 = mesh.vertices[idx1].xyz;
+                
+                // Quantize positions to handle floating point imprecision
+                auto quantize = [](const Vector3 &v) -> uint64_t {
+                    int32_t x = static_cast<int32_t>(v.x() * 8.0f);
+                    int32_t y = static_cast<int32_t>(v.y() * 8.0f);
+                    int32_t z = static_cast<int32_t>(v.z() * 8.0f);
+                    return (static_cast<uint64_t>(x & 0xFFFFF) << 40) |
+                           (static_cast<uint64_t>(y & 0xFFFFF) << 20) |
+                           (static_cast<uint64_t>(z & 0xFFFFF));
+                };
+                
+                EdgeKey_t key(quantize(p0), quantize(p1));
+                
+                auto it = PhongData::edgeShare.find(key);
+                if (it == PhongData::edgeShare.end()) {
+                    // New edge
+                    EdgeShare_t share;
+                    share.meshIndex[0] = static_cast<int>(meshIdx);
+                    share.meshIndex[1] = -1;
+                    share.triangleIndex[0] = triIdx;
+                    share.triangleIndex[1] = -1;
+                    share.interfaceNormal = faceNormal;
+                    share.coplanar = false;
+                    share.numFaces = 1;
+                    PhongData::edgeShare[key] = share;
+                } else {
+                    // Existing edge - add second face
+                    EdgeShare_t &share = it->second;
+                    if (share.numFaces == 1 && share.meshIndex[0] != static_cast<int>(meshIdx)) {
+                        share.meshIndex[1] = static_cast<int>(meshIdx);
+                        share.triangleIndex[1] = triIdx;
+                        share.numFaces = 2;
+                        
+                        // Check if faces are smooth (angle less than threshold)
+                        Vector3 otherNormal = PhongData::faceNeighbors[share.meshIndex[0]].faceNormal;
+                        float dot = vector3_dot(faceNormal, otherNormal);
+                        
+                        if (dot > SMOOTHING_GROUP_HARD_EDGE) {
+                            // Smooth edge - blend normals
+                            share.interfaceNormal = vector3_normalised(faceNormal + otherNormal);
+                            share.coplanar = (dot > 0.999f);
+                            
+                            // Track as neighbors
+                            PhongData::faceNeighbors[meshIdx].neighborMeshes.push_back(share.meshIndex[0]);
+                            PhongData::faceNeighbors[share.meshIndex[0]].neighborMeshes.push_back(static_cast<int>(meshIdx));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Now compute smoothed vertex normals by averaging neighbor contributions
+    for (size_t meshIdx = 0; meshIdx < Shared::meshes.size(); meshIdx++) {
+        FaceNeighbor_t &fn = PhongData::faceNeighbors[meshIdx];
+        if (fn.neighborMeshes.empty()) continue;
+        
+        const Shared::Mesh_t &mesh = Shared::meshes[meshIdx];
+        
+        for (size_t vIdx = 0; vIdx < mesh.vertices.size(); vIdx++) {
+            const Vector3 &pos = mesh.vertices[vIdx].xyz;
+            Vector3 smoothNormal = fn.faceNormal;
+            float totalWeight = 1.0f;
+            
+            // Check neighbor meshes for shared vertices
+            for (int neighborIdx : fn.neighborMeshes) {
+                const Shared::Mesh_t &neighbor = Shared::meshes[neighborIdx];
+                const FaceNeighbor_t &neighborFN = PhongData::faceNeighbors[neighborIdx];
+                
+                // Find vertices at the same position
+                for (size_t nv = 0; nv < neighbor.vertices.size(); nv++) {
+                    Vector3 diff = neighbor.vertices[nv].xyz - pos;
+                    if (vector3_length(diff) < 0.5f) {
+                        // Same vertex - blend normals
+                        float weight = 1.0f;
+                        smoothNormal = smoothNormal + neighborFN.faceNormal * weight;
+                        totalWeight += weight;
+                        break;
+                    }
+                }
+            }
+            
+            fn.vertexNormals[vIdx] = vector3_normalised(smoothNormal);
+        }
+    }
+    
+    PhongData::initialized = true;
+    Sys_Printf("     Built %zu shared edges\n", PhongData::edgeShare.size());
+}
+
+
+/*
+    GetPhongNormal
+    Get interpolated (phong) normal at a world position on a surface.
+    Adapted from Source SDK's GetPhongNormal().
+*/
+static Vector3 GetPhongNormal(int meshIndex, const Vector3 &worldPos, const Vector3 &flatNormal) {
+    if (!PhongData::initialized || meshIndex < 0 || meshIndex >= static_cast<int>(PhongData::faceNeighbors.size())) {
+        return flatNormal;
+    }
+    
+    const FaceNeighbor_t &fn = PhongData::faceNeighbors[meshIndex];
+    if (fn.neighborMeshes.empty()) {
+        return flatNormal;  // No neighbors - use flat normal
+    }
+    
+    const Shared::Mesh_t &mesh = Shared::meshes[meshIndex];
+    if (mesh.vertices.empty() || mesh.triangles.size() < 3) {
+        return flatNormal;
+    }
+    
+    // Find the triangle containing this point and interpolate vertex normals
+    for (size_t i = 0; i + 2 < mesh.triangles.size(); i += 3) {
+        const Vector3 &v0 = mesh.vertices[mesh.triangles[i]].xyz;
+        const Vector3 &v1 = mesh.vertices[mesh.triangles[i + 1]].xyz;
+        const Vector3 &v2 = mesh.vertices[mesh.triangles[i + 2]].xyz;
+        
+        // Compute barycentric coordinates
+        Vector3 edge0 = v1 - v0;
+        Vector3 edge1 = v2 - v0;
+        Vector3 vp = worldPos - v0;
+        
+        float d00 = vector3_dot(edge0, edge0);
+        float d01 = vector3_dot(edge0, edge1);
+        float d11 = vector3_dot(edge1, edge1);
+        float d20 = vector3_dot(vp, edge0);
+        float d21 = vector3_dot(vp, edge1);
+        
+        float denom = d00 * d11 - d01 * d01;
+        if (std::abs(denom) < 0.0001f) continue;
+        
+        float v = (d11 * d20 - d01 * d21) / denom;
+        float w = (d00 * d21 - d01 * d20) / denom;
+        float u = 1.0f - v - w;
+        
+        // Check if point is in this triangle (with some tolerance)
+        if (u >= -0.1f && v >= -0.1f && w >= -0.1f && u <= 1.1f && v <= 1.1f && w <= 1.1f) {
+            // Interpolate vertex normals
+            const Vector3 &n0 = fn.vertexNormals[mesh.triangles[i]];
+            const Vector3 &n1 = fn.vertexNormals[mesh.triangles[i + 1]];
+            const Vector3 &n2 = fn.vertexNormals[mesh.triangles[i + 2]];
+            
+            Vector3 interpNormal = n0 * u + n1 * v + n2 * w;
+            return vector3_normalised(interpNormal);
+        }
+    }
+    
+    return flatNormal;
+}
+
+
+// =============================================================================
+// SUPERSAMPLING
+// Take multiple samples per texel and average for anti-aliased lighting
+// =============================================================================
+
+// Jitter offsets for 2x2 supersampling (rotated grid pattern)
+static const float supersampleOffsets[4][2] = {
+    { -0.25f, -0.125f },
+    {  0.25f, -0.375f },
+    { -0.125f, 0.375f },
+    {  0.375f, 0.125f }
+};
+
+
+// =============================================================================
+// RADIOSITY / BOUNCE LIGHTING
+// Compute indirect illumination from light bouncing off surfaces
+// =============================================================================
+
+/*
+    InitRadiosityPatches
+    Create patches from all lightmap luxels for radiosity computation
+*/
+static void InitRadiosityPatches() {
+    if (RadiosityData::initialized) return;
+    
+    RadiosityData::patches.clear();
+    
+    for (const SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
+        const Shared::Mesh_t &mesh = Shared::meshes[surf.meshIndex];
+        
+        // Get surface reflectivity from shader (approximate from texture name)
+        Vector3 reflectivity(0.5f, 0.5f, 0.5f);  // Default 50% reflectance
+        if (mesh.shaderInfo) {
+            // Could parse actual texture colors here for better results
+            // For now, use neutral reflectivity
+            reflectivity = Vector3(0.4f, 0.4f, 0.4f);
+        }
+        
+        for (int y = 0; y < surf.rect.height; y++) {
+            for (int x = 0; x < surf.rect.width; x++) {
+                RadiosityData::Patch_t patch;
+                
+                // Compute world position from texel coordinates
+                // Normalize texel to [0,1] within the rect, then map to tangent-space bounds
+                float normalizedU = (surf.rect.width > 1) ? (float)x / (surf.rect.width - 1) : 0.5f;
+                float normalizedV = (surf.rect.height > 1) ? (float)y / (surf.rect.height - 1) : 0.5f;
+                float localU = surf.uMin + normalizedU * (surf.uMax - surf.uMin);
+                float localV = surf.vMin + normalizedV * (surf.vMax - surf.vMin);
+                patch.origin = surf.worldBounds.mins 
+                    + surf.tangent * localU 
+                    + surf.bitangent * localV
+                    + surf.plane.normal() * 0.1f;
+                
+                patch.normal = surf.plane.normal();
+                patch.reflectivity = reflectivity;
+                patch.totalLight = Vector3(0, 0, 0);
+                patch.directLight = Vector3(0, 0, 0);
+                patch.area = LIGHTMAP_SAMPLE_SIZE * LIGHTMAP_SAMPLE_SIZE;
+                patch.meshIndex = surf.meshIndex;
+                patch.luxelIndex = y * surf.rect.width + x;
+                
+                RadiosityData::patches.push_back(patch);
+            }
+        }
+    }
+    
+    RadiosityData::initialized = true;
+}
+
+
+/*
+    ComputeFormFactor
+    Compute the form factor between two patches (simplified)
+    This is the fraction of energy leaving patch A that reaches patch B
+*/
+static float ComputeFormFactor(const RadiosityData::Patch_t &from, 
+                               const RadiosityData::Patch_t &to) {
+    Vector3 delta = to.origin - from.origin;
+    float distSq = vector3_dot(delta, delta);
+    
+    if (distSq < 1.0f) return 0.0f;
+    
+    float dist = std::sqrt(distSq);
+    Vector3 dir = delta / dist;
+    
+    // Cosine of angle from sender
+    float cosFrom = vector3_dot(from.normal, dir);
+    if (cosFrom <= 0) return 0.0f;
+    
+    // Cosine of angle to receiver
+    float cosTo = vector3_dot(to.normal, -dir);
+    if (cosTo <= 0) return 0.0f;
+    
+    // Form factor: (cos_a * cos_b * area) / (pi * r^2)
+    float ff = (cosFrom * cosTo * to.area) / (M_PI * distSq);
+    
+    return std::min(1.0f, ff);
+}
+
+// Forward declaration for TraceRayAgainstMeshes (defined later in file)
+static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, float maxDist);
+
+
+/*
+    GatherRadiosityLight
+    Gather indirect light from surrounding patches (one bounce iteration)
+*/
+static void GatherRadiosityLight(int bounceNum) {
+    if (RadiosityData::patches.empty()) return;
+    
+    Sys_Printf("     Radiosity bounce %d (%zu patches)...\n", bounceNum, RadiosityData::patches.size());
+    
+    // Store incoming light for this bounce
+    std::vector<Vector3> incomingLight(RadiosityData::patches.size(), Vector3(0, 0, 0));
+    
+    // For each receiving patch
+    for (size_t i = 0; i < RadiosityData::patches.size(); i++) {
+        RadiosityData::Patch_t &receiver = RadiosityData::patches[i];
+        Vector3 gathered(0, 0, 0);
+        
+        // Sample a subset of sender patches (for performance)
+        int sampleStep = std::max(1, static_cast<int>(RadiosityData::patches.size() / RADIOSITY_SAMPLES));
+        
+        for (size_t j = 0; j < RadiosityData::patches.size(); j += sampleStep) {
+            if (i == j) continue;
+            
+            const RadiosityData::Patch_t &sender = RadiosityData::patches[j];
+            
+            // Skip if sender has no light to give
+            float senderEnergy = sender.totalLight.x() + sender.totalLight.y() + sender.totalLight.z();
+            if (senderEnergy < 0.001f) continue;
+            
+            float ff = ComputeFormFactor(receiver, sender);
+            if (ff < 0.0001f) continue;
+            
+            // Optional: visibility check (expensive but more accurate)
+            // For performance, we skip this for most samples
+            if ((i + j) % 8 == 0) {
+                Vector3 dir = vector3_normalised(sender.origin - receiver.origin);
+                float dist = vector3_length(sender.origin - receiver.origin);
+                if (TraceRayAgainstMeshes(receiver.origin, dir, dist - 1.0f)) {
+                    continue;  // Blocked
+                }
+            }
+            
+            // Gather light from sender, modulated by sender's reflectivity
+            Vector3 contribution;
+            contribution[0] = sender.totalLight[0] * sender.reflectivity[0] * ff;
+            contribution[1] = sender.totalLight[1] * sender.reflectivity[1] * ff;
+            contribution[2] = sender.totalLight[2] * sender.reflectivity[2] * ff;
+            
+            gathered = gathered + contribution * static_cast<float>(sampleStep);
+        }
+        
+        incomingLight[i] = gathered * RADIOSITY_SCALE;
+    }
+    
+    // Apply gathered light to patches
+    for (size_t i = 0; i < RadiosityData::patches.size(); i++) {
+        RadiosityData::patches[i].totalLight = RadiosityData::patches[i].totalLight + incomingLight[i];
+    }
 }
 
 
@@ -329,13 +807,19 @@ void ApexLegends::SetupSurfaceLightmaps() {
     the map in real-time because the engine reads these values at runtime.
     
     Lightmaps should only contain:
-    - Indirect/bounced lighting (requires full radiosity, not implemented)
+    - Indirect/bounced lighting (radiosity)
     - Static point/spot light contributions that aren't realtime
     
-    For now, we provide a neutral base that the engine's dynamic lighting adds to.
+    Enhanced with:
+    - Phong shading (smooth normal interpolation across edges)
+    - Supersampling (anti-aliased lighting)
+    - Radiosity (bounced indirect lighting)
 */
 void ApexLegends::ComputeLightmapLighting() {
     Sys_Printf("--- ComputeLightmapLighting ---\n");
+    
+    // Build edge sharing data for phong shading
+    BuildEdgeSharing();
     
     // NOTE: We do NOT bake emit_skyambient or emit_skylight here!
     // The engine applies these dynamically from worldLights lump.
@@ -345,94 +829,173 @@ void ApexLegends::ComputeLightmapLighting() {
         Sys_Printf("  No worldlights found\n");
     }
     
+    // Initialize radiosity patches for bounce lighting
+    if (RADIOSITY_BOUNCES > 0) {
+        InitRadiosityPatches();
+    }
+    
     int totalTexels = 0;
+    int patchIndex = 0;  // Track patch index for radiosity
+    
+    Sys_Printf("     Computing direct lighting");
+    if (SUPERSAMPLE_LEVEL > 1) {
+        Sys_Printf(" with %dx%d supersampling", SUPERSAMPLE_LEVEL, SUPERSAMPLE_LEVEL);
+    }
+    Sys_Printf("...\n");
     
     for (SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
         // For each texel
         for (int y = 0; y < surf.rect.height; y++) {
             for (int x = 0; x < surf.rect.width; x++) {
-                // Compute world position for this texel
-                float localU = (x + 0.5f) * LIGHTMAP_SAMPLE_SIZE;
-                float localV = (y + 0.5f) * LIGHTMAP_SAMPLE_SIZE;
+                // =====================================================
+                // SUPERSAMPLING: Take multiple samples and average
+                // =====================================================
+                Vector3 accumColor(0, 0, 0);
+                int numSamples = (SUPERSAMPLE_LEVEL > 1) ? 4 : 1;
                 
-                Vector3 worldPos = surf.worldBounds.mins 
-                    + surf.tangent * localU 
-                    + surf.bitangent * localV;
-                
-                // Offset slightly along normal to avoid self-intersection
-                worldPos = worldPos + surf.plane.normal() * 0.1f;
-                
-                // Start with neutral base - engine adds dynamic ambient/sun on top
-                // A small base value prevents completely black areas
-                Vector3 color(0.1f, 0.1f, 0.1f);
-                
-                // Only bake NON-realtime static lights (point lights, spotlights)
-                // Skip emit_skyambient and emit_skylight - they're dynamic!
-                for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
-                    // Skip sky lighting - applied dynamically by engine
-                    if (light.type == emit_skyambient || light.type == emit_skylight) {
-                        continue;
-                    }
+                for (int sampleIdx = 0; sampleIdx < numSamples; sampleIdx++) {
+                    // Get sample offset (jittered for anti-aliasing)
+                    float offsetU = (numSamples > 1) ? supersampleOffsets[sampleIdx][0] : 0.0f;
+                    float offsetV = (numSamples > 1) ? supersampleOffsets[sampleIdx][1] : 0.0f;
                     
-                    // Skip realtime lights - they're computed per-frame
-                    if (light.flags & WORLDLIGHT_FLAG_REALTIME) {
-                        continue;
-                    }
+                    // Compute world position for this sample
+                    // Normalize texel to [0,1] within the rect, then map to tangent-space bounds
+                    float normalizedU = (surf.rect.width > 1) ? (x + 0.5f + offsetU) / (surf.rect.width - 1) : 0.5f;
+                    float normalizedV = (surf.rect.height > 1) ? (y + 0.5f + offsetV) / (surf.rect.height - 1) : 0.5f;
+                    normalizedU = std::max(0.0f, std::min(1.0f, normalizedU));
+                    normalizedV = std::max(0.0f, std::min(1.0f, normalizedV));
+                    float localU = surf.uMin + normalizedU * (surf.uMax - surf.uMin);
+                    float localV = surf.vMin + normalizedV * (surf.vMax - surf.vMin);
                     
-                    Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
-                    Vector3 lightColor = light.intensity;
+                    Vector3 worldPos = surf.worldBounds.mins 
+                        + surf.tangent * localU 
+                        + surf.bitangent * localV;
                     
-                    if (light.type == emit_point) {
-                        // Static point light
-                        Vector3 toLight = lightPos - worldPos;
-                        float dist = vector3_length(toLight);
-                        if (dist < 0.001f) continue;
-                        
-                        Vector3 lightDir = toLight / dist;
-                        float NdotL = vector3_dot(surf.plane.normal(), lightDir);
-                        
-                        if (NdotL > 0) {
-                            float atten = 1.0f;
-                            if (light.quadratic_attn > 0 || light.linear_attn > 0) {
-                                atten = 1.0f / (light.constant_attn + 
-                                               light.linear_attn * dist + 
-                                               light.quadratic_attn * dist * dist);
-                            } else {
-                                atten = 1.0f / (1.0f + dist * dist * 0.0001f);
-                            }
-                            color = color + lightColor * NdotL * atten * 100.0f;
+                    // Offset slightly along normal to avoid self-intersection
+                    worldPos = worldPos + surf.plane.normal() * 0.1f;
+                    
+                    // =====================================================
+                    // PHONG SHADING: Get interpolated normal at this position
+                    // =====================================================
+                    Vector3 sampleNormal = GetPhongNormal(surf.meshIndex, worldPos, surf.plane.normal());
+                    
+                    // Start with neutral base - engine adds dynamic ambient/sun on top
+                    // A small base value prevents completely black areas
+                    Vector3 sampleColor(0.1f, 0.1f, 0.1f);
+                    
+                    // Only bake NON-realtime static lights (point lights, spotlights)
+                    // Skip emit_skyambient and emit_skylight - they're dynamic!
+                    for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
+                        // Skip sky lighting - applied dynamically by engine
+                        if (light.type == emit_skyambient || light.type == emit_skylight) {
+                            continue;
                         }
-                    } else if (light.type == emit_spotlight) {
-                        // Static spotlight
-                        Vector3 toLight = lightPos - worldPos;
-                        float dist = vector3_length(toLight);
-                        if (dist < 0.001f) continue;
                         
-                        Vector3 lightDir = toLight / dist;
-                        float NdotL = vector3_dot(surf.plane.normal(), lightDir);
+                        // Skip realtime lights - they're computed per-frame
+                        if (light.flags & WORLDLIGHT_FLAG_REALTIME) {
+                            continue;
+                        }
                         
-                        if (NdotL > 0) {
-                            float spotDot = vector3_dot(-lightDir, light.normal);
-                            if (spotDot > light.stopdot2) {
-                                float spotAtten = 1.0f;
-                                if (spotDot < light.stopdot) {
-                                    spotAtten = (spotDot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                        Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
+                        Vector3 lightColor = light.intensity;
+                        
+                        if (light.type == emit_point) {
+                            // Static point light
+                            Vector3 toLight = lightPos - worldPos;
+                            float dist = vector3_length(toLight);
+                            if (dist < 0.001f) continue;
+                            
+                            Vector3 lightDir = toLight / dist;
+                            // Use phong normal for smoother lighting across edges
+                            float NdotL = vector3_dot(sampleNormal, lightDir);
+                            
+                            if (NdotL > 0) {
+                                float atten = 1.0f;
+                                if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+                                    atten = 1.0f / (light.constant_attn + 
+                                                   light.linear_attn * dist + 
+                                                   light.quadratic_attn * dist * dist);
+                                } else {
+                                    atten = 1.0f / (1.0f + dist * dist * 0.0001f);
                                 }
-                                float distAtten = 1.0f / (1.0f + dist * dist * 0.0001f);
-                                color = color + lightColor * NdotL * spotAtten * distAtten * 100.0f;
+                                sampleColor = sampleColor + lightColor * NdotL * atten * 100.0f;
+                            }
+                        } else if (light.type == emit_spotlight) {
+                            // Static spotlight
+                            Vector3 toLight = lightPos - worldPos;
+                            float dist = vector3_length(toLight);
+                            if (dist < 0.001f) continue;
+                            
+                            Vector3 lightDir = toLight / dist;
+                            // Use phong normal for smoother lighting across edges
+                            float NdotL = vector3_dot(sampleNormal, lightDir);
+                            
+                            if (NdotL > 0) {
+                                float spotDot = vector3_dot(-lightDir, light.normal);
+                                if (spotDot > light.stopdot2) {
+                                    float spotAtten = 1.0f;
+                                    if (spotDot < light.stopdot) {
+                                        spotAtten = (spotDot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                                    }
+                                    float distAtten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                                    sampleColor = sampleColor + lightColor * NdotL * spotAtten * distAtten * 100.0f;
+                                }
                             }
                         }
                     }
+                    
+                    accumColor = accumColor + sampleColor;
                 }
                 
+                // Average the supersamples
+                Vector3 finalColor = accumColor * (1.0f / static_cast<float>(numSamples));
+                
                 // Store in luxel array
-                surf.luxels[y * surf.rect.width + x] = color;
+                surf.luxels[y * surf.rect.width + x] = finalColor;
+                
+                // Store direct light for radiosity if enabled
+                if (RADIOSITY_BOUNCES > 0 && patchIndex < static_cast<int>(RadiosityData::patches.size())) {
+                    RadiosityData::patches[patchIndex].directLight = finalColor;
+                    RadiosityData::patches[patchIndex].totalLight = finalColor;
+                    patchIndex++;
+                }
+                
                 totalTexels++;
             }
         }
     }
     
-    Sys_Printf("     %9d texels computed\n", totalTexels);
+    Sys_Printf("     %9d texels computed (direct)\n", totalTexels);
+    
+    // =====================================================
+    // RADIOSITY: Compute bounce lighting
+    // =====================================================
+    if (RADIOSITY_BOUNCES > 0 && !RadiosityData::patches.empty()) {
+        Sys_Printf("     Computing %d radiosity bounce(s)...\n", RADIOSITY_BOUNCES);
+        
+        for (int bounce = 1; bounce <= RADIOSITY_BOUNCES; bounce++) {
+            GatherRadiosityLight(bounce);
+        }
+        
+        // Apply bounced light back to luxels
+        patchIndex = 0;
+        for (SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
+            for (int y = 0; y < surf.rect.height; y++) {
+                for (int x = 0; x < surf.rect.width; x++) {
+                    if (patchIndex < static_cast<int>(RadiosityData::patches.size())) {
+                        // Add indirect light (total - direct = indirect)
+                        Vector3 indirect = RadiosityData::patches[patchIndex].totalLight 
+                                         - RadiosityData::patches[patchIndex].directLight;
+                        surf.luxels[y * surf.rect.width + x] = 
+                            surf.luxels[y * surf.rect.width + x] + indirect;
+                        patchIndex++;
+                    }
+                }
+            }
+        }
+        
+        Sys_Printf("     Radiosity complete\n");
+    }
 }
 
 
@@ -613,9 +1176,19 @@ bool ApexLegends::GetLightmapUV(int meshIndex, const Vector3 &worldPos, Vector2 
             float localU = vector3_dot(localPos, surf.tangent);
             float localV = vector3_dot(localPos, surf.bitangent);
             
-            // Convert to texel coordinates within the allocated rect
-            float texelU = localU / LIGHTMAP_SAMPLE_SIZE;
-            float texelV = localV / LIGHTMAP_SAMPLE_SIZE;
+            // Normalize U/V to [0,1] based on actual tangent-space bounds
+            // This properly handles surfaces where vertices can be on either side
+            // of the tangent/bitangent directions from the world bounds origin
+            float uRange = surf.uMax - surf.uMin;
+            float vRange = surf.vMax - surf.vMin;
+            
+            // Avoid division by zero for degenerate surfaces
+            float normalizedU = (uRange > 0.001f) ? (localU - surf.uMin) / uRange : 0.0f;
+            float normalizedV = (vRange > 0.001f) ? (localV - surf.vMin) / vRange : 0.0f;
+            
+            // Convert to texel coordinates within the allocated rect (excluding 0.5 border)
+            float texelU = normalizedU * (surf.rect.width - 1);
+            float texelV = normalizedV * (surf.rect.height - 1);
             
             // Add offset for rect position in atlas and normalize to [0,1]
             float atlasU = (surf.rect.x + texelU + 0.5f) / MAX_LIGHTMAP_WIDTH;
