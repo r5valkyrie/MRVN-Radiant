@@ -20,7 +20,7 @@ MRVN-Radiant is a fork of NetRadiant-custom (GtkRadiant 1.4 &rarr; massive rewri
 |------|----------|------|
 | Titanfall Online | 38% | No triangle collision, no lighting, no portals |
 | Titanfall 2 | 37% | No triangle collision, no lighting, no portals |
-| Apex Legends | 50% | No realtime lighting, no portals |
+| Apex Legends | 50% | basic lighting, no portals, no culling |
 
 > Coverage = Lumps generated / Total lump count. Stubbed lumps arent counted because they're not custom.
 

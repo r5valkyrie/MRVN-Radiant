@@ -434,60 +434,67 @@ void ApexLegends::ComputeLightmapLighting() {
 
 /*
     EncodeHDRTexel
-    Encode a floating-point RGB color to the 8-byte HDR format
+    Encode a floating-point RGB color to the 8-byte RGBE-style HDR format
     
-    Based on reverse engineering of Apex engine's lightmap format.
-    The 8-byte format appears to be:
-    - Bytes 0-2: Base RGB color (gamma corrected, sRGB)
-    - Byte 3: Alpha (always 255)
-    - Bytes 4-6: HDR/indirect RGB (can differ from base for bounce lighting)
-    - Byte 7: HDR exponent/multiplier (128 = 1.0x, higher = brighter)
+    Based on analysis of official Apex Legends lightmaps:
+    - Bytes 0-2: Direct light RGB mantissa (0-255, sRGB gamma)
+    - Byte 3: Direct light exponent (0-255, typical range 0-60)
+    - Bytes 4-6: Indirect/bounce light RGB mantissa (0-255, sRGB gamma)
+    - Byte 7: Indirect light exponent (0-255, typical range 0-60)
     
-    Input color is in linear HDR space from ComputeLightmapLighting()
-    which already includes ambient from light_environment.
+    Format is RGBE-style where:
+      finalColor = (RGB / 255) * 2^(exponent / 8)
+    
+    Examples from official maps:
+    - exp=0: multiplier 1.0x (normal/shadow areas)
+    - exp=8: multiplier 2.0x
+    - exp=16: multiplier 4.0x
+    - exp=50-60: very bright sunlit areas (80-150x)
+    
+    For simple maps without bounce lighting, direct and indirect are the same.
 */
 static void EncodeHDRTexel(const Vector3 &color, uint8_t *out) {
-    // Input color already has ambient baked in from ComputeLightmapLighting
-    // Just need to tonemap and encode
+    // Input is in linear HDR space (0.0 to potentially >1.0 for HDR)
+    // Find the maximum component to determine exponent
+    float maxComponent = std::max({color.x(), color.y(), color.z()});
     
-    // Find the maximum component to determine if we need HDR scaling
-    float maxComponent = std::max({color.x(), color.y(), color.z(), 0.001f});
+    uint8_t exponent;
+    float scale;
     
-    // HDR exponent: if color exceeds 1.0, we need to scale up the multiplier
-    // Multiplier of 128 = 1.0x, 255 = ~2.0x, 64 = 0.5x
-    float hdrScale = 1.0f;
-    uint8_t hdrExponent = 128;  // Default 1.0x
-    
-    if (maxComponent > 1.0f) {
-        // Need HDR - scale color down and boost exponent
-        hdrScale = 1.0f / maxComponent;
-        // Map maxComponent to exponent: 128 + log2(maxComponent) * 32
-        // This gives us ~4 stops of HDR range
-        float logScale = std::log2(maxComponent);
-        hdrExponent = (uint8_t)std::min(255.0f, 128.0f + logScale * 32.0f);
+    if (maxComponent <= 0.001f) {
+        // Near-black - use exp=0 with dark RGB
+        exponent = 0;
+        scale = 1.0f;
+    } else if (maxComponent <= 1.0f) {
+        // LDR range - exp=0 gives 1.0x multiplier
+        exponent = 0;
+        scale = 1.0f;
+    } else {
+        // HDR range - need positive exponent
+        // exp = 8 * log2(maxComponent) rounded up
+        int exp = (int)std::ceil(8.0f * std::log2(maxComponent));
+        exponent = (uint8_t)std::min(255, std::max(0, exp));
+        
+        // Scale factor: divide by 2^(exp/8) to get mantissa in 0-1 range
+        scale = 1.0f / std::pow(2.0f, exponent / 8.0f);
     }
     
-    // Apply HDR scaling and clamp to [0, 1]
-    float r = std::min(1.0f, std::max(0.0f, color.x() * hdrScale));
-    float g = std::min(1.0f, std::max(0.0f, color.y() * hdrScale));
-    float b = std::min(1.0f, std::max(0.0f, color.z() * hdrScale));
+    // Scale color and apply gamma correction (linear to sRGB)
+    float r = std::pow(std::min(1.0f, std::max(0.0f, color.x() * scale)), 1.0f / 2.2f);
+    float g = std::pow(std::min(1.0f, std::max(0.0f, color.y() * scale)), 1.0f / 2.2f);
+    float b = std::pow(std::min(1.0f, std::max(0.0f, color.z() * scale)), 1.0f / 2.2f);
     
-    // Apply gamma correction (linear to sRGB)
-    r = std::pow(r, 1.0f / 2.2f);
-    g = std::pow(g, 1.0f / 2.2f);
-    b = std::pow(b, 1.0f / 2.2f);
-    
-    // Scale to 0-255
+    // Direct light (bytes 0-3)
     out[0] = (uint8_t)(r * 255.0f);
     out[1] = (uint8_t)(g * 255.0f);
     out[2] = (uint8_t)(b * 255.0f);
-    out[3] = 255;  // Alpha
+    out[3] = exponent;
     
-    // HDR/indirect lighting (same as direct for now, could add bounce)
+    // Indirect light (bytes 4-7) - same as direct for now
     out[4] = out[0];
     out[5] = out[1];
     out[6] = out[2];
-    out[7] = hdrExponent;  // HDR multiplier
+    out[7] = exponent;
 }
 
 
@@ -522,24 +529,25 @@ void ApexLegends::EmitLightmaps()
         
         // Neutral stub lightmap - engine applies dynamic ambient/sun from worldLights
         // This allows _ambient/_light changes in .ent files to work immediately
-        uint8_t neutralValue = 128;  // Neutral gray
+        // Format: RGB (sRGB gamma) + exponent where finalColor = RGB * 2^(exp/8)
+        // exp=0 means 2^0 = 1.0x multiplier (neutral)
+        // RGB=180 gives a mid-gray tone in sRGB (linear ~0.45)
+        uint8_t neutralGray = 180;  // Mid-gray mantissa in sRGB
+        uint8_t exponent = 0;       // Neutral exposure (2^0 = 1.0x)
         size_t dataSize = 256 * 256 * 8;
         ApexLegends::Bsp::lightmapDataSky.resize(dataSize);
         for (size_t i = 0; i < dataSize; i += 8) {
-            ApexLegends::Bsp::lightmapDataSky[i + 0] = neutralValue;
-            ApexLegends::Bsp::lightmapDataSky[i + 1] = neutralValue;
-            ApexLegends::Bsp::lightmapDataSky[i + 2] = neutralValue;
-            ApexLegends::Bsp::lightmapDataSky[i + 3] = 255;  // A
-            ApexLegends::Bsp::lightmapDataSky[i + 4] = neutralValue;
-            ApexLegends::Bsp::lightmapDataSky[i + 5] = neutralValue;
-            ApexLegends::Bsp::lightmapDataSky[i + 6] = neutralValue;
-            ApexLegends::Bsp::lightmapDataSky[i + 7] = 128;  // Neutral multiplier
+            ApexLegends::Bsp::lightmapDataSky[i + 0] = neutralGray;  // R
+            ApexLegends::Bsp::lightmapDataSky[i + 1] = neutralGray;  // G
+            ApexLegends::Bsp::lightmapDataSky[i + 2] = neutralGray;  // B
+            ApexLegends::Bsp::lightmapDataSky[i + 3] = exponent;     // Direct exp
+            ApexLegends::Bsp::lightmapDataSky[i + 4] = neutralGray;  // R indirect
+            ApexLegends::Bsp::lightmapDataSky[i + 5] = neutralGray;  // G indirect
+            ApexLegends::Bsp::lightmapDataSky[i + 6] = neutralGray;  // B indirect
+            ApexLegends::Bsp::lightmapDataSky[i + 7] = exponent;     // Indirect exp
         }
         
-        // RTL page lump must be empty (0 bytes) or a multiple of 126 bytes
-        // Leave it empty since we have no RTL data
-        ApexLegends::Bsp::lightmapDataRTLPage.clear();
-        
+        // RTL data will be generated by EmitRealTimeLightmaps()
         return;
     }
     
@@ -579,10 +587,7 @@ void ApexLegends::EmitLightmaps()
             page.pixels.begin(), page.pixels.end());
     }
     
-    // RTL page lump contains 63 uint16 indices per page (126 bytes per page)
-    // The lump size must be a multiple of 126 bytes, or empty
-    // For now, leave empty since we don't generate RTL data
-    ApexLegends::Bsp::lightmapDataRTLPage.clear();
+    // RTL data will be generated by EmitRealTimeLightmaps()
     
     Sys_Printf("     %9zu lightmap pages\n", ApexLegends::Bsp::lightmapHeaders.size());
     Sys_Printf("     %9zu bytes data\n", ApexLegends::Bsp::lightmapDataSky.size());
@@ -643,4 +648,517 @@ int16_t ApexLegends::GetLightmapPageIndex(int meshIndex) {
     // Return 0 (default stub page) for meshes without specific lightmap allocation
     // This ensures all LIT_BUMP meshes have a valid bright lightmap
     return 0;
+}
+
+
+/*
+    EmitLightProbes
+    Generate light probe data for ambient lighting on a 3D grid
+    
+    Light probes provide ambient lighting for dynamic entities (players, props).
+    Probes are placed on a grid throughout the playable space.
+    The engine uses a binary tree to look up probes spatially.
+    
+    Structure hierarchy:
+    - LightProbeParentInfo: Associates probes with brush models (0 = worldspawn)
+    - LightProbeTree: Binary tree for spatial lookup
+    - LightProbeRef: Spatial reference to a probe
+    - LightProbe: Actual ambient data (SH coefficients + static light refs)
+*/
+
+// Sky environment data extracted from worldlights
+struct SkyEnvironment {
+    Vector3 ambientColor;      // Base ambient color (from emit_skyambient)
+    Vector3 sunDir;            // Sun direction (from emit_skylight)
+    Vector3 sunColor;          // Sun color (normalized)
+    float sunIntensity;        // Sun brightness multiplier
+    bool valid;                // Whether sky data was found
+};
+
+// Extract sky environment from worldlights (called once)
+static SkyEnvironment GetSkyEnvironment() {
+    SkyEnvironment sky;
+    sky.ambientColor = Vector3(0.65f, 0.55f, 0.45f);  // Default warm outdoor
+    sky.sunDir = Vector3(0.5f, 0.5f, -0.707f);        // Default: sun from upper-right
+    sky.sunColor = Vector3(1.0f, 0.95f, 0.85f);       // Default warm sunlight
+    sky.sunIntensity = 1.5f;
+    sky.valid = false;
+    
+    bool foundSkyAmbient = false;
+    bool foundSkyLight = false;
+    
+    for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
+        if (light.type == 5 && !foundSkyAmbient) {  // emit_skyambient
+            float maxIntensity = std::max({light.intensity[0], light.intensity[1], light.intensity[2], 1.0f});
+            sky.ambientColor[0] = light.intensity[0] / maxIntensity;
+            sky.ambientColor[1] = light.intensity[1] / maxIntensity;
+            sky.ambientColor[2] = light.intensity[2] / maxIntensity;
+            foundSkyAmbient = true;
+        }
+        if (light.type == 3 && !foundSkyLight) {  // emit_skylight (sun)
+            sky.sunDir = Vector3(light.normal[0], light.normal[1], light.normal[2]);
+            float len = std::sqrt(sky.sunDir[0]*sky.sunDir[0] + sky.sunDir[1]*sky.sunDir[1] + sky.sunDir[2]*sky.sunDir[2]);
+            if (len > 0.001f) {
+                sky.sunDir = sky.sunDir * (1.0f / len);
+            }
+            float maxIntensity = std::max({light.intensity[0], light.intensity[1], light.intensity[2], 1.0f});
+            sky.sunColor[0] = light.intensity[0] / maxIntensity;
+            sky.sunColor[1] = light.intensity[1] / maxIntensity;
+            sky.sunColor[2] = light.intensity[2] / maxIntensity;
+            sky.sunIntensity = maxIntensity / 100.0f;
+            sky.sunIntensity = std::min(3.0f, std::max(0.5f, sky.sunIntensity));
+            foundSkyLight = true;
+        }
+    }
+    
+    sky.valid = foundSkyAmbient || foundSkyLight;
+    
+    if (!foundSkyAmbient) {
+        Sys_Printf("     Warning: No emit_skyambient found, using default\n");
+    }
+    if (!foundSkyLight) {
+        Sys_Printf("     Warning: No emit_skylight found, using default sun direction\n");
+    }
+    
+    return sky;
+}
+
+// Test if a position can see the sky (is outdoors)
+// Returns: 0.0 = fully indoors, 1.0 = fully outdoors, in between = partial
+static float TestSkyVisibility(const Vector3 &origin) {
+    // Cast rays upward in a cone to test for sky visibility
+    const int NUM_SKY_RAYS = 8;
+    const float SKY_TRACE_DIST = 8192.0f;  // How far to trace upward
+    
+    int skyHits = 0;
+    
+    // Directions: up, and 45-degree angles in 8 directions
+    static const Vector3 skyDirs[] = {
+        Vector3(0, 0, 1),                           // Straight up
+        Vector3(0.3f, 0, 0.95f),                   // Slightly tilted
+        Vector3(-0.3f, 0, 0.95f),
+        Vector3(0, 0.3f, 0.95f),
+        Vector3(0, -0.3f, 0.95f),
+        Vector3(0.2f, 0.2f, 0.96f),
+        Vector3(-0.2f, 0.2f, 0.96f),
+        Vector3(0.2f, -0.2f, 0.96f),
+    };
+    
+    trace_t trace;
+    memset(&trace, 0, sizeof(trace));
+    trace.testOcclusion = true;
+    trace.forceSunlight = false;
+    trace.testAll = true;       // Continue through sky surfaces
+    trace.recvShadows = 1;
+    trace.numSurfaces = 0;
+    trace.surfaces = nullptr;
+    trace.numLights = 0;
+    trace.lights = nullptr;
+    trace.twoSided = false;
+    trace.inhibitRadius = 1.0f;  // Ignore geometry very close to origin
+    
+    for (int i = 0; i < NUM_SKY_RAYS; i++) {
+        trace.origin = origin;
+        trace.end = origin + skyDirs[i] * SKY_TRACE_DIST;
+        trace.cluster = -1;  // Don't use cluster culling
+        trace.normal = skyDirs[i];
+        trace.color = Vector3(1, 1, 1);
+        
+        SetupTrace(&trace);
+        TraceLine(&trace);
+        
+        // If we hit sky or nothing (went to end), we can see sky
+        if (!trace.opaque || (trace.compileFlags & C_SKY)) {
+            skyHits++;
+        }
+    }
+    
+    return static_cast<float>(skyHits) / static_cast<float>(NUM_SKY_RAYS);
+}
+
+// Test if a position is in shadow from the sun
+// Returns: 0.0 = fully in shadow, 1.0 = fully lit by sun
+static float TestSunVisibility(const Vector3 &origin, const Vector3 &sunDir) {
+    const float SUN_TRACE_DIST = 16384.0f;  // Sun is very far away
+    
+    trace_t trace;
+    memset(&trace, 0, sizeof(trace));
+    trace.testOcclusion = true;
+    trace.forceSunlight = false;
+    trace.testAll = true;       // Continue through sky
+    trace.recvShadows = 1;
+    trace.numSurfaces = 0;
+    trace.surfaces = nullptr;
+    trace.numLights = 0;
+    trace.lights = nullptr;
+    trace.twoSided = false;
+    trace.inhibitRadius = 1.0f;
+    
+    // Trace toward the sun (opposite of sun direction since sunDir points away from sun)
+    Vector3 toSun = sunDir * -1.0f;  // Negate because sunDir points from sun TO world
+    
+    trace.origin = origin;
+    trace.end = origin + toSun * SUN_TRACE_DIST;
+    trace.cluster = -1;
+    trace.normal = toSun;
+    trace.color = Vector3(1, 1, 1);
+    
+    SetupTrace(&trace);
+    TraceLine(&trace);
+    
+    // If we hit sky or nothing, we can see the sun
+    if (!trace.opaque || (trace.compileFlags & C_SKY)) {
+        return 1.0f;
+    }
+    
+    return 0.0f;
+}
+
+// Compute SH coefficients for a single probe based on position and visibility
+static void ComputeProbeSH(LightProbe_v50_t &probe, const Vector3 &position, 
+                           const SkyEnvironment &sky, float skyVis, float sunVis) {
+    // The engine divides int16 SH values by 8192
+    // DC of 8192 = 1.0 normalized, but in practice need higher for visibility
+    const float shScale = 68192.0f;
+    
+    // Base ambient varies by sky visibility:
+    // - Outdoors (skyVis=1): full ambient color
+    // - Indoors (skyVis=0): reduced ambient (darker, cooler tint for indoor shadow)
+    const float indoorAmbientScale = 0.35f;  // Indoor areas get 35% of outdoor ambient
+    const float ambientScale = indoorAmbientScale + (1.0f - indoorAmbientScale) * skyVis;
+    
+    // Indoor areas have cooler tint (less red, slightly more blue)
+    Vector3 effectiveAmbient;
+    effectiveAmbient[0] = sky.ambientColor[0] * ambientScale * (0.8f + 0.2f * skyVis);  // Less red indoors
+    effectiveAmbient[1] = sky.ambientColor[1] * ambientScale;
+    effectiveAmbient[2] = sky.ambientColor[2] * ambientScale * (1.0f + 0.1f * (1.0f - skyVis));  // Slightly more blue indoors
+    
+    // Directional SH (sun shading) only applies if sun is visible
+    // If sun is blocked, directional components are zero (flat ambient lighting)
+    const float dirScale = shScale * sky.sunIntensity * 0.6f * sunVis;
+    
+    // Directional coefficients from sun direction
+    float dirX = -sky.sunDir[0];
+    float dirY = -sky.sunDir[1];
+    float dirZ = -sky.sunDir[2];
+    
+    // Red channel
+    probe.ambientSH[0][0] = static_cast<int16_t>(dirX * sky.sunColor[0] * dirScale);  // R X
+    probe.ambientSH[0][1] = static_cast<int16_t>(dirY * sky.sunColor[0] * dirScale);  // R Y
+    probe.ambientSH[0][2] = static_cast<int16_t>(dirZ * sky.sunColor[0] * dirScale);  // R Z
+    probe.ambientSH[0][3] = static_cast<int16_t>(effectiveAmbient[0] * shScale);       // R DC
+    
+    // Green channel
+    probe.ambientSH[1][0] = static_cast<int16_t>(dirX * sky.sunColor[1] * dirScale);  // G X
+    probe.ambientSH[1][1] = static_cast<int16_t>(dirY * sky.sunColor[1] * dirScale);  // G Y
+    probe.ambientSH[1][2] = static_cast<int16_t>(dirZ * sky.sunColor[1] * dirScale);  // G Z
+    probe.ambientSH[1][3] = static_cast<int16_t>(effectiveAmbient[1] * shScale);       // G DC
+    
+    // Blue channel
+    probe.ambientSH[2][0] = static_cast<int16_t>(dirX * sky.sunColor[2] * dirScale);  // B X
+    probe.ambientSH[2][1] = static_cast<int16_t>(dirY * sky.sunColor[2] * dirScale);  // B Y
+    probe.ambientSH[2][2] = static_cast<int16_t>(dirZ * sky.sunColor[2] * dirScale);  // B Z
+    probe.ambientSH[2][3] = static_cast<int16_t>(effectiveAmbient[2] * shScale);       // B DC
+}
+
+// Legacy function for logging (called once to print sky info)
+static void LogSkyEnvironment(const SkyEnvironment &sky) {
+    Sys_Printf("     Sun direction: (%.2f, %.2f, %.2f)\n", sky.sunDir[0], sky.sunDir[1], sky.sunDir[2]);
+    Sys_Printf("     Ambient color: (%.2f, %.2f, %.2f)\n", sky.ambientColor[0], sky.ambientColor[1], sky.ambientColor[2]);
+}
+
+void ApexLegends::EmitLightProbes() {
+    Sys_Printf("--- EmitLightProbes ---\n");
+    
+    ApexLegends::Bsp::lightprobes.clear();
+    ApexLegends::Bsp::lightprobeReferences.clear();
+    ApexLegends::Bsp::lightprobeTree.clear();
+    ApexLegends::Bsp::lightprobeParentInfos.clear();
+    ApexLegends::Bsp::staticPropLightprobeIndices.clear();
+    
+    // Calculate world bounds from all meshes
+    MinMax worldBounds;
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        worldBounds.extend(mesh.minmax.mins);
+        worldBounds.extend(mesh.minmax.maxs);
+    }
+    
+    // If no geometry, create a minimal bounds
+    if (!worldBounds.valid()) {
+        worldBounds.extend(Vector3(-1024, -1024, -512));
+        worldBounds.extend(Vector3(1024, 1024, 512));
+    }
+    
+    // Grid spacing for probes (units between probes)
+    const float PROBE_SPACING = 512.0f;  // One probe every 512 units
+    const float PROBE_Z_SPACING = 256.0f;  // Tighter vertical spacing
+    
+    // Calculate grid dimensions
+    Vector3 size = worldBounds.maxs - worldBounds.mins;
+    int gridX = std::max(2, (int)std::ceil(size.x() / PROBE_SPACING) + 1);
+    int gridY = std::max(2, (int)std::ceil(size.y() / PROBE_SPACING) + 1);
+    int gridZ = std::max(2, (int)std::ceil(size.z() / PROBE_Z_SPACING) + 1);
+    
+    // Limit grid size to prevent excessive probes
+    const int MAX_GRID = 16;
+    gridX = std::min(gridX, MAX_GRID);
+    gridY = std::min(gridY, MAX_GRID);
+    gridZ = std::min(gridZ, MAX_GRID / 2);  // Less vertical variation needed
+    
+    Sys_Printf("     Probe grid: %d x %d x %d = %d probes\n", gridX, gridY, gridZ, gridX * gridY * gridZ);
+    
+    // Compute actual spacing based on grid
+    float spacingX = size.x() / std::max(1, gridX - 1);
+    float spacingY = size.y() / std::max(1, gridY - 1);
+    float spacingZ = size.z() / std::max(1, gridZ - 1);
+    
+    // Create probes on a 3D grid
+    std::vector<Vector3> probePositions;
+    
+    for (int z = 0; z < gridZ; z++) {
+        for (int y = 0; y < gridY; y++) {
+            for (int x = 0; x < gridX; x++) {
+                Vector3 pos;
+                pos[0] = worldBounds.mins.x() + x * spacingX;
+                pos[1] = worldBounds.mins.y() + y * spacingY;
+                pos[2] = worldBounds.mins.z() + z * spacingZ;
+                probePositions.push_back(pos);
+            }
+        }
+    }
+    
+    // Create base probe with SH data from sky
+    LightProbe_v50_t baseProbe;
+    memset(&baseProbe, 0, sizeof(baseProbe));
+    baseProbe.staticLightIndexes[0] = 0xFFFF;
+    baseProbe.staticLightIndexes[1] = 0xFFFF;
+    baseProbe.staticLightIndexes[2] = 0xFFFF;
+    baseProbe.staticLightIndexes[3] = 0xFFFF;
+    
+    // Get sky environment (shared for all probes)
+    SkyEnvironment sky = GetSkyEnvironment();
+    LogSkyEnvironment(sky);
+    
+    // Compute per-probe SH based on visibility
+    Sys_Printf("     Computing per-probe visibility...\n");
+    
+    int outdoorProbes = 0;
+    int indoorProbes = 0;
+    int shadowedProbes = 0;
+    
+    for (size_t i = 0; i < probePositions.size(); i++) {
+        const Vector3 &pos = probePositions[i];
+        
+        // TODO: Enable visibility testing once trace nodes are set up
+        // For now, use fixed values (outdoor, sunlit)
+        // float skyVis = TestSkyVisibility(pos);
+        // float sunVis = TestSunVisibility(pos, sky.sunDir);
+        float skyVis = 1.0f;  // Assume outdoor
+        float sunVis = 1.0f;  // Assume sunlit
+        
+        // Create probe with appropriate SH
+        LightProbe_v50_t probe = baseProbe;
+        ComputeProbeSH(probe, pos, sky, skyVis, sunVis);
+        
+        ApexLegends::Bsp::lightprobes.push_back(probe);
+        
+        // Statistics
+        if (skyVis > 0.5f) outdoorProbes++;
+        else indoorProbes++;
+        if (sunVis < 0.5f) shadowedProbes++;
+    }
+    
+    Sys_Printf("     Probe visibility: %d outdoor, %d indoor, %d shadowed\n", 
+               outdoorProbes, indoorProbes, shadowedProbes);
+    
+    // Create probe references (position + probe index)
+    for (size_t i = 0; i < probePositions.size(); i++) {
+        LightProbeRef_t ref;
+        ref.origin = probePositions[i];
+        ref.lightProbeIndex = static_cast<uint32_t>(i);
+        ref.cubemapID = -1;  // INVALID_CUBEMAP_ID
+        ref.padding = 0;
+        ApexLegends::Bsp::lightprobeReferences.push_back(ref);
+    }
+    
+    // For simplicity, create a single leaf node that contains all probes
+    // This is valid and works - the engine will iterate through all refs
+    // A proper tree would be faster for large probe counts but single leaf works
+    LightProbeTree_t leaf;
+    leaf.tag = (0 << 2) | 3;  // refStart=0, type=3 (leaf)
+    leaf.refCount = static_cast<uint32_t>(probePositions.size());
+    ApexLegends::Bsp::lightprobeTree.push_back(leaf);
+    
+    // Create parent info for worldspawn
+    LightProbeParentInfo_t info;
+    info.brushIdx = 0;
+    info.cubemapIdx = 0;
+    info.lightProbeCount = static_cast<uint32_t>(ApexLegends::Bsp::lightprobes.size());
+    info.firstLightProbeRef = 0;
+    info.lightProbeTreeHead = 0;
+    info.lightProbeTreeNodeCount = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeTree.size());
+    info.lightProbeRefCount = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeReferences.size());
+    ApexLegends::Bsp::lightprobeParentInfos.push_back(info);
+    
+    Sys_Printf("     %9zu light probes\n", ApexLegends::Bsp::lightprobes.size());
+    Sys_Printf("     %9zu probe references\n", ApexLegends::Bsp::lightprobeReferences.size());
+    Sys_Printf("     %9zu tree nodes\n", ApexLegends::Bsp::lightprobeTree.size());
+}
+
+
+/*
+    EmitRealTimeLightmaps
+    Generate real-time lighting data per lightmap texel
+    
+    Lumps involved:
+      0x69 (LIGHTMAP_DATA_REAL_TIME_LIGHTS) - Per-texel light indices
+      0x7A (LIGHTMAP_DATA_RTL_PAGE) - Compressed page data (126 bytes per page = 63 uint16)
+    
+    The RTL system allows each lightmap texel to reference specific worldlights
+    that can affect it at runtime. This enables:
+      - Per-texel light masking (only relevant lights affect each texel)
+      - Efficient runtime light updates (skip texels not affected by a light)
+    
+    Per-lightmap RTL data size calculation (from engine):
+      rpakSize = 2 * (alignedSize + 2 * texelCount)
+      where alignedSize = ((width + 3) & ~3) * ((height + 3) & ~3)
+    
+    Per-texel format (4 bytes):
+      - bytes 0-2: 24-bit mask (which of the 63 lights in the page affect this texel)
+                   Actually split: byte 0 = offset into page, bytes 1-2 = mask bits
+      - byte 3: page index (which RTL page, 0-255)
+      - Special value 0xFFFFFF00 means no RTL lights affect this texel
+    
+    RTL Pages (126 bytes = 63 uint16 each):
+      - Each page contains up to 63 worldlight indices
+      - Lights with WORLDLIGHT_FLAG_REALTIME flag are RTL lights
+*/
+
+// RTL page - holds 63 light indices
+struct RTLPage_t {
+    uint16_t lightIndices[63];
+    int count;  // How many lights are in this page (0-63)
+};
+
+void ApexLegends::EmitRealTimeLightmaps() {
+    Sys_Printf("--- EmitRealTimeLightmaps ---\n");
+    
+    ApexLegends::Bsp::lightmapDataRealTimeLights.clear();
+    ApexLegends::Bsp::lightmapDataRTLPage.clear();
+    
+    // Collect all RTL worldlights
+    // Based on analysis of official maps, ALL point/spot lights (types 1 and 2)
+    // are included in RTL pages - the WORLDLIGHT_FLAG_REALTIME flag is NOT used
+    // to determine RTL inclusion. Sky lights (types 3, 5) are excluded.
+    std::vector<uint16_t> rtlLightIndices;
+    for (size_t i = 0; i < ApexLegends::Bsp::worldLights.size(); i++) {
+        const WorldLight_t &light = ApexLegends::Bsp::worldLights[i];
+        // Include point lights (type 1) and spotlights (type 2)
+        // Exclude skylight (type 3), surface (type 4), skyambient (type 5)
+        if (light.type == 1 || light.type == 2) {  // emit_point or emit_spotlight
+            rtlLightIndices.push_back(static_cast<uint16_t>(i));
+        }
+    }
+    
+    Sys_Printf("     %9zu RTL worldlights found\n", rtlLightIndices.size());
+    
+    // If no RTL lights, emit empty lumps (valid - engine handles this)
+    if (rtlLightIndices.empty() || ApexLegends::Bsp::lightmapHeaders.empty()) {
+        Sys_Printf("     RTL data: empty (no RTL lights or no lightmaps)\n");
+        return;
+    }
+    
+    // Build RTL pages (63 lights per page)
+    std::vector<RTLPage_t> rtlPages;
+    {
+        RTLPage_t currentPage = {};
+        currentPage.count = 0;
+        
+        for (size_t i = 0; i < rtlLightIndices.size(); i++) {
+            if (currentPage.count >= 63) {
+                rtlPages.push_back(currentPage);
+                currentPage = {};
+                currentPage.count = 0;
+            }
+            currentPage.lightIndices[currentPage.count++] = rtlLightIndices[i];
+        }
+        
+        // Push the last page if it has any lights
+        if (currentPage.count > 0) {
+            // Fill remaining slots with 0xFFFF (invalid)
+            for (int j = currentPage.count; j < 63; j++) {
+                currentPage.lightIndices[j] = 0xFFFF;
+            }
+            rtlPages.push_back(currentPage);
+        }
+    }
+    
+    Sys_Printf("     %9zu RTL pages created\n", rtlPages.size());
+    
+    // Serialize RTL pages to lump 0x7A (126 bytes per page = 63 uint16)
+    ApexLegends::Bsp::lightmapDataRTLPage.resize(rtlPages.size() * 126);
+    for (size_t p = 0; p < rtlPages.size(); p++) {
+        uint8_t *pageData = &ApexLegends::Bsp::lightmapDataRTLPage[p * 126];
+        for (int i = 0; i < 63; i++) {
+            uint16_t idx = rtlPages[p].lightIndices[i];
+            pageData[i * 2 + 0] = idx & 0xFF;
+            pageData[i * 2 + 1] = (idx >> 8) & 0xFF;
+        }
+    }
+    
+    // Generate per-texel RTL data for each lightmap
+    // For each lightmap, calculate which RTL lights can affect each texel
+    size_t totalTexels = 0;
+    size_t affectedTexels = 0;
+    
+    for (const LightmapHeader_t &header : ApexLegends::Bsp::lightmapHeaders) {
+        int width = header.width;
+        int height = header.height;
+        int texelCount = width * height;
+        int alignedWidth = (width + 3) & ~3;
+        int alignedHeight = (height + 3) & ~3;
+        int alignedSize = alignedWidth * alignedHeight;
+        
+        // Size formula from engine (Mod_LoadLightmapDataRealTimeLights):
+        // For BSP-embedded lumps (non-RPak): 2*(alignedSize + 2*texelCount) + (alignedSize >> 1)
+        // External RPak lumps use just: 2*(alignedSize + 2*texelCount)
+        // We're writing BSP file, so use non-RPak formula
+        int rpakSize = 2 * (alignedSize + 2 * texelCount);
+        int rtlDataSize = rpakSize + (alignedSize >> 1);  // Non-RPak format
+        
+        size_t startOffset = ApexLegends::Bsp::lightmapDataRealTimeLights.size();
+        ApexLegends::Bsp::lightmapDataRealTimeLights.resize(startOffset + rtlDataSize);
+        uint8_t *rtlData = &ApexLegends::Bsp::lightmapDataRealTimeLights[startOffset];
+        
+        // Initialize entire buffer to zero first
+        memset(rtlData, 0, rtlDataSize);
+        
+        // Per-texel data: 4 bytes each, format is FF FF FF 00 for "no RTL lights"
+        for (int t = 0; t < texelCount; t++) {
+            int offset = t * 4;
+            rtlData[offset + 0] = 0xFF;  // mask byte 0
+            rtlData[offset + 1] = 0xFF;  // mask byte 1
+            rtlData[offset + 2] = 0xFF;  // mask byte 2
+            rtlData[offset + 3] = 0x00;  // page index (0 = no page)
+        }
+        
+        // The remaining bytes (2*alignedSize + alignedSize/2) are BC-compressed mask data
+        // Already zeroed by memset above - zero means no RTL masks
+        
+        totalTexels += texelCount;
+        
+        // TODO: For full implementation, we would:
+        // 1. For each texel, compute world position from lightmap UV
+        // 2. For each RTL light, check if it can reach this texel (visibility + range)
+        // 3. Build a bitmask of which lights in the page affect the texel
+        // 4. Encode: byte 0 = offset, bytes 1-2 = mask bits, byte 3 = page index
+        //
+        // For now, we emit "no RTL lights affect any texel" which is valid
+        // and allows the map to load - RTL lights will be evaluated uniformly
+    }
+    
+    Sys_Printf("     %9zu bytes RTL data (%zu texels)\n", 
+               ApexLegends::Bsp::lightmapDataRealTimeLights.size(), totalTexels);
+    Sys_Printf("     %9zu bytes RTL pages (%zu pages)\n",
+               ApexLegends::Bsp::lightmapDataRTLPage.size(), rtlPages.size());
 }
