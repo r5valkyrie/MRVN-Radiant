@@ -137,7 +137,8 @@ void WriteR5BSPFile(const char *filename) {
     AddLump(file, header.lumps[R5_LUMP_UNKNOWN_37],              ApexLegends::Bsp::unknown25_stub);            // stub
     AddLump(file, header.lumps[R5_LUMP_UNKNOWN_38],              ApexLegends::Bsp::csmNumObjRefsTotalForAabb); // CSM num obj refs total per AABB node
     AddLump(file, header.lumps[R5_LUMP_UNKNOWN_39],              ApexLegends::Bsp::unknown27_stub);            // stub
-    AddLump(file, header.lumps[R5_LUMP_CUBEMAPS],                ApexLegends::Bsp::cubemaps_stub);             // stub
+    AddLump(file, header.lumps[R5_LUMP_CUBEMAPS],                ApexLegends::Bsp::cubemaps);
+    AddLump(file, header.lumps[R5_LUMP_CUBEMAPS_AMBIENT_RCP],    ApexLegends::Bsp::cubemapsAmbientRcp);
     AddLump(file, header.lumps[R5_LUMP_WORLD_LIGHTS],            ApexLegends::Bsp::worldLights);
     AddLump(file, header.lumps[R5_LUMP_VERTEX_UNLIT],            ApexLegends::Bsp::vertexUnlitVertices);
     AddLump(file, header.lumps[R5_LUMP_VERTEX_LIT_FLAT],         ApexLegends::Bsp::vertexLitFlatVertices);
@@ -241,11 +242,14 @@ void CompileR5BSPFile() {
 
     ApexLegends::EmitLevelInfo();
     ApexLegends::EmitWorldLights();
+    ApexLegends::EmitCubemaps();           // Cubemap sample positions
     ApexLegends::EmitShadowMeshes();
     ApexLegends::EmitShadowEnvironments();
     ApexLegends::EmitLightmaps();
     ApexLegends::EmitLightProbes();        // Light probes for ambient lighting
-    ApexLegends::EmitRealTimeLightmaps();  // Per-texel RTL data
+
+    //TODO: Implement real-time lightmaps
+    //ApexLegends::EmitRealTimeLightmaps();  // Per-texel RTL data
 
     Titanfall::EmitStubs();
     ApexLegends::EmitStubs();
@@ -340,14 +344,81 @@ void ApexLegends::EmitStubs() {
         };
         ApexLegends::Bsp::unknown27_stub = { data.begin(), data.end() };
     }
-    // Cubemaps
-    {
-        constexpr std::array<uint8_t, 32> data = {
-            0xC9, 0x20, 0x00, 0x00, 0xAF, 0xF6, 0xFF, 0xFF, 0x03, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x14, 0x00, 0x00, 0x58, 0xFF, 0xFF, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        };
-        ApexLegends::Bsp::cubemaps_stub = { data.begin(), data.end() };
+}
+
+/*
+    EmitCubemaps
+    Emits cubemap sample positions from env_cubemap entities
+    
+    The engine uses these positions to capture environment reflections at runtime
+    via the buildcubemaps command. Each cubemap sample has:
+    - origin: Position where the cubemap will be captured (stored as int32 in lump)
+    - guid: Asset GUID for pre-baked cubemaps (0 = runtime capture required)
+    
+    Lumps:
+    - 0x2A (CUBEMAPS): Array of CubemapSample_t (16 bytes each)
+    - 0x2B (CUBEMAPS_AMBIENT_RCP): Array of floats, one per cubemap (reciprocal of ambient)
+    
+    If no env_cubemap entities exist, creates a single default at world center
+*/
+void ApexLegends::EmitCubemaps() {
+    Sys_Printf("--- EmitCubemaps ---\n");
+    
+    ApexLegends::Bsp::cubemaps.clear();
+    ApexLegends::Bsp::cubemapsAmbientRcp.clear();
+    
+    // Collect env_cubemap entities
+    std::vector<Vector3> cubemapPositions;
+    
+    for (const entity_t &entity : entities) {
+        const char *classname = entity.classname();
+        if (striEqual(classname, "env_cubemap")) {
+            Vector3 origin;
+            if (entity.read_keyvalue(origin, "origin")) {
+                cubemapPositions.push_back(origin);
+            }
+        }
     }
+    
+    // If no cubemaps, generate default positions based on world bounds
+    if (cubemapPositions.empty()) {
+        // Calculate world bounds
+        MinMax worldBounds;
+        for (const Shared::Mesh_t &mesh : Shared::meshes) {
+            worldBounds.extend(mesh.minmax.mins);
+            worldBounds.extend(mesh.minmax.maxs);
+        }
+        
+        if (worldBounds.valid()) {
+            // Place a single cubemap at world center
+            Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
+            cubemapPositions.push_back(center);
+            Sys_Printf("     No env_cubemap entities, using world center\n");
+        } else {
+            // Fallback if no geometry
+            cubemapPositions.push_back(Vector3(0, 0, 0));
+            Sys_Printf("     No geometry, using origin\n");
+        }
+    } else {
+        Sys_Printf("     Found %zu env_cubemap entities\n", cubemapPositions.size());
+    }
+    
+    // Emit cubemap samples
+    for (const Vector3 &pos : cubemapPositions) {
+        CubemapSample_t sample;
+        // Engine reads origin as int32[3] and converts to float
+        sample.origin[0] = static_cast<int32_t>(pos[0]);
+        sample.origin[1] = static_cast<int32_t>(pos[1]);
+        sample.origin[2] = static_cast<int32_t>(pos[2]);
+        sample.guid = 0;  // No pre-baked texture, runtime capture required
+        ApexLegends::Bsp::cubemaps.push_back(sample);
+        
+        // Ambient RCP: reciprocal of ambient contribution
+        // Default to 1.0 (full ambient)
+        ApexLegends::Bsp::cubemapsAmbientRcp.push_back(1.0f);
+    }
+    
+    Sys_Printf("     %9zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
 }
 
 /*

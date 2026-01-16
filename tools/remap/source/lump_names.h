@@ -183,7 +183,8 @@
 #define R5_LUMP_UNKNOWN_39						0x27
 #define R5_LUMP_PAKFILE							0x28
 #define R5_LUMP_CUBEMAPS						0x2A
-#define R5_LUMP_UNKNOWN_43						0x2B
+#define R5_LUMP_CUBEMAPS_AMBIENT_RCP			0x2B
+#define R5_LUMP_UNKNOWN_43						0x2B  // Deprecated alias
 #define R5_LUMP_WORLD_LIGHTS					0x36
 #define R5_LUMP_WORLD_LIGHT_PARENT_INFOS		0x37
 #define R5_LUMP_VERTEX_UNLIT					0x47

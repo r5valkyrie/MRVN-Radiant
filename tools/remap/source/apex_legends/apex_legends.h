@@ -198,6 +198,18 @@ struct LightProbeTree_t {
 #pragma pack(pop)
 static_assert(sizeof(LightProbeTree_t) == 8, "LightProbeTree_t must be exactly 8 bytes");
 
+// Cubemap Sample (lump 0x2A) - 16 bytes
+// Defines positions where cubemaps should be captured
+// The engine's buildcubemaps command uses these to create environment maps
+// NOTE: Origin is stored as int32[3] in the lump, engine converts to float
+#pragma pack(push, 1)
+struct CubemapSample_t {
+    int32_t  origin[3];          // +0x00 - Position for cubemap capture (as int32, converted to float by engine)
+    uint32_t guid;               // +0x0C - Asset GUID (0 if not pre-baked, runtime will generate)
+};
+#pragma pack(pop)
+static_assert(sizeof(CubemapSample_t) == 16, "CubemapSample_t must be exactly 16 bytes");
+
 // Light Probe Parent Info (lump 0x04) - 28 bytes
 // Associates light probes with brush models (0 = worldspawn)
 #pragma pack(push, 1)
@@ -248,6 +260,7 @@ namespace ApexLegends {
     void        EmitVisTree();
     void        EmitLevelInfo();
     void        EmitWorldLights();
+    void        EmitCubemaps();
     void        EmitShadowEnvironments();
     void        EmitShadowMeshes();
     void        EmitLightmaps();
@@ -550,10 +563,13 @@ namespace ApexLegends {
         // Per-texel data for dynamic lights affecting lightmapped surfaces
         inline std::vector<uint8_t>                lightmapDataRealTimeLights; // Lump 0x69
         
+        // Cubemap lumps (0x2A, 0x2B)
+        inline std::vector<CubemapSample_t>      cubemaps;            // Lump 0x2A - cubemap sample positions
+        inline std::vector<float>                cubemapsAmbientRcp;  // Lump 0x2B - ambient reciprocal per cubemap
+        
         // Stubs (for lumps not yet implemented)
         inline std::vector<uint8_t>  surfaceProperties_stub;
         inline std::vector<uint8_t>  unknown25_stub;
         inline std::vector<uint8_t>  unknown27_stub;
-        inline std::vector<uint8_t>  cubemaps_stub;
     }
 }
