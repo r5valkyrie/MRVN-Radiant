@@ -1604,8 +1604,9 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
         const Vector3 &dir = g_SphereNormals[i];
         radcolor[i] = Vector3(0, 0, 0);
         
-        // Trace ray in this direction
-        if (!TraceRayAgainstMeshes(position, dir, LIGHT_PROBE_TRACE_DIST)) {
+        // Trace ray in this direction with offset to avoid self-intersection
+        Vector3 rayOrigin = position + dir * 2.0f;
+        if (!TraceRayAgainstMeshes(rayOrigin, dir, LIGHT_PROBE_TRACE_DIST)) {
             // Ray reached sky - add sky contribution based on direction
             
             // Sky ambient contribution (uniform from all directions)
@@ -1625,9 +1626,10 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
                 radcolor[i] = radcolor[i] + sky.ambientColor * (upDot * 0.3f);
             }
         } else {
-            // Ray hit geometry - use dark ambient for occluded directions
-            // This simulates indirect lighting bounce (simplified)
-            radcolor[i] = sky.ambientColor * 0.15f;
+            // Ray hit geometry - use moderate ambient for occluded directions
+            // This represents indirect lighting from nearby surfaces
+            // Use higher value to prevent entities from being too dark in corners
+            radcolor[i] = sky.ambientColor * 0.35f;
         }
     }
     
@@ -1668,20 +1670,18 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
         float dist = std::sqrt(distSq);
         Vector3 dirToLight = delta * (1.0f / dist);
         
-        // Check if light is blocked
-        if (TraceRayAgainstMeshes(position, dirToLight, dist - 1.0f)) {
+        // Check if light is blocked (with offset to avoid self-intersection)
+        Vector3 shadowOrigin = position + dirToLight * 2.0f;
+        if (TraceRayAgainstMeshes(shadowOrigin, dirToLight, dist - 4.0f)) {
             continue;  // Light is occluded
         }
         
         // Distance falloff (inverse square)
         float falloff = 1.0f / (distSq + 1.0f);
         
-        // Light intensity
-        Vector3 lightColor(
-            light.intensity[0] / 255.0f,
-            light.intensity[1] / 255.0f,
-            light.intensity[2] / 255.0f
-        );
+        // Light intensity - already in linear RGB (not 0-255, so don't divide)
+        // Scale down since probe values are typically 0-1 range and lights can be bright
+        Vector3 lightColor = light.intensity * 0.01f;
         
         // Add to appropriate cube sides based on direction
         for (int i = 0; i < 6; i++) {
@@ -1746,12 +1746,14 @@ static void ConvertCubeToSphericalHarmonics(const Vector3 lightBoxColor[6],
 */
 static bool IsPositionInsideSolid(const Vector3 &pos, float testDist = 32.0f) {
     // Trace in all 6 cardinal directions - if all hit nearby, we're inside solid
-    bool hitPosX = TraceRayAgainstMeshes(pos, Vector3(1, 0, 0), testDist);
-    bool hitNegX = TraceRayAgainstMeshes(pos, Vector3(-1, 0, 0), testDist);
-    bool hitPosY = TraceRayAgainstMeshes(pos, Vector3(0, 1, 0), testDist);
-    bool hitNegY = TraceRayAgainstMeshes(pos, Vector3(0, -1, 0), testDist);
-    bool hitPosZ = TraceRayAgainstMeshes(pos, Vector3(0, 0, 1), testDist);
-    bool hitNegZ = TraceRayAgainstMeshes(pos, Vector3(0, 0, -1), testDist);
+    // Use small offset to avoid false positives from nearby surfaces
+    float offset = 2.0f;
+    bool hitPosX = TraceRayAgainstMeshes(pos + Vector3(offset, 0, 0), Vector3(1, 0, 0), testDist);
+    bool hitNegX = TraceRayAgainstMeshes(pos + Vector3(-offset, 0, 0), Vector3(-1, 0, 0), testDist);
+    bool hitPosY = TraceRayAgainstMeshes(pos + Vector3(0, offset, 0), Vector3(0, 1, 0), testDist);
+    bool hitNegY = TraceRayAgainstMeshes(pos + Vector3(0, -offset, 0), Vector3(0, -1, 0), testDist);
+    bool hitPosZ = TraceRayAgainstMeshes(pos + Vector3(0, 0, offset), Vector3(0, 0, 1), testDist);
+    bool hitNegZ = TraceRayAgainstMeshes(pos + Vector3(0, 0, -offset), Vector3(0, 0, -1), testDist);
     
     return hitPosX && hitNegX && hitPosY && hitNegY && hitPosZ && hitNegZ;
 }
