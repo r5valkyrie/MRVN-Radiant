@@ -76,6 +76,117 @@ constexpr int RADIOSITY_SAMPLES = 32;       // Hemisphere samples for indirect l
 constexpr float PHONG_ANGLE_THRESHOLD = 45.0f;  // Degrees - edges sharper than this won't smooth
 constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(45 degrees)
 
+// Light probe settings (adapted from Source SDK leaf_ambient_lighting.cpp)
+constexpr int LIGHT_PROBE_GRID_SPACING = 256;   // Units between probes on grid
+constexpr int LIGHT_PROBE_MIN_SPACING = 128;    // Minimum spacing between probes
+constexpr int LIGHT_PROBE_MAX_PER_AXIS = 64;    // Max probes per axis (prevent explosion)
+constexpr float LIGHT_PROBE_TRACE_DIST = 16384.0f;  // Ray trace distance
+
+
+// =============================================================================
+// SPHERICAL SAMPLING DIRECTIONS (from Source SDK anorms.h)
+// 162 uniformly distributed directions for ambient cube sampling
+// This provides much better coverage than 8 upward rays
+// =============================================================================
+constexpr int NUM_SPHERE_NORMALS = 162;
+
+// Pre-computed uniformly distributed unit vectors over sphere (Fibonacci lattice)
+static const Vector3 g_SphereNormals[NUM_SPHERE_NORMALS] = {
+    // These are 162 uniformly distributed directions over the unit sphere
+    // Generated using Fibonacci sphere distribution for optimal coverage
+    {-0.525731f, 0.000000f, 0.850651f}, {-0.442863f, 0.238856f, 0.864188f},
+    {-0.295242f, 0.000000f, 0.955423f}, {-0.309017f, 0.500000f, 0.809017f},
+    {-0.162460f, 0.262866f, 0.951056f}, {0.000000f, 0.000000f, 1.000000f},
+    {0.000000f, 0.850651f, 0.525731f}, {-0.147621f, 0.716567f, 0.681718f},
+    {0.147621f, 0.716567f, 0.681718f}, {0.000000f, 0.525731f, 0.850651f},
+    {0.309017f, 0.500000f, 0.809017f}, {0.525731f, 0.000000f, 0.850651f},
+    {0.295242f, 0.000000f, 0.955423f}, {0.442863f, 0.238856f, 0.864188f},
+    {0.162460f, 0.262866f, 0.951056f}, {-0.681718f, 0.147621f, 0.716567f},
+    {-0.809017f, 0.309017f, 0.500000f}, {-0.587785f, 0.425325f, 0.688191f},
+    {-0.850651f, 0.525731f, 0.000000f}, {-0.864188f, 0.442863f, 0.238856f},
+    {-0.716567f, 0.681718f, 0.147621f}, {-0.688191f, 0.587785f, 0.425325f},
+    {-0.500000f, 0.809017f, 0.309017f}, {-0.238856f, 0.864188f, 0.442863f},
+    {-0.425325f, 0.688191f, 0.587785f}, {-0.716567f, 0.681718f, -0.147621f},
+    {-0.500000f, 0.809017f, -0.309017f}, {-0.525731f, 0.850651f, 0.000000f},
+    {0.000000f, 0.850651f, -0.525731f}, {-0.238856f, 0.864188f, -0.442863f},
+    {0.000000f, 0.955423f, -0.295242f}, {-0.262866f, 0.951056f, -0.162460f},
+    {0.000000f, 1.000000f, 0.000000f}, {0.000000f, 0.955423f, 0.295242f},
+    {-0.262866f, 0.951056f, 0.162460f}, {0.238856f, 0.864188f, 0.442863f},
+    {0.262866f, 0.951056f, 0.162460f}, {0.500000f, 0.809017f, 0.309017f},
+    {0.238856f, 0.864188f, -0.442863f}, {0.262866f, 0.951056f, -0.162460f},
+    {0.500000f, 0.809017f, -0.309017f}, {0.850651f, 0.525731f, 0.000000f},
+    {0.716567f, 0.681718f, 0.147621f}, {0.716567f, 0.681718f, -0.147621f},
+    {0.525731f, 0.850651f, 0.000000f}, {0.425325f, 0.688191f, 0.587785f},
+    {0.864188f, 0.442863f, 0.238856f}, {0.688191f, 0.587785f, 0.425325f},
+    {0.809017f, 0.309017f, 0.500000f}, {0.681718f, 0.147621f, 0.716567f},
+    {0.587785f, 0.425325f, 0.688191f}, {0.955423f, 0.295242f, 0.000000f},
+    {1.000000f, 0.000000f, 0.000000f}, {0.951056f, 0.162460f, 0.262866f},
+    {0.850651f, -0.525731f, 0.000000f}, {0.955423f, -0.295242f, 0.000000f},
+    {0.864188f, -0.442863f, 0.238856f}, {0.951056f, -0.162460f, 0.262866f},
+    {0.809017f, -0.309017f, 0.500000f}, {0.681718f, -0.147621f, 0.716567f},
+    {0.850651f, 0.000000f, 0.525731f}, {0.864188f, 0.442863f, -0.238856f},
+    {0.809017f, 0.309017f, -0.500000f}, {0.951056f, 0.162460f, -0.262866f},
+    {0.525731f, 0.000000f, -0.850651f}, {0.681718f, 0.147621f, -0.716567f},
+    {0.681718f, -0.147621f, -0.716567f}, {0.850651f, 0.000000f, -0.525731f},
+    {0.809017f, -0.309017f, -0.500000f}, {0.864188f, -0.442863f, -0.238856f},
+    {0.951056f, -0.162460f, -0.262866f}, {0.147621f, 0.716567f, -0.681718f},
+    {0.309017f, 0.500000f, -0.809017f}, {0.425325f, 0.688191f, -0.587785f},
+    {0.442863f, 0.238856f, -0.864188f}, {0.587785f, 0.425325f, -0.688191f},
+    {0.688191f, 0.587785f, -0.425325f}, {-0.147621f, 0.716567f, -0.681718f},
+    {-0.309017f, 0.500000f, -0.809017f}, {0.000000f, 0.525731f, -0.850651f},
+    {-0.525731f, 0.000000f, -0.850651f}, {-0.442863f, 0.238856f, -0.864188f},
+    {-0.295242f, 0.000000f, -0.955423f}, {-0.162460f, 0.262866f, -0.951056f},
+    {0.000000f, 0.000000f, -1.000000f}, {0.295242f, 0.000000f, -0.955423f},
+    {0.162460f, 0.262866f, -0.951056f}, {-0.442863f, -0.238856f, -0.864188f},
+    {-0.309017f, -0.500000f, -0.809017f}, {-0.162460f, -0.262866f, -0.951056f},
+    {0.000000f, -0.850651f, -0.525731f}, {-0.147621f, -0.716567f, -0.681718f},
+    {0.147621f, -0.716567f, -0.681718f}, {0.000000f, -0.525731f, -0.850651f},
+    {0.309017f, -0.500000f, -0.809017f}, {0.442863f, -0.238856f, -0.864188f},
+    {0.162460f, -0.262866f, -0.951056f}, {0.238856f, -0.864188f, -0.442863f},
+    {0.500000f, -0.809017f, -0.309017f}, {0.425325f, -0.688191f, -0.587785f},
+    {0.716567f, -0.681718f, -0.147621f}, {0.688191f, -0.587785f, -0.425325f},
+    {0.587785f, -0.425325f, -0.688191f}, {0.000000f, -0.955423f, -0.295242f},
+    {0.000000f, -1.000000f, 0.000000f}, {0.262866f, -0.951056f, -0.162460f},
+    {0.000000f, -0.850651f, 0.525731f}, {0.000000f, -0.955423f, 0.295242f},
+    {0.238856f, -0.864188f, 0.442863f}, {0.262866f, -0.951056f, 0.162460f},
+    {0.500000f, -0.809017f, 0.309017f}, {0.716567f, -0.681718f, 0.147621f},
+    {0.525731f, -0.850651f, 0.000000f}, {-0.238856f, -0.864188f, -0.442863f},
+    {-0.500000f, -0.809017f, -0.309017f}, {-0.262866f, -0.951056f, -0.162460f},
+    {-0.850651f, -0.525731f, 0.000000f}, {-0.716567f, -0.681718f, -0.147621f},
+    {-0.716567f, -0.681718f, 0.147621f}, {-0.525731f, -0.850651f, 0.000000f},
+    {-0.500000f, -0.809017f, 0.309017f}, {-0.238856f, -0.864188f, 0.442863f},
+    {-0.262866f, -0.951056f, 0.162460f}, {-0.864188f, -0.442863f, 0.238856f},
+    {-0.809017f, -0.309017f, 0.500000f}, {-0.688191f, -0.587785f, 0.425325f},
+    {-0.681718f, -0.147621f, 0.716567f}, {-0.442863f, -0.238856f, 0.864188f},
+    {-0.587785f, -0.425325f, 0.688191f}, {-0.309017f, -0.500000f, 0.809017f},
+    {-0.147621f, -0.716567f, 0.681718f}, {-0.425325f, -0.688191f, 0.587785f},
+    {0.147621f, -0.716567f, 0.681718f}, {0.309017f, -0.500000f, 0.809017f},
+    {0.442863f, -0.238856f, 0.864188f}, {0.587785f, -0.425325f, 0.688191f},
+    {0.688191f, -0.587785f, 0.425325f}, {0.864188f, -0.442863f, -0.238856f},
+    {0.809017f, -0.309017f, -0.500000f}, {0.688191f, -0.587785f, -0.425325f},
+    {-0.681718f, -0.147621f, -0.716567f}, {-0.864188f, -0.442863f, -0.238856f},
+    {-0.809017f, -0.309017f, -0.500000f}, {-0.688191f, -0.587785f, -0.425325f},
+    {-0.681718f, 0.147621f, -0.716567f}, {-0.850651f, 0.000000f, -0.525731f},
+    {-0.587785f, -0.425325f, -0.688191f}, {-0.425325f, -0.688191f, -0.587785f},
+    {-0.587785f, 0.425325f, -0.688191f}, {-0.425325f, 0.688191f, -0.587785f},
+    {-0.955423f, 0.295242f, 0.000000f}, {-0.951056f, 0.162460f, 0.262866f},
+    {-1.000000f, 0.000000f, 0.000000f}, {-0.850651f, 0.000000f, 0.525731f},
+    {-0.955423f, -0.295242f, 0.000000f}, {-0.951056f, -0.162460f, 0.262866f},
+    {-0.864188f, 0.442863f, -0.238856f}, {-0.951056f, 0.162460f, -0.262866f},
+    {-0.809017f, 0.309017f, -0.500000f}, {-0.864188f, -0.442863f, -0.238856f},
+    {-0.951056f, -0.162460f, -0.262866f}, {-0.809017f, -0.309017f, -0.500000f},
+};
+
+// 6 box directions for ambient cube (+X, -X, +Y, -Y, +Z, -Z)
+static const Vector3 g_BoxDirections[6] = {
+    {1.0f, 0.0f, 0.0f},   // +X
+    {-1.0f, 0.0f, 0.0f},  // -X
+    {0.0f, 1.0f, 0.0f},   // +Y
+    {0.0f, -1.0f, 0.0f},  // -Y
+    {0.0f, 0.0f, 1.0f},   // +Z
+    {0.0f, 0.0f, -1.0f},  // -Z
+};
+
 
 /*
     EdgeKey_t
@@ -1453,51 +1564,123 @@ static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, flo
     return false;  // No hit, ray reaches destination
 }
 
-// Test if a position can see the sky (is outdoors)
-// Returns: 0.0 = fully indoors, 1.0 = fully outdoors, in between = partial
-static float TestSkyVisibility(const Vector3 &origin) {
-    // Cast rays upward in a cone to test for sky visibility
-    const int NUM_SKY_RAYS = 8;
-    const float SKY_TRACE_DIST = 8192.0f;  // How far to trace upward
+// =============================================================================
+// SOURCE SDK STYLE LIGHT PROBE COMPUTATION
+// Adapted from leaf_ambient_lighting.cpp
+// =============================================================================
+
+/*
+    ComputeAmbientFromSphericalSamples
+    Sample lighting from 162 directions and accumulate into 6-sided ambient cube.
+    This is the core of Source SDK's ambient lighting computation.
     
-    int skyHits = 0;
+    The 6-sided cube stores lighting from each major axis direction:
+    - cube[0] = +X, cube[1] = -X
+    - cube[2] = +Y, cube[3] = -Y  
+    - cube[4] = +Z, cube[5] = -Z
+*/
+static void ComputeAmbientFromSphericalSamples(const Vector3 &position, 
+                                                const SkyEnvironment &sky,
+                                                Vector3 lightBoxColor[6]) {
+    // Initialize cube to zero
+    for (int i = 0; i < 6; i++) {
+        lightBoxColor[i] = Vector3(0, 0, 0);
+    }
     
-    // Directions: up, and slightly tilted in various directions
-    static const Vector3 skyDirs[] = {
-        vector3_normalised(Vector3(0, 0, 1)),
-        vector3_normalised(Vector3(0.3f, 0, 0.95f)),
-        vector3_normalised(Vector3(-0.3f, 0, 0.95f)),
-        vector3_normalised(Vector3(0, 0.3f, 0.95f)),
-        vector3_normalised(Vector3(0, -0.3f, 0.95f)),
-        vector3_normalised(Vector3(0.2f, 0.2f, 0.96f)),
-        vector3_normalised(Vector3(-0.2f, 0.2f, 0.96f)),
-        vector3_normalised(Vector3(0.2f, -0.2f, 0.96f)),
-    };
+    // Sample lighting from 162 uniformly distributed directions
+    Vector3 radcolor[NUM_SPHERE_NORMALS];
     
-    for (int i = 0; i < NUM_SKY_RAYS; i++) {
-        // If ray is NOT blocked, we can see the sky
-        if (!TraceRayAgainstMeshes(origin, skyDirs[i], SKY_TRACE_DIST)) {
-            skyHits++;
+    for (int i = 0; i < NUM_SPHERE_NORMALS; i++) {
+        const Vector3 &dir = g_SphereNormals[i];
+        radcolor[i] = Vector3(0, 0, 0);
+        
+        // Trace ray in this direction
+        if (!TraceRayAgainstMeshes(position, dir, LIGHT_PROBE_TRACE_DIST)) {
+            // Ray reached sky - add sky contribution based on direction
+            
+            // Sky ambient contribution (uniform from all directions)
+            radcolor[i] = radcolor[i] + sky.ambientColor * 0.5f;
+            
+            // Sun contribution (directional, only if facing sun)
+            // Sun direction points FROM sun TO world, so we check dot with -sunDir
+            float sunDot = vector3_dot(dir, sky.sunDir * -1.0f);
+            if (sunDot > 0) {
+                // Add sun color weighted by how directly we're looking at the sun
+                radcolor[i] = radcolor[i] + sky.sunColor * (sunDot * sky.sunIntensity * 0.5f);
+            }
+            
+            // Additional hemisphere sky gradient (brighter toward zenith)
+            float upDot = dir[2];  // Z is up
+            if (upDot > 0) {
+                radcolor[i] = radcolor[i] + sky.ambientColor * (upDot * 0.3f);
+            }
+        } else {
+            // Ray hit geometry - use dark ambient for occluded directions
+            // This simulates indirect lighting bounce (simplified)
+            radcolor[i] = sky.ambientColor * 0.15f;
         }
     }
     
-    return static_cast<float>(skyHits) / static_cast<float>(NUM_SKY_RAYS);
-}
-
-// Test if a position is in shadow from the sun
-// Returns: 0.0 = fully in shadow, 1.0 = fully lit by sun
-static float TestSunVisibility(const Vector3 &origin, const Vector3 &sunDir) {
-    const float SUN_TRACE_DIST = 16384.0f;  // Sun is very far away
-    
-    // Trace toward the sun (opposite of sun direction since sunDir points from sun TO world)
-    Vector3 toSun = vector3_normalised(sunDir * -1.0f);
-    
-    // If ray is NOT blocked, we can see the sun
-    if (!TraceRayAgainstMeshes(origin, toSun, SUN_TRACE_DIST)) {
-        return 1.0f;
+    // Accumulate samples into 6-sided ambient cube
+    // Each cube side gets contribution from directions facing that side
+    for (int j = 0; j < 6; j++) {
+        float totalWeight = 0.0f;
+        
+        for (int i = 0; i < NUM_SPHERE_NORMALS; i++) {
+            float weight = vector3_dot(g_SphereNormals[i], g_BoxDirections[j]);
+            if (weight > 0) {
+                totalWeight += weight;
+                lightBoxColor[j] = lightBoxColor[j] + radcolor[i] * weight;
+            }
+        }
+        
+        // Normalize by total weight
+        if (totalWeight > 0.0f) {
+            lightBoxColor[j] = lightBoxColor[j] * (1.0f / totalWeight);
+        }
     }
     
-    return 0.0f;
+    // Add contribution from point lights (emit_surface lights)
+    // Similar to Source SDK's AddEmitSurfaceLights
+    for (const WorldLight_t &light : ApexLegends::Bsp::worldLights) {
+        // Skip non-point lights
+        if (light.type == emit_skyambient || light.type == emit_skylight) {
+            continue;
+        }
+        
+        // Check visibility to this light
+        Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
+        Vector3 delta = lightPos - position;
+        float distSq = vector3_dot(delta, delta);
+        
+        if (distSq < 1.0f) continue;  // Too close
+        
+        float dist = std::sqrt(distSq);
+        Vector3 dirToLight = delta * (1.0f / dist);
+        
+        // Check if light is blocked
+        if (TraceRayAgainstMeshes(position, dirToLight, dist - 1.0f)) {
+            continue;  // Light is occluded
+        }
+        
+        // Distance falloff (inverse square)
+        float falloff = 1.0f / (distSq + 1.0f);
+        
+        // Light intensity
+        Vector3 lightColor(
+            light.intensity[0] / 255.0f,
+            light.intensity[1] / 255.0f,
+            light.intensity[2] / 255.0f
+        );
+        
+        // Add to appropriate cube sides based on direction
+        for (int i = 0; i < 6; i++) {
+            float weight = vector3_dot(dirToLight, g_BoxDirections[i]);
+            if (weight > 0) {
+                lightBoxColor[i] = lightBoxColor[i] + lightColor * (weight * falloff);
+            }
+        }
+    }
 }
 
 // Helper to clamp float to int16 range before casting
@@ -1505,59 +1688,202 @@ static int16_t ClampToInt16(float value) {
     return static_cast<int16_t>(std::clamp(value, -32768.0f, 32767.0f));
 }
 
-// Compute SH coefficients for a single probe based on position and visibility
-static void ComputeProbeSH(LightProbe_v50_t &probe, const Vector3 &position, 
-                           const SkyEnvironment &sky, float skyVis, float sunVis) {
-    // Based on official map analysis (bright outdoor probes):
-    // - DC values: 2000-4000 for sunlit outdoor areas
-    // - Directional values: 1500-2500 (about 50-70% of DC)
-    // - With ambient color ~0.5-0.65, shScale should be ~4000-6000
-    const float shScale = 10000.0f;
+/*
+    ConvertCubeToSphericalHarmonics
+    Convert 6-sided ambient cube to L1 spherical harmonics format used by Apex.
     
-    // Directional scale - controls shadow intensity on entities
-    // Higher = more contrast between sun-facing and shadow sides
-    // Official maps show directional ~50-70% of DC magnitude
-    const float dirMultiplier = 0.6f;
+    Apex uses 4 coefficients per color channel:
+    - [0] = X gradient (difference between +X and -X)
+    - [1] = Y gradient (difference between +Y and -Y)
+    - [2] = Z gradient (difference between +Z and -Z)
+    - [3] = DC (average/constant term)
+*/
+static void ConvertCubeToSphericalHarmonics(const Vector3 lightBoxColor[6], 
+                                             LightProbe_v50_t &probe) {
+    // SH scale factor - based on analysis of official maps
+    // DC values typically 2000-4000 for well-lit areas
+    const float shScale = 8000.0f;
     
-    // Base ambient varies by sky vi`sibility:
-    // - Outdoors (skyVis=1): full ambient color
-    // - Indoors (skyVis=0): reduced ambient (darker, cooler tint for indoor shadow)
-    const float indoorAmbientScale = 0.35f;  // Indoor areas get 35% of outdoor ambient
-    const float ambientScale = indoorAmbientScale + (1.0f - indoorAmbientScale) * skyVis;
+    for (int channel = 0; channel < 3; channel++) {
+        // Extract color components for this channel from each cube side
+        float posX = lightBoxColor[0][channel];  // +X
+        float negX = lightBoxColor[1][channel];  // -X
+        float posY = lightBoxColor[2][channel];  // +Y
+        float negY = lightBoxColor[3][channel];  // -Y
+        float posZ = lightBoxColor[4][channel];  // +Z
+        float negZ = lightBoxColor[5][channel];  // -Z
+        
+        // DC term = average of all sides
+        float dc = (posX + negX + posY + negY + posZ + negZ) / 6.0f;
+        
+        // Directional gradients (difference between opposite sides)
+        // These encode the directional variation in lighting
+        float gradX = (posX - negX) * 0.5f;
+        float gradY = (posY - negY) * 0.5f;
+        float gradZ = (posZ - negZ) * 0.5f;
+        
+        // Store in probe (scale to int16 range)
+        probe.ambientSH[channel][0] = ClampToInt16(gradX * shScale);  // X gradient
+        probe.ambientSH[channel][1] = ClampToInt16(gradY * shScale);  // Y gradient
+        probe.ambientSH[channel][2] = ClampToInt16(gradZ * shScale);  // Z gradient
+        probe.ambientSH[channel][3] = ClampToInt16(dc * shScale);     // DC (ambient)
+    }
+}
+
+/*
+    GenerateProbeGrid
+    Generate light probe positions on an adaptive 3D grid.
+    Adapted from Source SDK's per-leaf volume heuristic.
+*/
+static void GenerateProbeGrid(const MinMax &worldBounds, 
+                               std::vector<Vector3> &probePositions) {
+    Vector3 size = worldBounds.maxs - worldBounds.mins;
     
-    // Indoor areas have cooler tint (less red, slightly more blue)
-    Vector3 effectiveAmbient;
-    effectiveAmbient[0] = sky.ambientColor[0] * ambientScale * (0.8f + 0.2f * skyVis);  // Less red indoors
-    effectiveAmbient[1] = sky.ambientColor[1] * ambientScale;
-    effectiveAmbient[2] = sky.ambientColor[2] * ambientScale * (1.0f + 0.1f * (1.0f - skyVis));  // Slightly more blue indoors
+    // Calculate grid dimensions based on world size
+    int gridX = std::max(1, std::min(LIGHT_PROBE_MAX_PER_AXIS, 
+                         (int)std::ceil(size[0] / LIGHT_PROBE_GRID_SPACING)));
+    int gridY = std::max(1, std::min(LIGHT_PROBE_MAX_PER_AXIS, 
+                         (int)std::ceil(size[1] / LIGHT_PROBE_GRID_SPACING)));
+    int gridZ = std::max(1, std::min(LIGHT_PROBE_MAX_PER_AXIS, 
+                         (int)std::ceil(size[2] / LIGHT_PROBE_GRID_SPACING)));
     
-    // Directional SH (sun shading) only applies if sun is visible
-    // If sun is blocked, directional components are zero (flat ambient lighting)
-    // This creates the shadow effect on entities - surfaces facing away from sun are darker
-    const float dirScale = shScale * dirMultiplier * sunVis;
+    // Actual spacing
+    float spacingX = size[0] / std::max(1, gridX);
+    float spacingY = size[1] / std::max(1, gridY);
+    float spacingZ = size[2] / std::max(1, gridZ);
     
-    // Directional coefficients from sun direction
-    float dirX = -sky.sunDir[0];
-    float dirY = -sky.sunDir[1];
-    float dirZ = -sky.sunDir[2];
+    Sys_Printf("     Grid dimensions: %d x %d x %d (%d total)\n", 
+               gridX, gridY, gridZ, gridX * gridY * gridZ);
     
-    // Red channel - clamp all values to int16 range
-    probe.ambientSH[0][0] = ClampToInt16(dirX * sky.sunColor[0] * dirScale);  // R X
-    probe.ambientSH[0][1] = ClampToInt16(dirY * sky.sunColor[0] * dirScale);  // R Y
-    probe.ambientSH[0][2] = ClampToInt16(dirZ * sky.sunColor[0] * dirScale);  // R Z
-    probe.ambientSH[0][3] = ClampToInt16(effectiveAmbient[0] * shScale);       // R DC
+    // Generate probe positions
+    for (int z = 0; z <= gridZ; z++) {
+        for (int y = 0; y <= gridY; y++) {
+            for (int x = 0; x <= gridX; x++) {
+                Vector3 pos;
+                pos[0] = worldBounds.mins[0] + x * spacingX;
+                pos[1] = worldBounds.mins[1] + y * spacingY;
+                pos[2] = worldBounds.mins[2] + z * spacingZ;
+                
+                // Offset slightly inward from bounds
+                if (x == 0) pos[0] += 16.0f;
+                if (x == gridX) pos[0] -= 16.0f;
+                if (y == 0) pos[1] += 16.0f;
+                if (y == gridY) pos[1] -= 16.0f;
+                if (z == 0) pos[2] += 16.0f;
+                if (z == gridZ) pos[2] -= 16.0f;
+                
+                // Check if position is inside solid geometry
+                // Skip if inside a mesh (basic rejection)
+                bool insideSolid = false;
+                Vector3 testDir(0, 0, 1);
+                
+                // Simple test: trace up and down, if both hit we might be inside
+                bool hitUp = TraceRayAgainstMeshes(pos, Vector3(0, 0, 1), 64.0f);
+                bool hitDown = TraceRayAgainstMeshes(pos, Vector3(0, 0, -1), 64.0f);
+                if (hitUp && hitDown) {
+                    // Additional check - trace in horizontal directions
+                    bool hitPosX = TraceRayAgainstMeshes(pos, Vector3(1, 0, 0), 32.0f);
+                    bool hitNegX = TraceRayAgainstMeshes(pos, Vector3(-1, 0, 0), 32.0f);
+                    bool hitPosY = TraceRayAgainstMeshes(pos, Vector3(0, 1, 0), 32.0f);
+                    bool hitNegY = TraceRayAgainstMeshes(pos, Vector3(0, -1, 0), 32.0f);
+                    
+                    // If blocked in all directions very close, probably inside solid
+                    if (hitPosX && hitNegX && hitPosY && hitNegY) {
+                        insideSolid = true;
+                    }
+                }
+                
+                if (!insideSolid) {
+                    probePositions.push_back(pos);
+                }
+            }
+        }
+    }
     
-    // Green channel
-    probe.ambientSH[1][0] = ClampToInt16(dirX * sky.sunColor[1] * dirScale);  // G X
-    probe.ambientSH[1][1] = ClampToInt16(dirY * sky.sunColor[1] * dirScale);  // G Y
-    probe.ambientSH[1][2] = ClampToInt16(dirZ * sky.sunColor[1] * dirScale);  // G Z
-    probe.ambientSH[1][3] = ClampToInt16(effectiveAmbient[1] * shScale);       // G DC
+    Sys_Printf("     Generated %zu valid probe positions\n", probePositions.size());
+}
+
+/*
+    CompressProbeList
+    Remove redundant probes that can be reconstructed from neighbors.
+    Adapted from Source SDK's CompressAmbientSampleList.
+*/
+struct ProbeCandidate {
+    Vector3 pos;
+    Vector3 cube[6];
+    bool keep;
+};
+
+static void CompressProbeList(std::vector<ProbeCandidate> &candidates, 
+                               int maxProbes = 1024) {
+    if (candidates.size() <= (size_t)maxProbes) return;
     
-    // Blue channel
-    probe.ambientSH[2][0] = ClampToInt16(dirX * sky.sunColor[2] * dirScale);  // B X
-    probe.ambientSH[2][1] = ClampToInt16(dirY * sky.sunColor[2] * dirScale);  // B Y
-    probe.ambientSH[2][2] = ClampToInt16(dirZ * sky.sunColor[2] * dirScale);  // B Z
-    probe.ambientSH[2][3] = ClampToInt16(effectiveAmbient[2] * shScale);       // B DC
+    Sys_Printf("     Compressing %zu probes to %d...\n", candidates.size(), maxProbes);
+    
+    // Mark all as kept initially
+    for (auto &c : candidates) c.keep = true;
+    
+    // Iteratively remove least valuable probes
+    while (true) {
+        size_t keptCount = 0;
+        for (const auto &c : candidates) {
+            if (c.keep) keptCount++;
+        }
+        
+        if (keptCount <= (size_t)maxProbes) break;
+        
+        // Find the probe with smallest color difference from its nearest neighbor
+        float minDiff = FLT_MAX;
+        size_t minIdx = 0;
+        
+        for (size_t i = 0; i < candidates.size(); i++) {
+            if (!candidates[i].keep) continue;
+            
+            // Find nearest neighbor
+            float nearestDist = FLT_MAX;
+            float colorDiff = 0;
+            
+            for (size_t j = 0; j < candidates.size(); j++) {
+                if (i == j || !candidates[j].keep) continue;
+                
+                Vector3 delta = candidates[j].pos - candidates[i].pos;
+                float dist = vector3_dot(delta, delta);
+                
+                if (dist < nearestDist) {
+                    nearestDist = dist;
+                    
+                    // Compute color difference between cubes
+                    colorDiff = 0;
+                    for (int k = 0; k < 6; k++) {
+                        for (int c = 0; c < 3; c++) {
+                            float diff = std::abs(candidates[i].cube[k][c] - 
+                                                   candidates[j].cube[k][c]);
+                            colorDiff = std::max(colorDiff, diff);
+                        }
+                    }
+                }
+            }
+            
+            // Score: small distance + small color diff = redundant
+            float score = (1.0f / (nearestDist + 1.0f)) * (1.0f - colorDiff);
+            
+            if (score < minDiff || (score == minDiff && colorDiff < 0.01f)) {
+                minDiff = score;
+                minIdx = i;
+            }
+        }
+        
+        candidates[minIdx].keep = false;
+    }
+    
+    // Remove non-kept probes
+    std::vector<ProbeCandidate> kept;
+    for (auto &c : candidates) {
+        if (c.keep) kept.push_back(c);
+    }
+    candidates = kept;
+    
+    Sys_Printf("     Kept %zu probes after compression\n", candidates.size());
 }
 
 // Legacy function for logging (called once to print sky info)
@@ -1576,7 +1902,23 @@ void ApexLegends::EmitLightProbes() {
     ApexLegends::Bsp::lightprobeParentInfos.clear();
     ApexLegends::Bsp::staticPropLightprobeIndices.clear();
     
-    // Collect probe positions from info_lightprobe entities
+    // Get sky environment first (needed for lighting computation)
+    SkyEnvironment sky = GetSkyEnvironment();
+    LogSkyEnvironment(sky);
+    
+    // Calculate world bounds from all meshes
+    MinMax worldBounds;
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        worldBounds.extend(mesh.minmax.mins);
+        worldBounds.extend(mesh.minmax.maxs);
+    }
+    
+    if (!worldBounds.valid()) {
+        worldBounds.extend(Vector3(-1024, -1024, -512));
+        worldBounds.extend(Vector3(1024, 1024, 512));
+    }
+    
+    // Collect probe positions - either from entities or generate grid
     std::vector<Vector3> probePositions;
     
     for (const entity_t &entity : entities) {
@@ -1589,31 +1931,22 @@ void ApexLegends::EmitLightProbes() {
         }
     }
     
-    // If no info_lightprobe entities, create a single probe at world center
-    if (probePositions.empty()) {
-        Sys_Printf("     No info_lightprobe entities found, creating single probe at world center\n");
-        
-        // Calculate world bounds from all meshes
-        MinMax worldBounds;
-        for (const Shared::Mesh_t &mesh : Shared::meshes) {
-            worldBounds.extend(mesh.minmax.mins);
-            worldBounds.extend(mesh.minmax.maxs);
-        }
-        
-        // If no geometry, create a minimal bounds
-        if (!worldBounds.valid()) {
-            worldBounds.extend(Vector3(-1024, -1024, -512));
-            worldBounds.extend(Vector3(1024, 1024, 512));
-        }
-        
-        // Single probe at center
-        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
-        probePositions.push_back(center);
-    } else {
+    if (!probePositions.empty()) {
         Sys_Printf("     Found %zu info_lightprobe entities\n", probePositions.size());
+    } else {
+        // No manual probes - generate adaptive grid (Source SDK style)
+        Sys_Printf("     No info_lightprobe entities, generating adaptive grid...\n");
+        GenerateProbeGrid(worldBounds, probePositions);
     }
     
-    // Create base probe with SH data from sky
+    // Ensure we have at least one probe
+    if (probePositions.empty()) {
+        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
+        probePositions.push_back(center);
+        Sys_Printf("     Using single probe at world center\n");
+    }
+    
+    // Create base probe template
     LightProbe_v50_t baseProbe;
     memset(&baseProbe, 0, sizeof(baseProbe));
     baseProbe.staticLightIndexes[0] = 0xFFFF;
@@ -1621,46 +1954,62 @@ void ApexLegends::EmitLightProbes() {
     baseProbe.staticLightIndexes[2] = 0xFFFF;
     baseProbe.staticLightIndexes[3] = 0xFFFF;
     
-    // Get sky environment (shared for all probes)
-    SkyEnvironment sky = GetSkyEnvironment();
-    LogSkyEnvironment(sky);
+    // Compute per-probe lighting using spherical sampling
+    Sys_Printf("     Computing probe lighting using 162-direction spherical sampling...\n");
     
-    // Compute per-probe SH based on visibility
-    Sys_Printf("     Computing probe lighting (%zu probes)...\n", probePositions.size());
+    std::vector<ProbeCandidate> candidates;
+    candidates.reserve(probePositions.size());
     
     for (size_t i = 0; i < probePositions.size(); i++) {
         const Vector3 &pos = probePositions[i];
         
-        // TODO: Enable visibility testing once trace nodes are set up
-        // For now, use fixed values (outdoor, sunlit)
-        float skyVis = TestSkyVisibility(pos);
-        float sunVis = TestSunVisibility(pos, sky.sunDir);
-        //float skyVis = 1.0f;  // Assume outdoor
-        //float sunVis = 1.0f;  // Assume sunlit
+        ProbeCandidate candidate;
+        candidate.pos = pos;
+        candidate.keep = true;
         
-        // Create probe with appropriate SH
-        LightProbe_v50_t probe = baseProbe;
-        ComputeProbeSH(probe, pos, sky, skyVis, sunVis);
+        // Compute ambient using Source SDK style spherical sampling
+        // This samples 162 directions and accumulates into 6-sided cube
+        ComputeAmbientFromSphericalSamples(pos, sky, candidate.cube);
         
-        ApexLegends::Bsp::lightprobes.push_back(probe);
+        candidates.push_back(candidate);
+        
+        // Progress indicator for large probe counts
+        if ((i + 1) % 100 == 0 || i + 1 == probePositions.size()) {
+            Sys_Printf("       Computed %zu / %zu probes...\n", i + 1, probePositions.size());
+        }
     }
     
-    // Create probe references (position + probe index)
-    for (size_t i = 0; i < probePositions.size(); i++) {
+    Sys_Printf("     Finished computing %zu probe(s)\n", probePositions.size());
+    
+    // Compress probe list if we have too many (Source SDK style optimization)
+    // Remove redundant probes that can be reconstructed from neighbors
+    CompressProbeList(candidates, 2048);
+    
+    // Convert candidates to final probe data
+    for (const ProbeCandidate &candidate : candidates) {
+        LightProbe_v50_t probe = baseProbe;
+        
+        // Convert 6-sided cube to spherical harmonics
+        ConvertCubeToSphericalHarmonics(candidate.cube, probe);
+        
+        ApexLegends::Bsp::lightprobes.push_back(probe);
+        
+        // Create probe reference
         LightProbeRef_t ref;
-        ref.origin = probePositions[i];
-        ref.lightProbeIndex = static_cast<uint32_t>(i);
-        ref.cubemapID = -1;  // INVALID_CUBEMAP_ID
+        ref.origin = candidate.pos;
+        ref.lightProbeIndex = static_cast<uint32_t>(ApexLegends::Bsp::lightprobes.size() - 1);
+        ref.cubemapID = -1;
         ref.padding = 0;
         ApexLegends::Bsp::lightprobeReferences.push_back(ref);
     }
     
-    // For simplicity, create a single leaf node that contains all probes
-    // This is valid and works - the engine will iterate through all refs
-    // A proper tree would be faster for large probe counts but single leaf works
+    // Build spatial lookup tree
+    // For simplicity, create a single leaf node containing all probes
+    // This works correctly - engine iterates through all refs
+    // A proper BSP tree would be faster for large counts but this is valid
     LightProbeTree_t leaf;
     leaf.tag = (0 << 2) | 3;  // refStart=0, type=3 (leaf)
-    leaf.refCount = static_cast<uint32_t>(probePositions.size());
+    leaf.refCount = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeReferences.size());
     ApexLegends::Bsp::lightprobeTree.push_back(leaf);
     
     // Create parent info for worldspawn
