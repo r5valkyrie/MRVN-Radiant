@@ -30,5 +30,5 @@ windeps
 # Unix binary files
 *.so
 libassimp.*
-radiant
+/install/radiant
 /remap
