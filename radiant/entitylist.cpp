@@ -32,6 +32,11 @@
 #include <QApplication>
 #include <QAction>
 #include <QKeyEvent>
+#include <QToolBar>
+#include <QLabel>
+#include <QPushButton>
+#include <QFrame>
+#include <QTimer>
 
 #include "string/string.h"
 #include "scenelib.h"
@@ -69,6 +74,7 @@ public:
 	QCheckBox* m_check;
 	QTreeView* m_tree_view;
 	QAbstractItemModel* m_tree_model;
+	QLabel* m_status_label;
 	bool m_selection_disabled;
 
 	bool m_search_from_start;
@@ -77,6 +83,7 @@ public:
 		m_dirty( EntityList::eDefault ),
 		m_idleDraw( RedrawEntityListCaller() ),
 		m_window( 0 ),
+		m_status_label( nullptr ),
 		m_selection_disabled( false ),
 		m_search_from_start( false ){
 	}
@@ -143,8 +150,28 @@ void entitylist_queue_draw(){
 	getEntityList().m_idleDraw.queueDraw();
 }
 
+void EntityList_UpdateStatus(){
+	if( getEntityList().m_status_label != nullptr ){
+		std::size_t count = GlobalSelectionSystem().countSelected();
+		QString status;
+		if( count == 0 ){
+			status = "No selection";
+		}
+		else if( count == 1 ){
+			status = "1 selected";
+		}
+		else{
+			status = QString( "%1 selected" ).arg( count );
+		}
+		getEntityList().m_status_label->setText( status );
+	}
+}
+
 void EntityList_SelectionUpdate(){
 	if( getEntityList().visible() ){
+		// Update status bar
+		EntityList_UpdateStatus();
+		
 		// deselect tree items on deseletion in the scene for some degree of consistency
 		if( getEntityList().m_tree_view->selectionModel()->hasSelection() ){
 			QTimer::singleShot( 0, [](){
@@ -215,10 +242,9 @@ protected:
 };
 
 void searchEntrySetModeIcon( QAction *action, bool search_from_start ){
-	action->setIcon( QApplication::style()->standardIcon(
-		search_from_start
-		? QStyle::StandardPixmap::SP_CommandLink
-		: QStyle::StandardPixmap::SP_FileDialogContentsView ) );
+	action->setIcon( QIcon( search_from_start
+		? ":/bitmaps/icon_search_start.png"
+		: ":/bitmaps/icon_search.png" ) );
 }
 
 /* search */
@@ -278,49 +304,107 @@ void EntityList_constructWindow( QWidget* main_window ){
 	auto window = getEntityList().m_window = new QWidget( main_window, Qt::Dialog | Qt::WindowCloseButtonHint );
 	window->setWindowTitle( "Entity List" );
 
-	g_guiSettings.addWindow( window, "EntityList/geometry", 350, 500 );
+	g_guiSettings.addWindow( window, "EntityList/geometry", 400, 550 );
+
+	// Main layout
+	auto *mainLayout = new QVBoxLayout( window );
+	mainLayout->setContentsMargins( 0, 0, 0, 0 );
+	mainLayout->setSpacing( 0 );
+
+	// === Top Toolbar ===
+	auto *toolbar = new QToolBar;
+	toolbar->setMovable( false );
+	toolbar->setFloatable( false );
+	toolbar->setIconSize( QSize( 16, 16 ) );
+	toolbar->setContentsMargins( 4, 4, 4, 4 );
+	mainLayout->addWidget( toolbar );
+
+	// Search entry in toolbar
 	{
-		auto *vbox = new QVBoxLayout( window );
-		vbox->setContentsMargins( 4, 0, 4, 4 );
-		{
-			auto *tree = getEntityList().m_tree_view = new QTreeView;
-			tree->setHeaderHidden( true );
-			tree->setEditTriggers( QAbstractItemView::EditTrigger::NoEditTriggers );
-			tree->setUniformRowHeights( true ); // optimization
-			tree->setSizeAdjustPolicy( QAbstractScrollArea::SizeAdjustPolicy::AdjustToContents ); // scroll area will inherit column size
-			tree->header()->setStretchLastSection( false ); // non greedy column sizing; + QHeaderView::ResizeMode::ResizeToContents = no text elision 🤷‍♀️
-			tree->header()->setSectionResizeMode( QHeaderView::ResizeMode::ResizeToContents );
-			tree->setSelectionMode( QAbstractItemView::SelectionMode::ExtendedSelection );
-			vbox->addWidget( tree );
-		}
-		{
-			auto *hbox = new QHBoxLayout;
-			vbox->addLayout( hbox );
-			{
-				auto *check = getEntityList().m_check = new QCheckBox( "AutoFocus on Selection" );
-				hbox->addWidget( check );
-				QObject::connect( check, &QAbstractButton::clicked, entitylist_focusSelected );
-			}
-			{	//search entry
-				QLineEdit *entry = new Filter_QLineEdit;
-				hbox->addWidget( entry );
-				entry->setClearButtonEnabled( true );
-				entry->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
+		QLineEdit *entry = new Filter_QLineEdit;
+		entry->setPlaceholderText( "Filter entities..." );
+		entry->setClearButtonEnabled( true );
+		entry->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
+		entry->setMinimumWidth( 150 );
+		entry->setSizePolicy( QSizePolicy::Expanding, QSizePolicy::Fixed );
 
-				QAction *action = entry->addAction( QApplication::style()->standardIcon( QStyle::StandardPixmap::SP_CommandLink ), QLineEdit::LeadingPosition );
-				searchEntrySetModeIcon( action, getEntityList().m_search_from_start );
-				action->setToolTip( "toggle match mode ( start / any position )" );
+		// Add search icon
+		QAction *searchAction = entry->addAction( QIcon( ":/bitmaps/icon_search.png" ), QLineEdit::LeadingPosition );
+		searchEntrySetModeIcon( searchAction, getEntityList().m_search_from_start );
+		searchAction->setToolTip( "Toggle match mode (start / any position)" );
 
-				QObject::connect( entry, &QLineEdit::textChanged, []( const QString& text ){
-					tree_view_filter( text.toLatin1().constData(), getEntityList().m_search_from_start );
-				} );
-				QObject::connect( action, &QAction::triggered, [action, entry](){
-					getEntityList().m_search_from_start ^= 1;
-					searchEntrySetModeIcon( action, getEntityList().m_search_from_start );
-					entry->textChanged( entry->text() ); // trigger filtering update
-				} );
-			}
-		}
+		QObject::connect( entry, &QLineEdit::textChanged, []( const QString& text ){
+			tree_view_filter( text.toLatin1().constData(), getEntityList().m_search_from_start );
+		} );
+		QObject::connect( searchAction, &QAction::triggered, [searchAction, entry](){
+			getEntityList().m_search_from_start ^= 1;
+			searchEntrySetModeIcon( searchAction, getEntityList().m_search_from_start );
+			entry->textChanged( entry->text() ); // trigger filtering update
+		} );
+
+		toolbar->addWidget( entry );
+	}
+
+	toolbar->addSeparator();
+
+	// Expand All button
+	{
+		auto *btn = new QPushButton( "Expand" );
+		btn->setToolTip( "Expand all entities" );
+		btn->setFlat( true );
+		QObject::connect( btn, &QPushButton::clicked, [](){
+			getEntityList().m_tree_view->expandAll();
+		} );
+		toolbar->addWidget( btn );
+	}
+
+	// Collapse All button
+	{
+		auto *btn = new QPushButton( "Collapse" );
+		btn->setToolTip( "Collapse all entities" );
+		btn->setFlat( true );
+		QObject::connect( btn, &QPushButton::clicked, [](){
+			getEntityList().m_tree_view->collapseAll();
+		} );
+		toolbar->addWidget( btn );
+	}
+
+	// === Tree View (main content) ===
+	{
+		auto *tree = getEntityList().m_tree_view = new QTreeView;
+		tree->setHeaderHidden( true );
+		tree->setEditTriggers( QAbstractItemView::EditTrigger::NoEditTriggers );
+		tree->setUniformRowHeights( true ); // optimization
+		tree->setSizeAdjustPolicy( QAbstractScrollArea::SizeAdjustPolicy::AdjustToContents );
+		tree->header()->setStretchLastSection( false );
+		tree->header()->setSectionResizeMode( QHeaderView::ResizeMode::ResizeToContents );
+		tree->setSelectionMode( QAbstractItemView::SelectionMode::ExtendedSelection );
+		tree->setAnimated( true ); // smooth expand/collapse
+		tree->setIndentation( 16 ); // slightly smaller indentation
+		mainLayout->addWidget( tree, 1 ); // stretch factor 1
+	}
+
+	// === Bottom Status Bar ===
+	{
+		auto *statusBar = new QFrame;
+		auto *statusLayout = new QHBoxLayout( statusBar );
+		statusLayout->setContentsMargins( 8, 4, 8, 4 );
+		statusLayout->setSpacing( 8 );
+
+		// Auto-focus checkbox
+		auto *check = getEntityList().m_check = new QCheckBox( "Auto Focus" );
+		check->setToolTip( "Automatically focus camera on selected entity" );
+		QObject::connect( check, &QAbstractButton::clicked, entitylist_focusSelected );
+		statusLayout->addWidget( check );
+
+		// Spacer
+		statusLayout->addStretch( 1 );
+
+		// Status label
+		auto *statusLabel = getEntityList().m_status_label = new QLabel( "Ready" );
+		statusLayout->addWidget( statusLabel );
+
+		mainLayout->addWidget( statusBar );
 	}
 
 	AttachEntityTreeModel();

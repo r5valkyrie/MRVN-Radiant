@@ -1954,7 +1954,6 @@ QWidget* TextureBrowser_constructWindow( QWidget* toplevel ){
 	
 	makeQuickBtn( "Find & Replace...", "FindReplaceTextures" );
 	makeQuickBtn( "Surface Inspector", "SurfaceInspector" );
-	makeQuickBtn( "Patch Inspector", "PatchInspector" );
 	
 	sidebarLayout->addWidget( quickAccess );
 
