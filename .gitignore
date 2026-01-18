@@ -32,3 +32,4 @@ windeps
 libassimp.*
 /install/radiant
 /remap
+install/remap
