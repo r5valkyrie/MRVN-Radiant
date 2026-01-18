@@ -759,6 +759,16 @@ void theme_set( ETheme theme ){
 			QTreeView::branch {
 				background-color: transparent;
 			}
+			QTreeView::branch:has-children:!has-siblings:closed,
+			QTreeView::branch:closed:has-children:has-siblings {
+				border-image: none;
+				image: url(bitmaps/tree_closed.png);
+			}
+			QTreeView::branch:open:has-children:!has-siblings,
+			QTreeView::branch:open:has-children:has-siblings {
+				border-image: none;
+				image: url(bitmaps/tree_open.png);
+			}
 
 			/* Table View - Clean grid */
 			QTableView, QTableWidget {

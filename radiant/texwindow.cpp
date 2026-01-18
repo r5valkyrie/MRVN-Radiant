@@ -54,6 +54,12 @@
 #include <QSplitter>
 #include <QOpenGLWidget>
 #include <QTabWidget>
+#include <QLabel>
+#include <QToolBar>
+#include <QToolButton>
+#include <QPushButton>
+#include <QSlider>
+#include <QSizePolicy>
 
 #include "signal/signal.h"
 #include "math/vector.h"
@@ -155,6 +161,10 @@ bool g_TextureBrowser_enableAlpha = false;
 bool g_TextureBrowser_filter_searchFromStart = false;
 }
 
+// Forward declarations
+void TextureBrowser_loadAllTextures();
+void TextureBrowser_SetHideUnused( class TextureBrowser& textureBrowser, bool hideUnused );
+void TextureBrowser_updateTitle();
 
 enum StartupShaders
 {
@@ -408,7 +418,7 @@ void TextureBrowser_SetSelectedShader( TextureBrowser& textureBrowser, const cha
 		ishader->DecRef();
 	}
 
-	if( textureBrowser.m_tabs->currentIndex() == 1 )
+	if( textureBrowser.m_tabs != nullptr && textureBrowser.m_tabs->currentIndex() == 1 )
 		TextureBrowser_tagsSetCheckboxesForShader( shader );
 }
 
@@ -1253,8 +1263,9 @@ void TextureBrowser_createTreeViewTree(){
 	g_TexBro.m_treeView->setUniformRowHeights( true ); // optimization
 	g_TexBro.m_treeView->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
 	g_TexBro.m_treeView->setExpandsOnDoubleClick( false );
-	g_TexBro.m_treeView->header()->setStretchLastSection( false ); // non greedy column sizing; + QHeaderView::ResizeMode::ResizeToContents = no text elision 
-	g_TexBro.m_treeView->header()->setSectionResizeMode( QHeaderView::ResizeMode::ResizeToContents );
+	g_TexBro.m_treeView->header()->setStretchLastSection( true ); // Let column stretch to fill space
+	g_TexBro.m_treeView->header()->setSectionResizeMode( QHeaderView::ResizeMode::Stretch );
+	g_TexBro.m_treeView->setHorizontalScrollBarPolicy( Qt::ScrollBarAsNeeded ); // Enable horizontal scroll if needed
 
 	QObject::connect( g_TexBro.m_treeView, &QAbstractItemView::activated, TreeView_onRowActivated );
 
@@ -1334,6 +1345,8 @@ static QMenu* TextureBrowser_constructTagsMenu(){
 }
 
 inline void TextureBrowser_tagsEnableGui( bool enable ){
+	if( g_TexBro.m_tabs == nullptr )
+		return;
 	if( enable )
 		g_TexBro.m_tabs->addTab( g_TexBro.m_tagsListWidget, "Tags" );
 	else
@@ -1646,10 +1659,12 @@ protected:
 };
 
 void TextureBrowser_filterSetModeIcon( QAction *action ){
-	action->setIcon( QApplication::style()->standardIcon(
-		g_TextureBrowser_filter_searchFromStart
-		? QStyle::StandardPixmap::SP_CommandLink
-		: QStyle::StandardPixmap::SP_FileDialogContentsView ) );
+	// Use custom icons for search mode toggle
+	if( g_TextureBrowser_filter_searchFromStart ){
+		action->setIcon( QIcon( "bitmaps/icon_search_start.png" ) );
+	} else {
+		action->setIcon( QIcon( "bitmaps/icon_search.png" ) );
+	}
 }
 
 #include "timer.h"
@@ -1752,119 +1767,260 @@ QWidget* TextureBrowser_constructWindow( QWidget* toplevel ){
 
 	g_TexBro.m_parent = toplevel;
 
-	QSplitter *splitter = new QSplitter;
-	QWidget *containerWidgetLeft = new QWidget; // Adding a QLayout to a QSplitter is not supported, use proxy widget
-	QWidget *containerWidgetRight = new QWidget; // Adding a QLayout to a QSplitter is not supported, use proxy widget
-	splitter->addWidget( containerWidgetLeft );
-	splitter->addWidget( containerWidgetRight );
-	QVBoxLayout *vbox = new QVBoxLayout( containerWidgetLeft );
-	QHBoxLayout *hbox = new QHBoxLayout( containerWidgetRight );
+	// Main container widget
+	QWidget *mainWidget = new QWidget;
+	mainWidget->setObjectName( "TextureBrowserMain" );
+	QVBoxLayout *mainLayout = new QVBoxLayout( mainWidget );
+	mainLayout->setContentsMargins( 0, 0, 0, 0 );
+	mainLayout->setSpacing( 0 );
 
-	hbox->setContentsMargins( 0, 0, 0, 0 );
-	vbox->setContentsMargins( 0, 0, 0, 0 );
-	hbox->setSpacing( 0 );
-	vbox->setSpacing( 0 );
+	// ===== TOP TOOLBAR WITH BREADCRUMB =====
+	QWidget *topBar = new QWidget;
+	QHBoxLayout *topLayout = new QHBoxLayout( topBar );
+	topLayout->setContentsMargins( 8, 6, 8, 6 );
+	topLayout->setSpacing( 8 );
+	mainLayout->addWidget( topBar );
 
+	// Sidebar toggle button
+	QPushButton *sidebarToggle = new QPushButton;
+	sidebarToggle->setIcon( QApplication::style()->standardIcon( QStyle::SP_DirIcon ) );
+	sidebarToggle->setToolTip( "Toggle folder panel (Tab)" );
+	sidebarToggle->setFixedSize( 28, 28 );
+	sidebarToggle->setCheckable( true );
+	sidebarToggle->setChecked( true );
+	topLayout->addWidget( sidebarToggle );
 
-	{	// menu bar
-		QToolBar *toolbar = new QToolBar;
-		vbox->addWidget( toolbar );
-
-		QMenu* menu_view = TextureBrowser_constructViewMenu();
-
-		//show detached menu over floating tex bro and main wnd...
-		menu_view->setParent( toolbar, menu_view->windowFlags() ); //don't reset windowFlags
-
-		//view menu button
-		toolbar_append_button( toolbar, "View", "texbro_view.png", PointerCaller<QMenu, Popup_View_Menu>( menu_view ) );
-
-		toolbar_append_button( toolbar, "Find / Replace...", "texbro_gtk-find-and-replace.png", "FindReplaceTextures" );
-
-		toolbar_append_button( toolbar, "Flush & Reload Shaders", "texbro_refresh.png", "RefreshShaders" );
-	}
-	{	// filter entry
-		QLineEdit *entry = g_TexBro.m_filter_entry = new Filter_QLineEdit;
-		vbox->addWidget( entry );
-		entry->setClearButtonEnabled( true );
-		entry->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
-
-		QAction *action = g_TexBro.m_filter_action = entry->addAction( QApplication::style()->standardIcon( QStyle::StandardPixmap::SP_CommandLink ), QLineEdit::LeadingPosition );
-		TextureBrowser_filterSetModeIcon( action );
-		action->setToolTip( "toggle match mode ( start / any position )" );
-
-		QObject::connect( entry, &QLineEdit::textChanged, []( const QString& text ){
-			g_TexBro.m_filter_string = text.toLatin1().constData();
-			g_TexBro.heightChanged();
-			g_TexBro.m_originInvalid = true;
-		} );
-		QObject::connect( action, &QAction::triggered, GlobalToggles_find( "SearchFromStart" ).m_command.m_callback );
-	}
-	{	// Texture TreeView
-		TextureBrowser_createTreeViewTree();
-	}
-	{	// gl_widget
-		g_TexBro.m_gl_widget = new TexWndGLWidget( g_TexBro );
-
-		hbox->addWidget( g_TexBro.m_gl_widget );
-	}
-	{	// gl_widget scrollbar
-		auto scroll = g_TexBro.m_texture_scroll = new QScrollBar;
-		hbox->addWidget( scroll );
-
-		QObject::connect( scroll, &QAbstractSlider::valueChanged, []( int value ){
-			g_TexBro.m_scrollAdjustment.value_changed( value );
-		} );
-
-		scroll->setVisible( g_TexBro.m_showTextureScrollbar );
-	}
-
-	/* { // tag stuff
-		g_TexBro.m_tagsListWidget = new Tags_QListWidget;
-		g_TexBro.m_tagsListWidget->setSortingEnabled( true );
-		g_TexBro.m_tagsListWidget->setSelectionMode( QAbstractItemView::SelectionMode::ExtendedSelection );
-		g_TexBro.m_tagsListWidget->setEditTriggers( QAbstractItemView::EditTrigger::SelectedClicked | QAbstractItemView::EditTrigger::EditKeyPressed );
-		g_TexBro.m_tagsListWidget->setUniformItemSizes( true ); // optimization
-		g_TexBro.m_tagsListWidget->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
-
-		g_TexBro.m_tagsListWidget->setItemDelegate( new Tags_QItemDelegate( g_TexBro.m_tagsListWidget ) );
-
-		QObject::connect( g_TexBro.m_tagsListWidget, &QListWidget::activated, TextureBrowser_searchTags );
-
-		TagBuilder.GetAllTags( g_TexBro.m_all_tags );
-		for ( const CopiedString& tag : g_TexBro.m_all_tags ){
-			auto item = new QListWidgetItem( tag.c_str() );
-			item->setFlags( Qt::ItemIsSelectable | Qt::ItemIsEditable | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemNeverHasChildren );
-			item->setCheckState( Qt::CheckState::Unchecked ); // is needed to see checkbox
-			g_TexBro.m_tagsListWidget->addItem( item );
-		}
-	}
-	{	// tag context menu
-		g_TexBro.m_tagsMenu = TextureBrowser_constructTagsMenu();
-
-		//show detached menu over floating tex bro and main wnd...
-		g_TexBro.m_tagsMenu->setParent( g_TexBro.m_tagsListWidget, g_TexBro.m_tagsMenu->windowFlags() ); //don't reset windowFlags
-	}*/
+	// Breadcrumb/path label
+	QLabel *pathLabel = new QLabel( "All Textures" );
+	pathLabel->setMinimumWidth( 120 );
+	pathLabel->setMaximumWidth( 250 );
+	pathLabel->setSizePolicy( QSizePolicy::Preferred, QSizePolicy::Fixed );
+	topLayout->addWidget( pathLabel );
 	
-	{	// Texture/Tag notebook
-		g_TexBro.m_tabs = new QTabWidget;
-		g_TexBro.m_tabs->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
-		g_TexBro.m_tabs->setDocumentMode( true );
-		g_TexBro.m_tabs->setTabBarAutoHide( true );
-		g_TexBro.m_tabs->addTab( g_TexBro.m_treeView, "Textures" );
-		//static_cast<QObject*>( g_TexBro.m_tagsListWidget )->setParent( g_TexBro.m_tabs );
-		//TextureBrowser_tagsEnableGui( g_TexBro.m_tags );
-		vbox->addWidget( g_TexBro.m_tabs );
+	topLayout->addStretch( 1 );
 
-		QObject::connect( g_TexBro.m_tabs, &QTabWidget::currentChanged, []( int index ){
-			if( index == 1 )
-				TextureBrowser_tagsSetCheckboxesForShader( g_TexBro.m_shader.c_str() );
-		} );
-	}
+	// Quick filter buttons
+	QWidget *filterBtns = new QWidget;
+	QHBoxLayout *filterBtnLayout = new QHBoxLayout( filterBtns );
+	filterBtnLayout->setContentsMargins( 0, 0, 0, 0 );
+	filterBtnLayout->setSpacing( 2 );
+	
+	auto makeFilterBtn = [&]( const char* text, const char* tooltip, bool checked = false ) -> QPushButton* {
+		QPushButton *btn = new QPushButton( text );
+		btn->setCheckable( true );
+		btn->setChecked( checked );
+		btn->setToolTip( tooltip );
+		btn->setFixedHeight( 24 );
+		filterBtnLayout->addWidget( btn );
+		return btn;
+	};
+	
+	QPushButton *btnAll = makeFilterBtn( "All", "Show all textures (loads all)", true );
+	QPushButton *btnUsed = makeFilterBtn( "In Use", "Show only textures used in map (U)" );
+	QPushButton *btnShaders = makeFilterBtn( "Shaders", "Show shader files" );
+	
+	// Connect filter buttons
+	QObject::connect( btnUsed, &QPushButton::toggled, []( bool checked ){
+		if( checked != g_TexBro.m_hideUnused ){
+			TextureBrowser_ToggleHideUnused();
+		}
+	});
+	QObject::connect( btnAll, &QPushButton::clicked, [](){
+		// Load all textures and clear directory filter
+		g_TextureBrowser_currentDirectory = "";
+		g_TexBro.m_searchedTags = false;
+		TextureBrowser_loadAllTextures();
+		TextureBrowser_SetHideUnused( g_TexBro, false );
+		TextureBrowser_updateTitle();
+	});
+	
+	topLayout->addWidget( filterBtns );
 
-	splitter->setStretchFactor( 0, 0 ); // consistent treeview side sizing on resizes
-	splitter->setStretchFactor( 1, 1 );
-	g_guiSettings.addSplitter( splitter, "TextureBrowser/splitter", { 100, 800 } );
-	return splitter;
+	topLayout->addSpacing( 16 );
+
+	// Scale slider with label - controls uniform texture size
+	QLabel *scaleLabel = new QLabel( "Size:" );
+	topLayout->addWidget( scaleLabel );
+	
+	QSlider *scaleSlider = new QSlider( Qt::Horizontal );
+	scaleSlider->setRange( 32, 256 ); // Practical range for thumbnail sizes
+	scaleSlider->setValue( g_TexBro.m_uniformTextureSize );
+	scaleSlider->setFixedWidth( 100 );
+	scaleSlider->setToolTip( "Texture thumbnail size" );
+	QObject::connect( scaleSlider, &QSlider::valueChanged, []( int value ){
+		g_TexBro.m_uniformTextureSize = value;
+		g_TexBro.m_heightChanged = true;
+		g_TexBro.m_originInvalid = true;
+		g_TexBro.queueDraw();
+	});
+	topLayout->addWidget( scaleSlider );
+
+	topLayout->addSpacing( 16 );
+
+	// Search box
+	QLineEdit *searchBox = g_TexBro.m_filter_entry = new Filter_QLineEdit;
+	searchBox->setPlaceholderText( "Search textures..." );
+	searchBox->setClearButtonEnabled( true );
+	searchBox->setFixedWidth( 200 );
+	searchBox->setFocusPolicy( Qt::FocusPolicy::ClickFocus );
+
+	
+	QAction *searchAction = g_TexBro.m_filter_action = searchBox->addAction( 
+		QIcon(),  // No icon, will use text
+		QLineEdit::LeadingPosition 
+	);
+	TextureBrowser_filterSetModeIcon( searchAction );
+	searchAction->setToolTip( "Toggle match mode" );
+
+	QObject::connect( searchBox, &QLineEdit::textChanged, []( const QString& text ){
+		g_TexBro.m_filter_string = text.toLatin1().constData();
+		g_TexBro.heightChanged();
+		g_TexBro.m_originInvalid = true;
+	});
+	QObject::connect( searchAction, &QAction::triggered, GlobalToggles_find( "SearchFromStart" ).m_command.m_callback );
+	topLayout->addWidget( searchBox );
+
+	// Menu button
+	QMenu* menu_view = TextureBrowser_constructViewMenu();
+	QPushButton *menuBtn = new QPushButton;
+	menuBtn->setIcon( QIcon( "bitmaps/icon_menu.png" ) );
+	menuBtn->setFixedSize( 28, 28 );
+	menuBtn->setToolTip( "Options" );
+	menuBtn->setMenu( menu_view );
+	topLayout->addWidget( menuBtn );
+
+	// ===== MAIN CONTENT AREA =====
+	QSplitter *mainSplitter = new QSplitter( Qt::Horizontal );
+	mainSplitter->setHandleWidth( 1 );
+	mainLayout->addWidget( mainSplitter, 1 );
+
+	// ----- LEFT SIDEBAR -----
+	QWidget *sidebar = new QWidget;
+	sidebar->setMinimumWidth( 160 );
+	sidebar->setMaximumWidth( 300 );
+	QVBoxLayout *sidebarLayout = new QVBoxLayout( sidebar );
+	sidebarLayout->setContentsMargins( 0, 0, 0, 0 );
+	sidebarLayout->setSpacing( 0 );
+
+	// Sidebar header with collapse
+	QWidget *sidebarHeader = new QWidget;
+	QHBoxLayout *sidebarHeaderLayout = new QHBoxLayout( sidebarHeader );
+	sidebarHeaderLayout->setContentsMargins( 12, 8, 8, 8 );
+	
+	QLabel *foldersLabel = new QLabel( "FOLDERS" );
+	sidebarHeaderLayout->addWidget( foldersLabel );
+	sidebarHeaderLayout->addStretch();
+	
+	QPushButton *refreshBtn = new QPushButton;
+	refreshBtn->setIcon( QApplication::style()->standardIcon( QStyle::SP_BrowserReload ) );
+	refreshBtn->setFixedSize( 20, 20 );
+	refreshBtn->setFlat( true );
+	refreshBtn->setToolTip( "Refresh shaders" );
+	QObject::connect( refreshBtn, &QPushButton::clicked, [](){ GlobalCommands_find( "RefreshShaders" ).m_callback(); });
+	sidebarHeaderLayout->addWidget( refreshBtn );
+	
+	sidebarLayout->addWidget( sidebarHeader );
+
+	// Tree view
+	TextureBrowser_createTreeViewTree();
+	g_TexBro.m_treeView->setHeaderHidden( true );
+	g_TexBro.m_treeView->setIndentation( 20 );
+	g_TexBro.m_treeView->setAnimated( true );
+	g_TexBro.m_treeView->setRootIsDecorated( true );
+	g_TexBro.m_treeView->setExpandsOnDoubleClick( true );
+
+	// Note: Don't connect to selectionModel() here as it changes when model is reset
+	sidebarLayout->addWidget( g_TexBro.m_treeView, 1 );
+
+	// Quick access section
+	QWidget *quickAccess = new QWidget;
+	QVBoxLayout *quickLayout = new QVBoxLayout( quickAccess );
+	quickLayout->setContentsMargins( 8, 8, 8, 8 );
+	quickLayout->setSpacing( 4 );
+	
+	QLabel *quickLabel = new QLabel( "QUICK ACCESS" );
+	quickLayout->addWidget( quickLabel );
+	
+	auto makeQuickBtn = [&]( const char* text, const char* cmd ) -> QPushButton* {
+		QPushButton *btn = new QPushButton( text );
+		btn->setFlat( true );
+		if( cmd && *cmd ){
+			QString cmdStr( cmd ); // Copy the string
+			QObject::connect( btn, &QPushButton::clicked, [cmdStr](){ GlobalCommands_find( cmdStr.toLatin1().constData() ).m_callback(); });
+		}
+		quickLayout->addWidget( btn );
+		return btn;
+	};
+	
+	makeQuickBtn( "Find & Replace...", "FindReplaceTextures" );
+	makeQuickBtn( "Surface Inspector", "SurfaceInspector" );
+	makeQuickBtn( "Patch Inspector", "PatchInspector" );
+	
+	sidebarLayout->addWidget( quickAccess );
+
+	// Connect sidebar toggle
+	QObject::connect( sidebarToggle, &QPushButton::toggled, [sidebar]( bool checked ){
+		sidebar->setVisible( checked );
+	});
+
+	mainSplitter->addWidget( sidebar );
+
+	// ----- TEXTURE DISPLAY AREA -----
+	QWidget *textureArea = new QWidget;
+	textureArea->setObjectName( "TexBroDisplay" );
+	QVBoxLayout *textureLayout = new QVBoxLayout( textureArea );
+	textureLayout->setContentsMargins( 0, 0, 0, 0 );
+	textureLayout->setSpacing( 0 );
+
+	// Texture GL widget with scrollbar
+	QWidget *glContainer = new QWidget;
+	QHBoxLayout *glLayout = new QHBoxLayout( glContainer );
+	glLayout->setContentsMargins( 0, 0, 0, 0 );
+	glLayout->setSpacing( 0 );
+
+	g_TexBro.m_gl_widget = new TexWndGLWidget( g_TexBro );
+	glLayout->addWidget( g_TexBro.m_gl_widget, 1 );
+
+	auto scroll = g_TexBro.m_texture_scroll = new QScrollBar;
+	glLayout->addWidget( scroll );
+
+	QObject::connect( scroll, &QAbstractSlider::valueChanged, []( int value ){
+		g_TexBro.m_scrollAdjustment.value_changed( value );
+	});
+
+	scroll->setVisible( g_TexBro.m_showTextureScrollbar );
+	textureLayout->addWidget( glContainer, 1 );
+
+	// ===== BOTTOM STATUS BAR =====
+	QWidget *statusBar = new QWidget;
+	statusBar->setFixedHeight( 28 );
+	QHBoxLayout *statusLayout = new QHBoxLayout( statusBar );
+	statusLayout->setContentsMargins( 12, 0, 12, 0 );
+	statusLayout->setSpacing( 16 );
+
+	QLabel *statusTexture = new QLabel( "No texture selected" );
+	statusLayout->addWidget( statusTexture );
+	
+	statusLayout->addStretch();
+	
+	QLabel *statusCount = new QLabel( "0 textures" );
+	statusLayout->addWidget( statusCount );
+	
+	QLabel *statusSize = new QLabel( "" );
+	statusLayout->addWidget( statusSize );
+
+	textureLayout->addWidget( statusBar );
+
+	mainSplitter->addWidget( textureArea );
+
+	// Configure splitter
+	mainSplitter->setStretchFactor( 0, 0 );
+	mainSplitter->setStretchFactor( 1, 1 );
+	g_guiSettings.addSplitter( mainSplitter, "TextureBrowser/splitter2", { 200, 600 } );
+
+	g_TexBro.m_tabs = nullptr;
+
+	return mainWidget;
 }
 
 void TextureBrowser_destroyWindow(){
@@ -1929,11 +2085,45 @@ void TextureBrowser_ToggleShowShaderListOnly(){
 	TextureBrowser_constructTreeStore();
 }
 
+void TextureBrowser_loadAllTextures(){
+	// Load all textures from all directories
+	ScopeDisableScreenUpdates disableScreenUpdates( "All Textures", "Loading All Textures" );
+	
+	TextureGroups groups;
+	TextureGroups_constructTreeView( groups );
+	
+	// Iterate through all groups and load their textures
+	for( TextureGroups::const_iterator i = groups.begin(); i != groups.end(); ++i ){
+		const char* dirName = (*i).c_str();
+		
+		// Ensure directory ends with '/'
+		StringOutputStream dirPath( 64 );
+		dirPath << dirName;
+		if( !string_empty( dirName ) && dirName[strlen(dirName)-1] != '/' ){
+			dirPath << "/";
+		}
+		
+		std::size_t shaders_count;
+		GlobalShaderSystem().foreachShaderName( makeCallback1( TextureCategoryLoadShader( dirPath.c_str(), shaders_count ) ) );
+		
+		if ( g_pGameDescription->mGameType != "doom3" ) {
+			Radiant_getImageModules().foreachModule( LoadTexturesByTypeVisitor( StringStream<64>( "textures/", dirPath.c_str() ) ) );
+		}
+	}
+	
+	g_TexBro.m_heightChanged = true;
+	g_TexBro.m_originInvalid = true;
+	g_TexBro.queueDraw();
+}
+
 void TextureBrowser_showAll(){
 	g_TextureBrowser_currentDirectory = "";
 	g_TexBro.m_searchedTags = false;
-//	TextureBrowser_SetHideUnused( g_TexBro, false );
-	TextureBrowser_ToggleHideUnused(); //toggle to show all used on the first hit and all on the second
+	
+	// Load all textures so they are available
+	TextureBrowser_loadAllTextures();
+	
+	TextureBrowser_SetHideUnused( g_TexBro, false );
 	TextureBrowser_updateTitle();
 }
 
