@@ -211,6 +211,34 @@ void ColorScheme_EvenDarker()
 	XY_UpdateAllWindows();
 }
 
+/* Modern color scheme - matches the Modern GUI theme */
+void ColorScheme_Modern()
+{
+	// Texture browser background - dark charcoal
+	TextureBrowser_setBackgroundColour( Vector3( 0.094f, 0.102f, 0.122f ) );  // #181A1F
+
+	// Camera (3D) view
+	g_camwindow_globals.color_cameraback = Vector3( 0.118f, 0.129f, 0.153f );  // #1E2127
+	g_camwindow_globals.color_selbrushes3d = Vector3( 0.337f, 0.612f, 0.839f );  // #569CD6 - VS Code blue
+	CamWnd_reconstructStatic();
+	CamWnd_Update( *g_pParentWnd->GetCamWnd() );
+
+	// 2D orthographic views
+	g_xywindow_globals.color_gridback = Vector3( 0.094f, 0.102f, 0.122f );  // #181A1F - dark background
+	g_xywindow_globals.color_gridminor = Vector3( 0.145f, 0.157f, 0.184f );  // #252830 - subtle minor grid
+	g_xywindow_globals.color_gridmajor = Vector3( 0.188f, 0.204f, 0.243f );  // #30343E - visible major grid
+	g_xywindow_globals.color_gridblock = Vector3( 0.337f, 0.612f, 0.839f );  // #569CD6 - blue block lines
+	g_xywindow_globals.color_gridtext = Vector3( 0.502f, 0.533f, 0.580f );  // #808895 - muted text
+	g_xywindow_globals.color_selbrushes = Vector3( 0.337f, 0.612f, 0.839f );  // #569CD6 - selection blue
+	XYWnd::recaptureStates();
+	g_xywindow_globals.color_clipper = Vector3( 0.878f, 0.424f, 0.459f );  // #E06C75 - red clipper
+	Brush_clipperColourChanged();
+	g_xywindow_globals.color_brushes = Vector3( 0.596f, 0.765f, 0.475f );  // #98C379 - green brushes
+	SetWorldspawnColour( g_xywindow_globals.color_brushes );
+	g_xywindow_globals.color_viewname = Vector3( 0.337f, 0.612f, 0.839f );  // #569CD6 - blue view name
+	XY_UpdateAllWindows();
+}
+
 typedef Callback1<Vector3&> GetColourCallback;
 typedef Callback1<const Vector3&> SetColourCallback;
 
@@ -333,6 +361,7 @@ void create_colours_menu( QMenu *menu ){
 		create_menu_item_with_mnemonic( submenu, "Blender/Dark", "ColorSchemeBlender" );
 		create_menu_item_with_mnemonic( submenu, "Adwaita Dark", "ColorSchemeAdwaitaDark" );
 		create_menu_item_with_mnemonic( submenu, "Even Darker", "ColorSchemeEvenDarker" );
+		create_menu_item_with_mnemonic( submenu, "Modern", "ColorSchemeModern" );
 	}
 
 	theme_contruct_menu( menu );
@@ -363,6 +392,7 @@ void Colors_registerCommands(){
 	GlobalCommands_insert( "ColorSchemeBlender", FreeCaller<ColorScheme_Blender>() );
 	GlobalCommands_insert( "ColorSchemeAdwaitaDark", FreeCaller<ColorScheme_AdwaitaDark>() );
 	GlobalCommands_insert( "ColorSchemeEvenDarker", FreeCaller<ColorScheme_EvenDarker>() );
+	GlobalCommands_insert( "ColorSchemeModern", FreeCaller<ColorScheme_Modern>() );
 	GlobalCommands_insert( "ChooseTextureBackgroundColor", makeCallback( g_ColoursMenu.m_textureback ) );
 	GlobalCommands_insert( "ChooseGridBackgroundColor", makeCallback( g_ColoursMenu.m_xyback ) );
 	GlobalCommands_insert( "ChooseGridMajorColor", makeCallback( g_ColoursMenu.m_gridmajor ) );

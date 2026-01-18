@@ -54,6 +54,7 @@ public:
 		eFloating = 1,
 		eSplit = 2,
 		eRegularLeft = 3,
+		eComplete = 4,       // All 4 views + textures + console
 	};
 
 	MainFrame();

@@ -149,6 +149,7 @@ namespace
 {
 bool g_TextureBrowser_shaderlistOnly = false;
 bool g_TextureBrowser_fixedSize = true;
+bool g_TextureBrowser_squareThumbnails = true;
 bool g_TextureBrowser_filterNotex = false;
 bool g_TextureBrowser_enableAlpha = false;
 bool g_TextureBrowser_filter_searchFromStart = false;
@@ -193,6 +194,7 @@ public:
 	ToggleItem m_showtextures_item;
 	ToggleItem m_showshaderlistonly_item;
 	ToggleItem m_fixedsize_item;
+	ToggleItem m_squarethumbnails_item;
 	ToggleItem m_filternotex_item;
 	ToggleItem m_enablealpha_item;
 	ToggleItem m_tags_item;
@@ -234,6 +236,7 @@ public:
 		m_showtextures_item( BoolExportCaller( m_showTextures ) ),
 		m_showshaderlistonly_item( BoolExportCaller( g_TextureBrowser_shaderlistOnly ) ),
 		m_fixedsize_item( BoolExportCaller( g_TextureBrowser_fixedSize ) ),
+		m_squarethumbnails_item( BoolExportCaller( g_TextureBrowser_squareThumbnails ) ),
 		m_filternotex_item( BoolExportCaller( g_TextureBrowser_filterNotex ) ),
 		m_enablealpha_item( BoolExportCaller( g_TextureBrowser_enableAlpha ) ),
 		m_tags_item( BoolExportCaller( m_tags ) ),
@@ -313,7 +316,12 @@ public:
 		int H = std::max( std::size_t( 1 ), tex->height * m_textureScale / 100 );
 
 		if ( g_TextureBrowser_fixedSize ){
-			if	( W >= H ) {
+			// Square thumbnails mode - all textures same size
+			if ( g_TextureBrowser_squareThumbnails ) {
+				W = m_uniformTextureSize;
+				H = m_uniformTextureSize;
+			}
+			else if	( W >= H ) {
 				// Texture is square, or wider than it is tall
 				if ( W > m_uniformTextureSize ){
 					H = m_uniformTextureSize * H / W;
@@ -976,44 +984,44 @@ void TextureBrowser::draw(){
 				gl().glVertex2f( xfMax, yfMax ); \
 				gl().glEnd();
 
-			//selected texture
+			//selected texture - Modern blue accent (#569CD6)
 			if ( shader_equal( m_shader.c_str(), shader->getName() ) ) {
 				gl().glLineWidth( 2 );
-				gl().glColor3f( 1, 0, 0 );
+				gl().glColor3f( 0.337f, 0.612f, 0.839f );
 				xfMax += .5;
 				xfMin -= .5;
 				yfMax += .5;
 				yfMin -= .5;
 				TEXBRO_RENDER_BORDER
 			}
-			// highlight in-use textures
+			// highlight in-use textures - Modern green (#98C379)
 			else if ( !m_hideUnused && shader->IsInUse() ) {
-				gl().glColor3f( 0.5, 1, 0.5 );
+				gl().glColor3f( 0.596f, 0.765f, 0.475f );
 				TEXBRO_RENDER_BORDER
 			}
-			// shader white border:
+			// shader border - subtle gray (#606570)
 			else if ( !shader->IsDefault() ) {
-				gl().glColor3f( 1, 1, 1 );
+				gl().glColor3f( 0.376f, 0.396f, 0.439f );
 				TEXBRO_RENDER_BORDER
 			}
 
-			// shader stipple:
+			// shader stipple - darker gray (#303540)
 			if ( !shader->IsDefault() ) {
 				gl().glEnable( GL_LINE_STIPPLE );
 				gl().glLineStipple( 1, 0xF000 );
-				gl().glColor3f( 0, 0, 0 );
+				gl().glColor3f( 0.188f, 0.208f, 0.251f );
 				TEXBRO_RENDER_BORDER
 				gl().glDisable( GL_LINE_STIPPLE );
 			}
 
-			// draw checkerboard for transparent textures
+			// draw checkerboard for transparent textures - Modern dark tones
 			if ( g_TextureBrowser_enableAlpha )
 			{
 				gl().glBegin( GL_QUADS );
 				for ( int i = 0; i < nHeight; i += 8 )
 					for ( int j = 0; j < nWidth; j += 8 )
 					{
-						const unsigned char color = ( i + j ) / 8 % 2 ? 0x66 : 0x99;
+						const unsigned char color = ( i + j ) / 8 % 2 ? 0x28 : 0x35;
 						gl().glColor3ub( color, color, color );
 						const int left = j;
 						const int right = std::min( j + 8, nWidth );
@@ -1283,6 +1291,7 @@ static QMenu* TextureBrowser_constructViewMenu(){
 	}
 
 	create_check_menu_item_with_mnemonic( menu, "Fixed Size", "FixedSize" );
+	create_check_menu_item_with_mnemonic( menu, "Square Thumbnails", "SquareThumbnails" );
 	create_check_menu_item_with_mnemonic( menu, "Transparency", "EnableAlpha" );
 
 	menu->addSeparator();
@@ -1934,6 +1943,12 @@ void TextureBrowser_FixedSize(){
 	TextureBrowser_activeShadersChanged( g_TexBro );
 }
 
+void TextureBrowser_SquareThumbnails(){
+	g_TextureBrowser_squareThumbnails ^= 1;
+	g_TexBro.m_squarethumbnails_item.update();
+	TextureBrowser_activeShadersChanged( g_TexBro );
+}
+
 void TextureBrowser_FilterNotex(){
 	g_TextureBrowser_filterNotex ^= 1;
 	g_TexBro.m_filternotex_item.update();
@@ -2089,6 +2104,7 @@ void TextureBrowser_Construct(){
 	GlobalToggles_insert( "ToggleShowTextures", FreeCaller<TextureBrowser_ToggleShowTextures>(), ToggleItem::AddCallbackCaller( g_TexBro.m_showtextures_item ) );
 	GlobalToggles_insert( "ToggleShowShaderlistOnly", FreeCaller<TextureBrowser_ToggleShowShaderListOnly>(), ToggleItem::AddCallbackCaller( g_TexBro.m_showshaderlistonly_item ) );
 	GlobalToggles_insert( "FixedSize", FreeCaller<TextureBrowser_FixedSize>(), ToggleItem::AddCallbackCaller( g_TexBro.m_fixedsize_item ) );
+	GlobalToggles_insert( "SquareThumbnails", FreeCaller<TextureBrowser_SquareThumbnails>(), ToggleItem::AddCallbackCaller( g_TexBro.m_squarethumbnails_item ) );
 	GlobalToggles_insert( "FilterNotex", FreeCaller<TextureBrowser_FilterNotex>(), ToggleItem::AddCallbackCaller( g_TexBro.m_filternotex_item ) );
 	GlobalToggles_insert( "EnableAlpha", FreeCaller<TextureBrowser_EnableAlpha>(), ToggleItem::AddCallbackCaller( g_TexBro.m_enablealpha_item ) );
 	GlobalToggles_insert( "TagsToggleGui", FreeCaller<TextureBrowser_tagsToggleGui>(), ToggleItem::AddCallbackCaller( g_TexBro.m_tags_item ) );
@@ -2112,6 +2128,7 @@ void TextureBrowser_Construct(){
 	GlobalPreferenceSystem().registerPreference( "ShowTextures", BoolImportStringCaller( g_TexBro.m_showTextures ), BoolExportStringCaller( g_TexBro.m_showTextures ) );
 	GlobalPreferenceSystem().registerPreference( "ShowShaderlistOnly", BoolImportStringCaller( g_TextureBrowser_shaderlistOnly ), BoolExportStringCaller( g_TextureBrowser_shaderlistOnly ) );
 	GlobalPreferenceSystem().registerPreference( "FixedSize", BoolImportStringCaller( g_TextureBrowser_fixedSize ), BoolExportStringCaller( g_TextureBrowser_fixedSize ) );
+	GlobalPreferenceSystem().registerPreference( "SquareThumbnails", BoolImportStringCaller( g_TextureBrowser_squareThumbnails ), BoolExportStringCaller( g_TextureBrowser_squareThumbnails ) );
 	GlobalPreferenceSystem().registerPreference( "FilterNotex", BoolImportStringCaller( g_TextureBrowser_filterNotex ), BoolExportStringCaller( g_TextureBrowser_filterNotex ) );
 	GlobalPreferenceSystem().registerPreference( "EnableAlpha", BoolImportStringCaller( g_TextureBrowser_enableAlpha ), BoolExportStringCaller( g_TextureBrowser_enableAlpha ) );
 	GlobalPreferenceSystem().registerPreference( "TagsShowGui", BoolImportStringCaller( g_TexBro.m_tags ), BoolExportStringCaller( g_TexBro.m_tags ) );
