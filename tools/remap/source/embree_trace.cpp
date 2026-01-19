@@ -316,6 +316,93 @@ bool TraceRay(const Vector3 &origin, const Vector3 &dir, float maxDist,
 }
 
 
+bool TraceRayExtended(const Vector3 &origin, const Vector3 &dir, float maxDist,
+                      float &outHitDist, Vector3 &outHitNormal, int &outMeshIndex,
+                      Vector2 &outHitUV, int &outPrimID) {
+#ifdef USE_EMBREE
+    if (!g_sceneReady || g_scene == nullptr) {
+        return false;
+    }
+    
+    // Create ray+hit structure
+    RTCRayHit rayhit;
+    rayhit.ray.org_x = origin.x();
+    rayhit.ray.org_y = origin.y();
+    rayhit.ray.org_z = origin.z();
+    rayhit.ray.dir_x = dir.x();
+    rayhit.ray.dir_y = dir.y();
+    rayhit.ray.dir_z = dir.z();
+    rayhit.ray.tnear = 0.1f;
+    rayhit.ray.tfar = maxDist;
+    rayhit.ray.mask = 0xFFFFFFFF;
+    rayhit.ray.flags = 0;
+    rayhit.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+    rayhit.hit.primID = RTC_INVALID_GEOMETRY_ID;
+    
+    // Trace ray
+    rtcIntersect1(g_scene, &rayhit);
+    
+    // Check for hit
+    if (rayhit.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
+        return false;
+    }
+    
+    // Extract hit information
+    outHitDist = rayhit.ray.tfar;
+    outHitNormal = Vector3(rayhit.hit.Ng_x, rayhit.hit.Ng_y, rayhit.hit.Ng_z);
+    outHitNormal = vector3_normalised(outHitNormal);
+    outPrimID = rayhit.hit.primID;
+    
+    // Map geometry ID to mesh index
+    if (rayhit.hit.geomID < g_geomToMesh.size()) {
+        outMeshIndex = g_geomToMesh[rayhit.hit.geomID];
+    } else {
+        outMeshIndex = -1;
+        return false;
+    }
+    
+    // Interpolate UV coordinates from barycentric coordinates
+    // Embree gives us u,v barycentric; w = 1 - u - v
+    float u = rayhit.hit.u;
+    float v = rayhit.hit.v;
+    float w = 1.0f - u - v;
+    
+    // Get the mesh and triangle vertices
+    if (outMeshIndex >= 0 && outMeshIndex < static_cast<int>(Shared::meshes.size())) {
+        const Shared::Mesh_t &mesh = Shared::meshes[outMeshIndex];
+        size_t triIdx = outPrimID * 3;
+        
+        if (triIdx + 2 < mesh.triangles.size()) {
+            uint16_t i0 = mesh.triangles[triIdx + 0];
+            uint16_t i1 = mesh.triangles[triIdx + 1];
+            uint16_t i2 = mesh.triangles[triIdx + 2];
+            
+            if (i0 < mesh.vertices.size() && i1 < mesh.vertices.size() && i2 < mesh.vertices.size()) {
+                const Vector2 &uv0 = mesh.vertices[i0].textureUV;
+                const Vector2 &uv1 = mesh.vertices[i1].textureUV;
+                const Vector2 &uv2 = mesh.vertices[i2].textureUV;
+                
+                // Barycentric interpolation
+                outHitUV[0] = w * uv0[0] + u * uv1[0] + v * uv2[0];
+                outHitUV[1] = w * uv0[1] + u * uv1[1] + v * uv2[1];
+            } else {
+                outHitUV = Vector2(0, 0);
+            }
+        } else {
+            outHitUV = Vector2(0, 0);
+        }
+    } else {
+        outHitUV = Vector2(0, 0);
+    }
+    
+    return true;
+    
+#else
+    return false;
+#endif
+}
+
+
 bool IsSceneReady() {
 #ifdef USE_EMBREE
     return g_sceneReady;

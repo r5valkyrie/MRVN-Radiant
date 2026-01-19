@@ -104,7 +104,7 @@ struct ShadowEnvironment_t {
     uint32_t endAabbs;           // +0x0C - end index into CSM AABB nodes
     uint32_t endObjRefs;         // +0x10 - end index into CSM obj references
     uint32_t endShadowMeshes;    // +0x14 - end index into shadow meshes
-    Vector3  shadowDir;          // +0x18 - normalized sun direction vector (points TO the sun)
+    Vector3  shadowDir;          // +0x18 - normalized sun direction vector (direction light travels, FROM sun towards ground)
 };
 #pragma pack(pop)
 static_assert(sizeof(ShadowEnvironment_t) == 36, "ShadowEnvironment_t must be exactly 36 bytes");
@@ -144,21 +144,30 @@ static_assert(sizeof(ShadowMeshAlphaVertex_t) == 20, "ShadowMeshAlphaVertex_t mu
 //   [0] = X gradient (posX - negX directional difference)
 //   [1] = Y gradient (posY - negY directional difference)  
 //   [2] = Z gradient (posZ - negZ directional difference)
-//   [3] = DC term (average ambient, typically 500-3000 for well-lit areas)
+//   [3] = DC term (average ambient)
+//
+// Scale factor: Game multiplies int16 SH values by 0.00012207031 (1/8192)
+// This means int16 value of 8192 (0x2000) = 1.0 linear light intensity
+// The game's default probe uses 0x2000 for DC terms when no probe data exists
 //
 // Official map analysis shows:
-//   - DC range: 0 to ~3500
-//   - Gradient range: -3500 to +3500
-//   - Unknown field (offset 36): usually 0x0096 (150 decimal)
+//   - DC range: 0 to ~8192 for normally lit areas (can exceed for HDR)
+//   - Gradient range: -8192 to +8192 
+//   - lightingFlags (offset 36): usually 0x0096 (150 decimal)
 //   - Padding0 (offset 40): usually 0xFFFFFFFF for most probes
 //   - Padding1 (offset 44): always 0x00000000
 #pragma pack(push, 1)
 struct LightProbe_t {
     int16_t  ambientSH[3][4];       // +0x00 - Spherical harmonics for R, G, B (24 bytes)
     uint16_t staticLightIndexes[4]; // +0x18 - Indices into worldLights (8 bytes)
-                                    //         0xFFFF = no light, otherwise light index
-    uint8_t  staticLightFlags[4];   // +0x20 - Flags for each static light (4 bytes)
-                                    //         First byte usually 0xFF
+                                    //         Stored as: actualIndex + (32 - numLightEnvs)
+                                    //         Game retrieves: storedIndex - (32 - numLightEnvs)
+                                    //         0xFFFF = no light in this slot
+    uint8_t  staticLightFlags[4];   // +0x20 - Weight/flags for each static light (4 bytes)
+                                    //         Game calls this "staticLightWeights"
+                                    //         0xFF = valid light, 0x00 = no light
+                                    //         CRITICAL: Game breaks loop when weight[slot] == 0
+                                    //         So EACH valid slot must have non-zero weight!
     uint16_t lightingFlags;         // +0x24 - Lighting flags (usually 0x0096 = 150)
     uint16_t reserved;              // +0x26 - Reserved (usually 0xFFFF)
     uint32_t padding0;              // +0x28 - Padding (usually 0xFFFFFFFF)

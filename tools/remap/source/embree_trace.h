@@ -76,6 +76,20 @@ bool TestVisibility(const Vector3 &origin, const Vector3 &dir, float maxDist);
 bool TraceRay(const Vector3 &origin, const Vector3 &dir, float maxDist,
               float &outHitDist, Vector3 &outHitNormal, int &outMeshIndex);
 
+// Trace a ray and get extended hit information including UV coordinates
+// Returns true if ray hits something
+// origin: ray start position
+// dir: normalized ray direction
+// maxDist: maximum distance to test
+// outHitDist: distance to hit point (only valid if returns true)
+// outHitNormal: surface normal at hit point (only valid if returns true)
+// outMeshIndex: index of mesh that was hit (only valid if returns true)
+// outHitUV: texture UV coordinates at hit point (only valid if returns true)
+// outPrimID: triangle index within mesh (only valid if returns true)
+bool TraceRayExtended(const Vector3 &origin, const Vector3 &dir, float maxDist,
+                      float &outHitDist, Vector3 &outHitNormal, int &outMeshIndex,
+                      Vector2 &outHitUV, int &outPrimID);
+
 // Check if Embree scene is ready for ray tracing
 bool IsSceneReady();
 

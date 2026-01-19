@@ -42,6 +42,7 @@
 #include "apex_legends.h"
 #include <algorithm>
 #include <cmath>
+#include <cfloat>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -81,7 +82,7 @@ constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(45 degrees)
 constexpr int LIGHT_PROBE_GRID_SPACING = 256;   // Units between probes on grid
 constexpr int LIGHT_PROBE_MIN_SPACING = 128;    // Minimum spacing between probes
 constexpr int LIGHT_PROBE_MAX_PER_AXIS = 64;    // Max probes per axis (prevent explosion)
-constexpr int LIGHT_PROBE_MAX_COUNT = 10000;    // Maximum total light probes
+constexpr int LIGHT_PROBE_MAX_COUNT = 1024;    // Maximum total light probes
 constexpr float LIGHT_PROBE_TRACE_DIST = 16384.0f;  // Ray trace distance
 
 
@@ -767,7 +768,8 @@ static const float supersampleOffsets[4][2] = {
 
 /*
     InitRadiosityPatches
-    Create patches from all lightmap luxels for radiosity computation
+    Create patches from all lightmap luxels for radiosity computation.
+    Now uses actual texture colors for surface reflectivity to enable color bleeding.
 */
 static void InitRadiosityPatches() {
     if (RadiosityData::initialized) return;
@@ -777,12 +779,27 @@ static void InitRadiosityPatches() {
     for (const SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
         const Shared::Mesh_t &mesh = Shared::meshes[surf.meshIndex];
         
-        // Get surface reflectivity from shader (approximate from texture name)
-        Vector3 reflectivity(0.5f, 0.5f, 0.5f);  // Default 50% reflectance
+        // Get surface reflectivity from texture colors for accurate color bleeding
+        Vector3 reflectivity(0.5f, 0.5f, 0.5f);  // Default 50% neutral reflectance
         if (mesh.shaderInfo) {
-            // Could parse actual texture colors here for better results
-            // For now, use neutral reflectivity
-            reflectivity = Vector3(0.4f, 0.4f, 0.4f);
+            // Try to get average color from the shader's texture image
+            if (mesh.shaderInfo->averageColor[0] > 0 || 
+                mesh.shaderInfo->averageColor[1] > 0 || 
+                mesh.shaderInfo->averageColor[2] > 0) {
+                // Convert from 0-255 to 0-1 range, clamp to reasonable reflectivity
+                reflectivity[0] = std::min(0.9f, mesh.shaderInfo->averageColor[0] / 255.0f);
+                reflectivity[1] = std::min(0.9f, mesh.shaderInfo->averageColor[1] / 255.0f);
+                reflectivity[2] = std::min(0.9f, mesh.shaderInfo->averageColor[2] / 255.0f);
+            } else if (mesh.shaderInfo->color[0] > 0 || 
+                       mesh.shaderInfo->color[1] > 0 || 
+                       mesh.shaderInfo->color[2] > 0) {
+                // Use shader's explicit color as fallback
+                reflectivity = mesh.shaderInfo->color;
+                // Clamp to valid reflectivity range
+                reflectivity[0] = std::min(0.9f, std::max(0.1f, reflectivity[0]));
+                reflectivity[1] = std::min(0.9f, std::max(0.1f, reflectivity[1]));
+                reflectivity[2] = std::min(0.9f, std::max(0.1f, reflectivity[2]));
+            }
         }
         
         for (int y = 0; y < surf.rect.height; y++) {
@@ -807,6 +824,32 @@ static void InitRadiosityPatches() {
                 patch.area = LIGHTMAP_SAMPLE_SIZE * LIGHTMAP_SAMPLE_SIZE;
                 patch.meshIndex = surf.meshIndex;
                 patch.luxelIndex = y * surf.rect.width + x;
+                
+                // For more accurate results, sample texture at this specific luxel position
+                // This allows per-texel color variation for detailed color bleeding
+                if (mesh.shaderInfo && mesh.shaderInfo->shaderImage && 
+                    mesh.shaderInfo->shaderImage->pixels &&
+                    mesh.shaderInfo->shaderImage->width > 0 && 
+                    mesh.shaderInfo->shaderImage->height > 0) {
+                    
+                    // Calculate UV at this patch position
+                    // Use mesh vertices to find approximate UV for this world position
+                    // For now, sample at a normalized UV based on surface position
+                    Vector2 texelUV;
+                    texelUV[0] = normalizedU;
+                    texelUV[1] = normalizedV;
+                    
+                    Color4f texColor;
+                    if (RadSampleImage(mesh.shaderInfo->shaderImage->pixels,
+                                      mesh.shaderInfo->shaderImage->width,
+                                      mesh.shaderInfo->shaderImage->height,
+                                      texelUV, texColor)) {
+                        // Use texture color as reflectivity
+                        patch.reflectivity[0] = std::min(0.9f, texColor[0] / 255.0f);
+                        patch.reflectivity[1] = std::min(0.9f, texColor[1] / 255.0f);
+                        patch.reflectivity[2] = std::min(0.9f, texColor[2] / 255.0f);
+                    }
+                }
                 
                 RadiosityData::patches.push_back(patch);
             }
@@ -1575,6 +1618,89 @@ static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, flo
     return TraceRayAgainstMeshes_Fallback(origin, dir, maxDist);
 }
 
+
+/*
+    TraceRayGetSurfaceColor
+    Trace a ray and return the color of the hit surface.
+    Uses texture sampling when available for accurate color bleeding.
+    
+    Returns true if a surface was hit, with outColor set to the surface color.
+    The color is normalized to 0-1 range for use in radiosity calculations.
+*/
+static bool TraceRayGetSurfaceColor(const Vector3 &origin, const Vector3 &dir, 
+                                    float maxDist, Vector3 &outColor, float &outDist) {
+    // Default neutral gray if we can't sample
+    outColor = Vector3(0.5f, 0.5f, 0.5f);
+    outDist = maxDist;
+    
+    // Try Embree extended trace for UV coordinates
+    if (EmbreeTrace::IsSceneReady()) {
+        float hitDist;
+        Vector3 hitNormal;
+        int meshIndex;
+        Vector2 hitUV;
+        int primID;
+        
+        if (EmbreeTrace::TraceRayExtended(origin, dir, maxDist, hitDist, hitNormal, 
+                                          meshIndex, hitUV, primID)) {
+            outDist = hitDist;
+            
+            // Get the mesh and its shader
+            if (meshIndex >= 0 && meshIndex < static_cast<int>(Shared::meshes.size())) {
+                const Shared::Mesh_t &mesh = Shared::meshes[meshIndex];
+                
+                if (mesh.shaderInfo) {
+                    // Try to sample the actual texture
+                    if (mesh.shaderInfo->shaderImage && 
+                        mesh.shaderInfo->shaderImage->pixels &&
+                        mesh.shaderInfo->shaderImage->width > 0 && 
+                        mesh.shaderInfo->shaderImage->height > 0) {
+                        
+                        Color4f texColor;
+                        if (RadSampleImage(mesh.shaderInfo->shaderImage->pixels,
+                                          mesh.shaderInfo->shaderImage->width,
+                                          mesh.shaderInfo->shaderImage->height,
+                                          hitUV, texColor)) {
+                            // Convert from 0-255 to 0-1 range
+                            outColor[0] = texColor[0] / 255.0f;
+                            outColor[1] = texColor[1] / 255.0f;
+                            outColor[2] = texColor[2] / 255.0f;
+                            return true;
+                        }
+                    }
+                    
+                    // Fall back to shader average color if available
+                    if (mesh.shaderInfo->averageColor[0] > 0 || 
+                        mesh.shaderInfo->averageColor[1] > 0 || 
+                        mesh.shaderInfo->averageColor[2] > 0) {
+                        outColor[0] = mesh.shaderInfo->averageColor[0] / 255.0f;
+                        outColor[1] = mesh.shaderInfo->averageColor[1] / 255.0f;
+                        outColor[2] = mesh.shaderInfo->averageColor[2] / 255.0f;
+                        return true;
+                    }
+                    
+                    // Fall back to shader color if set
+                    if (mesh.shaderInfo->color[0] > 0 || 
+                        mesh.shaderInfo->color[1] > 0 || 
+                        mesh.shaderInfo->color[2] > 0) {
+                        outColor = mesh.shaderInfo->color;
+                        return true;
+                    }
+                }
+            }
+            return true;  // Hit something, even if we couldn't get color
+        }
+        return false;  // No hit
+    }
+    
+    // Fallback: just do visibility check, use neutral color
+    if (TraceRayAgainstMeshes_Fallback(origin, dir, maxDist)) {
+        return true;
+    }
+    return false;
+}
+
+
 // =============================================================================
 // SOURCE SDK STYLE LIGHT PROBE COMPUTATION
 // Adapted from leaf_ambient_lighting.cpp
@@ -1589,6 +1715,8 @@ static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, flo
     - cube[0] = +X, cube[1] = -X
     - cube[2] = +Y, cube[3] = -Y  
     - cube[4] = +Z, cube[5] = -Z
+    
+    Enhanced with texture color sampling for accurate color bleeding.
 */
 static void ComputeAmbientFromSphericalSamples(const Vector3 &position, 
                                                 const SkyEnvironment &sky,
@@ -1607,7 +1735,10 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
         
         // Trace ray in this direction with offset to avoid self-intersection
         Vector3 rayOrigin = position + dir * 2.0f;
-        if (!TraceRayAgainstMeshes(rayOrigin, dir, LIGHT_PROBE_TRACE_DIST)) {
+        
+        Vector3 surfaceColor;
+        float hitDist;
+        if (!TraceRayGetSurfaceColor(rayOrigin, dir, LIGHT_PROBE_TRACE_DIST, surfaceColor, hitDist)) {
             // Ray reached sky - add sky contribution based on direction
             
             // Sky ambient contribution (uniform from all directions)
@@ -1627,10 +1758,24 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
                 radcolor[i] = radcolor[i] + sky.ambientColor * (upDot * 0.3f);
             }
         } else {
-            // Ray hit geometry - use moderate ambient for occluded directions
-            // This represents indirect lighting from nearby surfaces
-            // Use higher value to prevent entities from being too dark in corners
-            radcolor[i] = sky.ambientColor * 0.35f;
+            // Ray hit geometry - use surface color for bounce lighting
+            // This creates color bleeding (e.g., red walls tint nearby areas red)
+            
+            // Base ambient contribution modulated by surface color (reflectivity)
+            Vector3 bounceColor;
+            bounceColor[0] = sky.ambientColor[0] * surfaceColor[0];
+            bounceColor[1] = sky.ambientColor[1] * surfaceColor[1];
+            bounceColor[2] = sky.ambientColor[2] * surfaceColor[2];
+            
+            // Distance falloff - closer surfaces contribute more
+            float distFactor = 1.0f;
+            if (hitDist < 512.0f) {
+                // Nearby surfaces get stronger contribution
+                distFactor = 1.0f + (512.0f - hitDist) / 512.0f * 0.5f;
+            }
+            
+            // Scale for indirect lighting (typical reflectance ~0.35-0.5)
+            radcolor[i] = bounceColor * (0.4f * distFactor);
         }
     }
     
@@ -1714,12 +1859,9 @@ static int16_t ClampToInt16(float value) {
     - Gradient values range from -3500 to +3500
     - Input cube colors should be in 0-1 normalized range
 */
-static void ConvertCubeToSphericalHarmonics(const Vector3 lightBoxColor[6], 
-                                             LightProbe_t &probe) {
-    // SH scale factor - based on analysis of official Apex Legends maps
-    // With normalized 0-1 input colors, scale to target DC range of ~500-2000
-    // Official maps show DC values typically 500-3000 for well-lit outdoor areas
-    const float shScale = 2500.0f;
+static void ConvertCubeToSphericalHarmonics(const Vector3 lightBoxColor[6], LightProbe_t &probe) {
+
+    const float shScale = 8192.0f;
     
     for (int channel = 0; channel < 3; channel++) {
         // Extract color components for this channel from each cube side
@@ -2328,13 +2470,6 @@ static void AssignStaticLightsToProbe(const Vector3 &probePos, LightProbe_t &pro
         float distSq = vector3_dot(delta, delta);
         float dist = std::sqrt(distSq);
         
-        // Skip lights that are too far away (optimization)
-        // Use a reasonable max distance - adjust based on map scale
-        const float maxDist = 4096.0f;
-        if (dist > maxDist) {
-            continue;
-        }
-        
         // Calculate light intensity magnitude
         float intensityMag = vector3_length(light.intensity);
         if (intensityMag < 0.001f) {
@@ -2483,6 +2618,246 @@ static void LogSkyEnvironment(const SkyEnvironment &sky) {
     Sys_Printf("     Ambient color: (%.2f, %.2f, %.2f)\n", sky.ambientColor[0], sky.ambientColor[1], sky.ambientColor[2]);
 }
 
+
+/*
+    BuildLightProbeTreeRecursive
+    Recursively builds a KD-tree for spatial lightprobe lookup.
+    
+    The tree uses axis-aligned splits to partition probes into leaves.
+    Each leaf can contain up to MAX_PROBES_PER_LEAF probes.
+    The split axis cycles through X(0), Y(1), Z(2).
+    
+    Tree node format:
+    - tag: (index << 2) | type
+      - type 0/1/2: internal node, split on X/Y/Z axis, index = child node index
+      - type 3: leaf node, index = first probe ref index
+    - value: split coordinate (float) for internal, ref count (uint32) for leaf
+*/
+constexpr int MAX_PROBES_PER_LEAF = 4;  // Max probes per leaf node (official maps use 1-4)
+
+struct ProbeRefRange {
+    uint32_t start;
+    uint32_t count;
+};
+
+// Forward declaration for recursive building
+static void BuildLightProbeTreeRecursiveFill(
+    std::vector<uint32_t> &refIndices,
+    uint32_t start, uint32_t count,
+    int depth,
+    uint32_t nodeIndex);
+
+static uint32_t BuildLightProbeTreeRecursive(
+    std::vector<uint32_t> &refIndices,  // Indices into lightprobeReferences (will be reordered)
+    uint32_t start, uint32_t count,      // Range in refIndices to process
+    int depth)
+{
+    // Get references for bounds calculation
+    const auto &refs = ApexLegends::Bsp::lightprobeReferences;
+    
+    // If few enough probes, create a leaf
+    if (count <= MAX_PROBES_PER_LEAF || depth > 20) {
+        LightProbeTree_t leaf;
+        leaf.tag = (start << 2) | 3;  // type 3 = leaf
+        leaf.refCount = count;
+        
+        uint32_t nodeIndex = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeTree.size());
+        ApexLegends::Bsp::lightprobeTree.push_back(leaf);
+        return nodeIndex;
+    }
+    
+    // Calculate bounds of probes in this range
+    Vector3 mins(FLT_MAX, FLT_MAX, FLT_MAX);
+    Vector3 maxs(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    
+    for (uint32_t i = start; i < start + count; i++) {
+        const Vector3 &pos = refs[refIndices[i]].origin;
+        mins[0] = std::min(mins[0], pos[0]);
+        mins[1] = std::min(mins[1], pos[1]);
+        mins[2] = std::min(mins[2], pos[2]);
+        maxs[0] = std::max(maxs[0], pos[0]);
+        maxs[1] = std::max(maxs[1], pos[1]);
+        maxs[2] = std::max(maxs[2], pos[2]);
+    }
+    
+    // Choose split axis - use the longest axis for best balance
+    Vector3 extents = maxs - mins;
+    int splitAxis = 0;
+    if (extents[1] > extents[0] && extents[1] >= extents[2]) splitAxis = 1;
+    else if (extents[2] > extents[0] && extents[2] > extents[1]) splitAxis = 2;
+    
+    // Choose split position - median of probe positions on this axis
+    std::vector<float> axisValues;
+    axisValues.reserve(count);
+    for (uint32_t i = start; i < start + count; i++) {
+        axisValues.push_back(refs[refIndices[i]].origin[splitAxis]);
+    }
+    std::sort(axisValues.begin(), axisValues.end());
+    float splitValue = axisValues[count / 2];
+    
+    // Partition probes around split plane
+    // Move all probes <= splitValue to left side
+    uint32_t leftCount = 0;
+    for (uint32_t i = start; i < start + count; i++) {
+        if (refs[refIndices[i]].origin[splitAxis] <= splitValue) {
+            std::swap(refIndices[start + leftCount], refIndices[i]);
+            leftCount++;
+        }
+    }
+    
+    // Handle edge case where all probes are on one side
+    if (leftCount == 0) leftCount = 1;
+    if (leftCount == count) leftCount = count - 1;
+    
+    uint32_t rightCount = count - leftCount;
+    
+    // Reserve this internal node
+    uint32_t nodeIndex = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeTree.size());
+    ApexLegends::Bsp::lightprobeTree.push_back(LightProbeTree_t{});  // Placeholder
+    
+    // CRITICAL: Children must be consecutive in the array!
+    // Left child at index childIdx, right child at childIdx+1
+    // Reserve both slots NOW before recursing
+    uint32_t childIdx = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeTree.size());
+    ApexLegends::Bsp::lightprobeTree.push_back(LightProbeTree_t{});  // Left child placeholder
+    ApexLegends::Bsp::lightprobeTree.push_back(LightProbeTree_t{});  // Right child placeholder
+    
+    // Fill in this node first (we know child indices now)
+    LightProbeTree_t &node = ApexLegends::Bsp::lightprobeTree[nodeIndex];
+    node.tag = (childIdx << 2) | splitAxis;  // type 0/1/2 = X/Y/Z split
+    
+    // Store split value as float
+    union {
+        float f;
+        uint32_t i;
+    } conv;
+    conv.f = splitValue;
+    node.refCount = conv.i;  // refCount field holds splitValue for internal nodes
+    
+    // Now recursively fill the children
+    BuildLightProbeTreeRecursiveFill(refIndices, start, leftCount, depth + 1, childIdx);
+    BuildLightProbeTreeRecursiveFill(refIndices, start + leftCount, rightCount, depth + 1, childIdx + 1);
+    
+    return nodeIndex;
+}
+
+// Version that fills a pre-allocated node slot
+static void BuildLightProbeTreeRecursiveFill(
+    std::vector<uint32_t> &refIndices,
+    uint32_t start, uint32_t count,
+    int depth,
+    uint32_t nodeIndex)
+{
+    const auto &refs = ApexLegends::Bsp::lightprobeReferences;
+    
+    // If few enough probes, create a leaf
+    if (count <= MAX_PROBES_PER_LEAF || depth > 20) {
+        LightProbeTree_t &leaf = ApexLegends::Bsp::lightprobeTree[nodeIndex];
+        leaf.tag = (start << 2) | 3;  // type 3 = leaf
+        leaf.refCount = count;
+        return;
+    }
+    
+    // Calculate bounds
+    Vector3 mins(FLT_MAX, FLT_MAX, FLT_MAX);
+    Vector3 maxs(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    
+    for (uint32_t i = start; i < start + count; i++) {
+        const Vector3 &pos = refs[refIndices[i]].origin;
+        mins[0] = std::min(mins[0], pos[0]);
+        mins[1] = std::min(mins[1], pos[1]);
+        mins[2] = std::min(mins[2], pos[2]);
+        maxs[0] = std::max(maxs[0], pos[0]);
+        maxs[1] = std::max(maxs[1], pos[1]);
+        maxs[2] = std::max(maxs[2], pos[2]);
+    }
+    
+    // Choose split axis
+    Vector3 extents = maxs - mins;
+    int splitAxis = 0;
+    if (extents[1] > extents[0] && extents[1] >= extents[2]) splitAxis = 1;
+    else if (extents[2] > extents[0] && extents[2] > extents[1]) splitAxis = 2;
+    
+    // Choose split position (median)
+    std::vector<float> axisValues;
+    axisValues.reserve(count);
+    for (uint32_t i = start; i < start + count; i++) {
+        axisValues.push_back(refs[refIndices[i]].origin[splitAxis]);
+    }
+    std::sort(axisValues.begin(), axisValues.end());
+    float splitValue = axisValues[count / 2];
+    
+    // Partition probes
+    uint32_t leftCount = 0;
+    for (uint32_t i = start; i < start + count; i++) {
+        if (refs[refIndices[i]].origin[splitAxis] <= splitValue) {
+            std::swap(refIndices[start + leftCount], refIndices[i]);
+            leftCount++;
+        }
+    }
+    
+    if (leftCount == 0) leftCount = 1;
+    if (leftCount == count) leftCount = count - 1;
+    uint32_t rightCount = count - leftCount;
+    
+    // Reserve child slots (consecutive pair)
+    uint32_t childIdx = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeTree.size());
+    ApexLegends::Bsp::lightprobeTree.push_back(LightProbeTree_t{});  // Left
+    ApexLegends::Bsp::lightprobeTree.push_back(LightProbeTree_t{});  // Right
+    
+    // Fill this node
+    LightProbeTree_t &node = ApexLegends::Bsp::lightprobeTree[nodeIndex];
+    node.tag = (childIdx << 2) | splitAxis;
+    
+    union { float f; uint32_t i; } conv;
+    conv.f = splitValue;
+    node.refCount = conv.i;
+    
+    // Recurse
+    BuildLightProbeTreeRecursiveFill(refIndices, start, leftCount, depth + 1, childIdx);
+    BuildLightProbeTreeRecursiveFill(refIndices, start + leftCount, rightCount, depth + 1, childIdx + 1);
+}
+
+/*
+    BuildLightProbeTree
+    Builds the spatial lookup tree for lightprobes.
+    This is a KD-tree that allows efficient nearest-probe lookup.
+*/
+static void BuildLightProbeTree() {
+    ApexLegends::Bsp::lightprobeTree.clear();
+    
+    uint32_t numRefs = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeReferences.size());
+    
+    if (numRefs == 0) {
+        // No probes - create empty leaf
+        LightProbeTree_t leaf;
+        leaf.tag = (0 << 2) | 3;
+        leaf.refCount = 0;
+        ApexLegends::Bsp::lightprobeTree.push_back(leaf);
+        return;
+    }
+    
+    // Create index array for sorting
+    std::vector<uint32_t> refIndices(numRefs);
+    for (uint32_t i = 0; i < numRefs; i++) {
+        refIndices[i] = i;
+    }
+    
+    // Build tree recursively
+    BuildLightProbeTreeRecursive(refIndices, 0, numRefs, 0);
+    
+    // Reorder lightprobeReferences to match the tree's expected order
+    std::vector<LightProbeRef_t> reorderedRefs(numRefs);
+    for (uint32_t i = 0; i < numRefs; i++) {
+        reorderedRefs[i] = ApexLegends::Bsp::lightprobeReferences[refIndices[i]];
+    }
+    ApexLegends::Bsp::lightprobeReferences = std::move(reorderedRefs);
+    
+    Sys_Printf("     Built KD-tree with %zu nodes for %u probes\n", 
+               ApexLegends::Bsp::lightprobeTree.size(), numRefs);
+}
+
+
 void ApexLegends::EmitLightProbes() {
     Sys_Printf("--- EmitLightProbes ---\n");
     
@@ -2608,7 +2983,7 @@ void ApexLegends::EmitLightProbes() {
     
     // Compress probe list if we have too many (Source SDK style optimization)
     // Remove redundant probes that can be reconstructed from neighbors
-    CompressProbeList(candidates, LIGHT_PROBE_MAX_COUNT);
+    //CompressProbeList(candidates, LIGHT_PROBE_MAX_COUNT);
     
     // Convert candidates to final probe data
     for (const ProbeCandidate &candidate : candidates) {
@@ -2632,14 +3007,10 @@ void ApexLegends::EmitLightProbes() {
         ApexLegends::Bsp::lightprobeReferences.push_back(ref);
     }
     
-    // Build spatial lookup tree
-    // For simplicity, create a single leaf node containing all probes
-    // This works correctly - engine iterates through all refs
-    // A proper BSP tree would be faster for large counts but this is valid
-    LightProbeTree_t leaf;
-    leaf.tag = (0 << 2) | 3;  // refStart=0, type=3 (leaf)
-    leaf.refCount = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeReferences.size());
-    ApexLegends::Bsp::lightprobeTree.push_back(leaf);
+    // Build spatial lookup tree (KD-tree)
+    // This is required for proper probe lookup - a single leaf doesn't work
+    // for maps with probes spread over large distances
+    BuildLightProbeTree();
     
     // Create parent info for worldspawn
     LightProbeParentInfo_t info;
@@ -2688,10 +3059,10 @@ void ApexLegends::EmitLightProbes() {
                     // SH DC term is the average ambient - extract from coefficient 3 (not 0!)
                     // ambientSH[channel][coefficient] where channel 0=R, 1=G, 2=B
                     // Coefficients: [0]=X gradient, [1]=Y gradient, [2]=Z gradient, [3]=DC
-                    // Scale back from int16 range using the same scale factor (2500)
-                    r = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[0][3] / 2500.0f));
-                    g = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[1][3] / 2500.0f));
-                    b = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[2][3] / 2500.0f));
+                    // Scale back from int16 range using the same scale factor (8192)
+                    r = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[0][3] / 8192.0f));
+                    g = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[1][3] / 8192.0f));
+                    b = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[2][3] / 8192.0f));
                 }
                 
                 fprintf(probesFile, "%.2f %.2f %.2f %.3f %.3f %.3f\n", 
