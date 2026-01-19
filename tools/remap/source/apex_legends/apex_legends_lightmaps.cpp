@@ -81,6 +81,7 @@ constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(45 degrees)
 constexpr int LIGHT_PROBE_GRID_SPACING = 256;   // Units between probes on grid
 constexpr int LIGHT_PROBE_MIN_SPACING = 128;    // Minimum spacing between probes
 constexpr int LIGHT_PROBE_MAX_PER_AXIS = 64;    // Max probes per axis (prevent explosion)
+constexpr int LIGHT_PROBE_MAX_COUNT = 10000;    // Maximum total light probes
 constexpr float LIGHT_PROBE_TRACE_DIST = 16384.0f;  // Ray trace distance
 
 
@@ -1930,12 +1931,12 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     float avgDimension = std::cbrt(worldVolume);
     
     // Aim for roughly GRID_SPACING spacing, but let geometry density influence
-    int targetProbes = std::max(8, std::min(2048, 
+    int targetProbes = std::max(8, std::min(LIGHT_PROBE_MAX_COUNT, 
         (int)(worldVolume / (LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING))));
     
     // Increase target if we have dense geometry
     float densityFactor = std::min(4.0f, (float)candidatePositions.size() / 1000.0f);
-    targetProbes = std::min(2048, (int)(targetProbes * (1.0f + densityFactor)));
+    targetProbes = std::min(LIGHT_PROBE_MAX_COUNT, (int)(targetProbes * (1.0f + densityFactor)));
     
     Sys_Printf("     Target probe count: %d (world avg dimension: %.0f)\n", targetProbes, avgDimension);
     
@@ -2148,6 +2149,143 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     
     if (!shadowBoundaryProbes.empty()) {
         Sys_Printf("     Added %zu shadow boundary probes\n", shadowBoundaryProbes.size());
+    }
+    
+    // =========================================================================
+    // Step 7: Gap-filling - add probes on a regular grid across all floors
+    // The Voronoi approach is geometry-driven and misses open floor areas.
+    // This ensures every walkable floor area has probe coverage.
+    // =========================================================================
+    Sys_Printf("     Gap-filling floor areas with grid...\n");
+    
+    constexpr float FLOOR_GRID_SPACING = 128.0f;  // Dense grid for good floor coverage
+    constexpr float PROBE_HEIGHT_ABOVE_FLOOR = 64.0f;  // Player height above floor
+    constexpr float MIN_PROBE_SPACING = 64.0f;  // Don't place if another probe is closer than this
+    
+    std::vector<Vector3> gapFillProbes;
+    
+    // Compute tighter bounds from actual mesh geometry (worldBounds might include skybox)
+    MinMax meshBounds;
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        // Skip sky surfaces
+        if (mesh.shaderInfo && (mesh.shaderInfo->compileFlags & C_SKY))
+            continue;
+        meshBounds.extend(mesh.minmax.mins);
+        meshBounds.extend(mesh.minmax.maxs);
+    }
+    
+    if (!meshBounds.valid()) {
+        meshBounds = worldBounds;
+    }
+    
+    Vector3 meshSize = meshBounds.maxs - meshBounds.mins;
+    Sys_Printf("     Mesh bounds: (%.0f,%.0f,%.0f) to (%.0f,%.0f,%.0f)\n",
+               meshBounds.mins[0], meshBounds.mins[1], meshBounds.mins[2],
+               meshBounds.maxs[0], meshBounds.maxs[1], meshBounds.maxs[2]);
+    
+    // Use 2D grid based on mesh bounds (not world bounds which may be huge)
+    int gridX = std::max(1, (int)std::ceil(meshSize[0] / FLOOR_GRID_SPACING));
+    int gridY = std::max(1, (int)std::ceil(meshSize[1] / FLOOR_GRID_SPACING));
+    
+    gridX = std::min(gridX, 256);
+    gridY = std::min(gridY, 256);
+    
+    Sys_Printf("     Floor grid: %d x %d (%d cells)\n", gridX, gridY, gridX * gridY);
+    
+    int floorsFound = 0;
+    int probesAdded = 0;
+    
+    for (int iy = 0; iy < gridY; iy++) {
+        for (int ix = 0; ix < gridX; ix++) {
+            float posX = meshBounds.mins[0] + (ix + 0.5f) * (meshSize[0] / gridX);
+            float posY = meshBounds.mins[1] + (iy + 0.5f) * (meshSize[1] / gridY);
+            
+            // Try multiple trace start heights to handle different scenarios
+            // Start from reasonable heights within the mesh bounds
+            float floorZ = meshBounds.mins[2];
+            bool foundFloor = false;
+            
+            // Try tracing from several heights (top of mesh, middle, etc.)
+            float traceHeights[] = {
+                meshBounds.maxs[2] - 8.0f,
+                meshBounds.mins[2] + meshSize[2] * 0.75f,
+                meshBounds.mins[2] + meshSize[2] * 0.5f,
+                meshBounds.mins[2] + meshSize[2] * 0.25f
+            };
+            
+            for (float startZ : traceHeights) {
+                if (foundFloor) break;
+                
+                Vector3 rayStart(posX, posY, startZ);
+                Vector3 rayDir(0, 0, -1);
+                float maxTrace = startZ - meshBounds.mins[2] + 16.0f;
+                
+                if (EmbreeTrace::IsSceneReady()) {
+                    float hitDist;
+                    Vector3 hitNormal;
+                    int meshIndex;
+                    if (EmbreeTrace::TraceRay(rayStart, rayDir, maxTrace, hitDist, hitNormal, meshIndex)) {
+                        // Accept any upward-facing surface as floor
+                        if (hitNormal[2] > 0.1f) {
+                            floorZ = rayStart[2] - hitDist;
+                            foundFloor = true;
+                        }
+                    }
+                } else {
+                    // Fallback without Embree
+                    if (TraceRayAgainstMeshes(rayStart, rayDir, maxTrace)) {
+                        floorZ = meshBounds.mins[2] + 16.0f;
+                        foundFloor = true;
+                    }
+                }
+            }
+            
+            if (foundFloor) floorsFound++;
+            
+            if (!foundFloor) continue;
+            
+            Vector3 probePos(posX, posY, floorZ + PROBE_HEIGHT_ABOVE_FLOOR);
+            
+            // Quick solid check - very relaxed
+            if (IsPositionInsideSolid(probePos, 4.0f)) {
+                continue;
+            }
+            
+            // Only skip if VERY close to an existing probe (avoid duplicates)
+            bool tooClose = false;
+            for (const Vector3 &existing : finalPositions) {
+                Vector3 delta = probePos - existing;
+                if (vector3_dot(delta, delta) < MIN_PROBE_SPACING * MIN_PROBE_SPACING) {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (!tooClose) {
+                for (const Vector3 &existing : gapFillProbes) {
+                    Vector3 delta = probePos - existing;
+                    if (vector3_dot(delta, delta) < MIN_PROBE_SPACING * MIN_PROBE_SPACING) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!tooClose) {
+                gapFillProbes.push_back(probePos);
+                probesAdded++;
+            }
+        }
+    }
+    
+    Sys_Printf("     Found %d floor cells, added %d gap-fill probes\n", floorsFound, probesAdded);
+    
+    // Add gap-fill probes
+    for (const Vector3 &gfp : gapFillProbes) {
+        finalPositions.push_back(gfp);
+    }
+    
+    if (!gapFillProbes.empty()) {
+        Sys_Printf("     Added %zu gap-fill probes in empty areas\n", gapFillProbes.size());
     }
     
     probePositions = std::move(finalPositions);
@@ -2383,12 +2521,38 @@ void ApexLegends::EmitLightProbes() {
         }
     }
     
-    if (!probePositions.empty()) {
-        Sys_Printf("     Found %zu info_lightprobe entities\n", probePositions.size());
-    } else {
-        // No manual probes - generate Voronoi-based adaptive placement
-        Sys_Printf("     No info_lightprobe entities, generating Voronoi-based placement...\n");
-        GenerateProbePositionsVoronoi(worldBounds, probePositions);
+    size_t manualProbeCount = probePositions.size();
+    if (manualProbeCount > 0) {
+        Sys_Printf("     Found %zu info_lightprobe entities\n", manualProbeCount);
+    }
+    
+    // Always generate Voronoi-based probes, combining with any manual ones
+    Sys_Printf("     Generating Voronoi-based placement...\n");
+    std::vector<Vector3> generatedPositions;
+    GenerateProbePositionsVoronoi(worldBounds, generatedPositions);
+    
+    // Add generated probes, but skip any too close to manual probes
+    constexpr float MANUAL_PROBE_EXCLUSION_RADIUS = 48.0f;
+    size_t skippedNearManual = 0;
+    
+    for (const Vector3 &genPos : generatedPositions) {
+        bool tooCloseToManual = false;
+        for (size_t i = 0; i < manualProbeCount; i++) {
+            Vector3 delta = genPos - probePositions[i];
+            if (vector3_dot(delta, delta) < MANUAL_PROBE_EXCLUSION_RADIUS * MANUAL_PROBE_EXCLUSION_RADIUS) {
+                tooCloseToManual = true;
+                skippedNearManual++;
+                break;
+            }
+        }
+        if (!tooCloseToManual) {
+            probePositions.push_back(genPos);
+        }
+    }
+    
+    if (manualProbeCount > 0) {
+        Sys_Printf("     Combined %zu manual + %zu generated probes (%zu skipped near manual)\n", 
+                   manualProbeCount, generatedPositions.size() - skippedNearManual, skippedNearManual);
     }
     
     // Ensure we have at least one probe
@@ -2444,7 +2608,7 @@ void ApexLegends::EmitLightProbes() {
     
     // Compress probe list if we have too many (Source SDK style optimization)
     // Remove redundant probes that can be reconstructed from neighbors
-    CompressProbeList(candidates, 2048);
+    CompressProbeList(candidates, LIGHT_PROBE_MAX_COUNT);
     
     // Convert candidates to final probe data
     for (const ProbeCandidate &candidate : candidates) {
