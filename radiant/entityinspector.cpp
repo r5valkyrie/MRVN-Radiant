@@ -33,12 +33,14 @@
 #include <map>
 #include <set>
 #include <variant>
+#include <vector>
 
 #include <gtkutil/guisettings.h>
 #include <QSplitter>
 #include <QTreeWidget>
 #include <QHeaderView>
 #include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -51,6 +53,14 @@
 #include <QKeyEvent>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QGroupBox>
+#include <QFrame>
+#include <QStackedWidget>
+#include <QTabWidget>
+#include <QLineEdit>
+#include <QTimer>
+#include <QRegularExpression>
+#include <QPalette>
 #include "gtkutil/combobox.h"
 
 #include "os/path.h"
@@ -681,10 +691,15 @@ namespace
 {
 bool g_entityInspector_windowConstructed = false;
 
+// Map entities list - shows all entities currently in the map
+QTreeWidget* g_mapEntitiesList;
+QLineEdit* g_mapEntitiesFilter;
+
+// Entity class list kept for internal use but hidden from UI
 QTreeWidget* g_entityClassList;
-QPlainTextEdit* g_entityClassComment;
 
 QCheckBox* g_entitySpawnflagsCheck[MAX_FLAGS];
+QGroupBox* g_spawnflagsGroup;
 
 QLineEdit* g_entityKeyEntry;
 QLineEdit* g_entityValueEntry;
@@ -692,8 +707,10 @@ QLineEdit* g_entityValueEntry;
 QToolButton* g_focusToggleButton;
 
 QTreeWidget* g_entprops_store;
+QLineEdit* g_inlineEditor = nullptr;
+QTreeWidgetItem* g_editingItem = nullptr;
+int g_editingColumn = -1;
 const EntityClass* g_current_flags = 0;
-const EntityClass* g_current_comment = 0;
 const EntityClass* g_current_attributes = 0;
 
 // the number of active spawnflags
@@ -701,12 +718,67 @@ int g_spawnflag_count;
 // table: index, match spawnflag item to the spawnflag index (i.e. which bit)
 int spawn_table[MAX_FLAGS];
 // we change the layout depending on how many spawn flags we need to display
-// the table is a 4x4 in which we need to put the comment box g_entityClassComment and the spawn flags..
 QGridLayout* g_spawnflagsTable;
 
 QGridLayout* g_attributeBox = nullptr;
 typedef std::vector<EntityAttribute*> EntityAttributes;
 EntityAttributes g_entityAttributes;
+
+// Styling constants
+const char* const g_inspectorStyle = R"(
+QGroupBox {
+    font-weight: bold;
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+}
+QTreeWidget {
+    border: 1px solid palette(mid);
+    border-radius: 3px;
+    background: palette(base);
+    alternate-background-color: palette(alternateBase);
+}
+QTreeWidget::item {
+    padding: 2px 0;
+}
+QTreeWidget::item:selected {
+    background: palette(highlight);
+    color: palette(highlightedText);
+}
+QLineEdit {
+    border: 1px solid palette(mid);
+    border-radius: 3px;
+    padding: 4px 6px;
+}
+QLineEdit:focus {
+    border-color: palette(highlight);
+}
+QPushButton, QToolButton {
+    border: 1px solid palette(mid);
+    border-radius: 3px;
+    padding: 4px 12px;
+    background: palette(button);
+}
+QPushButton:hover, QToolButton:hover {
+    background: palette(light);
+}
+QPushButton:pressed, QToolButton:pressed {
+    background: palette(midlight);
+}
+QCheckBox {
+    spacing: 4px;
+}
+QScrollArea {
+    border: none;
+}
+)";
 }
 
 void GlobalEntityAttributes_clear(){
@@ -791,31 +863,91 @@ public:
 };
 
 void EntityClassList_fill(){
+	if( !g_entityClassList ) return;
 	EntityClassListStoreAppend append( g_entityClassList );
 	GlobalEntityClassManager().forEach( append );
 }
 
 void EntityClassList_clear(){
-	g_entityClassList->clear();
+	if( g_entityClassList )
+		g_entityClassList->clear();
 }
 
-void SetComment( EntityClass* eclass ){
-	if ( eclass == g_current_comment ) {
-		return;
+// Map Entities List - collects all entities in the current map
+struct MapEntityInfo {
+	scene::Node* node;
+	CopiedString classname;
+	CopiedString targetname;
+	Vector3 origin;
+};
+
+std::vector<MapEntityInfo> g_mapEntities;
+
+class MapEntityCollector : public scene::Graph::Walker
+{
+public:
+	bool pre( const scene::Path& path, scene::Instance& instance ) const {
+		return true;
 	}
-
-	g_current_comment = eclass;
-	g_entityClassComment->setPlainText( eclass->comments() );
-
-	{	// Catch patterns like "\nstuff :" used to describe keys and spawnflags, and make them bold for readability.
-		QTextCharFormat format;
-		format.setFontWeight( QFont::Weight::Bold );
-
-		QTextDocument *document = g_entityClassComment->document();
-		const QRegularExpression rx( "^\\s*\\w+(?=\\s*:)", QRegularExpression::PatternOption::MultilineOption );
-		for( QTextCursor cursor( document ); cursor = document->find( rx, cursor ), !cursor.isNull(); )
-			cursor.mergeCharFormat( format );
+	void post( const scene::Path& path, scene::Instance& instance ) const {
+		Entity* entity = Node_getEntity( path.top() );
+		if ( entity != 0 ) {
+			MapEntityInfo info;
+			info.node = &path.top().get();
+			info.classname = entity->getKeyValue( "classname" );
+			info.targetname = entity->getKeyValue( "targetname" );
+			Vector3 origin( 0, 0, 0 );
+			string_parse_vector3( entity->getKeyValue( "origin" ), origin );
+			info.origin = origin;
+			g_mapEntities.push_back( info );
+		}
 	}
+};
+
+void MapEntitiesList_fill(){
+	if( !g_mapEntitiesList ) return;
+	
+	g_mapEntities.clear();
+	g_mapEntitiesList->clear();
+	
+	GlobalSceneGraph().traverse( MapEntityCollector() );
+	
+	const QString filter = g_mapEntitiesFilter ? g_mapEntitiesFilter->text().toLower() : QString();
+	
+	for ( const auto& info : g_mapEntities )
+	{
+		QString displayName = QString( "%1" ).arg( info.classname.c_str() );
+		if ( !info.targetname.empty() ) {
+			displayName += QString( " (%1)" ).arg( info.targetname.c_str() );
+		}
+		
+		// Apply filter
+		if ( !filter.isEmpty() && !displayName.toLower().contains( filter ) ) {
+			continue;
+		}
+		
+		auto item = new QTreeWidgetItem( g_mapEntitiesList );
+		item->setText( 0, displayName );
+		item->setData( 0, Qt::ItemDataRole::UserRole, QVariant::fromValue( reinterpret_cast<quintptr>( info.node ) ) );
+		
+		// Color-code by entity type
+		if ( info.classname.c_str()[0] == 't' && strncmp( info.classname.c_str(), "trigger_", 8 ) == 0 ) {
+			item->setForeground( 0, QColor( 255, 165, 0 ) ); // Orange for triggers
+		} else if ( strncmp( info.classname.c_str(), "info_", 5 ) == 0 ) {
+			item->setForeground( 0, QColor( 100, 180, 255 ) ); // Blue for info entities
+		} else if ( strncmp( info.classname.c_str(), "func_", 5 ) == 0 ) {
+			item->setForeground( 0, QColor( 100, 255, 100 ) ); // Green for func entities
+		} else if ( strncmp( info.classname.c_str(), "light", 5 ) == 0 ) {
+			item->setForeground( 0, QColor( 255, 255, 100 ) ); // Yellow for lights
+		}
+	}
+}
+
+void MapEntitiesList_clear(){
+	if( g_mapEntitiesList ){
+		g_mapEntitiesList->clear();
+	}
+	g_mapEntities.clear();
 }
 
 void EntityAttribute_setTooltip( QWidget* widget, const char* name, const char* description ){
@@ -848,6 +980,11 @@ void SpawnFlags_setEntityClass( EntityClass* eclass ){
 		g_entitySpawnflagsCheck[i]->hide();
 	}
 
+	// Show or hide the spawnflags group based on whether there are any flags
+	if( g_spawnflagsGroup ){
+		g_spawnflagsGroup->setVisible( g_spawnflag_count > 0 );
+	}
+
 	for ( int i = 0; i < g_spawnflag_count; ++i )
 	{
 		const auto str = StringStream<16>( LowerCase( eclass->flagnames[spawn_table[i]] ) );
@@ -863,9 +1000,11 @@ void SpawnFlags_setEntityClass( EntityClass* eclass ){
 }
 
 void EntityClassList_selectEntityClass( EntityClass* eclass ){
-	auto list = g_entityClassList->findItems( eclass->name(), Qt::MatchFlag::MatchFixedString );
-	if( !list.isEmpty() ){
-		g_entityClassList->setCurrentItem( list.first() );
+	if( g_entityClassList ){
+		auto list = g_entityClassList->findItems( eclass->name(), Qt::MatchFlag::MatchFixedString );
+		if( !list.isEmpty() ){
+			g_entityClassList->setCurrentItem( list.first() );
+		}
 	}
 }
 
@@ -928,7 +1067,6 @@ public:
 typedef Static<EntityAttributeFactory> GlobalEntityAttributeFactory;
 
 void EntityInspector_setEntityClass( EntityClass *eclass ){
-	EntityClassList_selectEntityClass( eclass );
 	SpawnFlags_setEntityClass( eclass );
 
 	if ( eclass != g_current_attributes ) {
@@ -986,24 +1124,189 @@ void EntityInspector_applySpawnflags(){
 }
 
 
+// Finish any active inline edit
+void EntityInspector_finishInlineEdit(){
+	if( g_inlineEditor && g_editingItem && g_editingColumn == 1 ){
+		QString newValue = g_inlineEditor->text();
+		QString key = g_editingItem->text( 0 );
+		
+		// Apply the change
+		Scene_EntitySetKeyValue_Selected_Undoable( key.toLatin1().constData(), newValue.toLatin1().constData() );
+		
+		g_inlineEditor->hide();
+		g_editingItem = nullptr;
+		g_editingColumn = -1;
+	}
+}
+
+// Cancel inline editing
+void EntityInspector_cancelInlineEdit(){
+	if( g_inlineEditor ){
+		g_inlineEditor->hide();
+		g_editingItem = nullptr;
+		g_editingColumn = -1;
+	}
+}
+
+// Event filter for inline editor to handle Escape key and focus loss
+class InlineEditEventFilter : public QObject
+{
+public:
+	bool eventFilter( QObject* obj, QEvent* event ) override {
+		if( event->type() == QEvent::KeyPress ){
+			QKeyEvent* keyEvent = static_cast<QKeyEvent*>( event );
+			if( keyEvent->key() == Qt::Key_Escape ){
+				EntityInspector_cancelInlineEdit();
+				return true;
+			}
+		}
+		else if( event->type() == QEvent::FocusOut ){
+			// Finish edit when focus is lost
+			EntityInspector_finishInlineEdit();
+			return false;
+		}
+		return QObject::eventFilter( obj, event );
+	}
+};
+
+static InlineEditEventFilter* g_inlineEditFilter = nullptr;
+
+// Start inline editing on a tree item
+void EntityInspector_startInlineEdit( QTreeWidgetItem* item, int column ){
+	if( !item || column != 1 ) return; // Only edit value column
+	
+	// Don't allow editing classname through double-click (use the proper mechanism)
+	QString key = item->text( 0 );
+	if( key == "classname" ) return;
+	
+	// Finish any previous edit
+	EntityInspector_finishInlineEdit();
+	
+	g_editingItem = item;
+	g_editingColumn = column;
+	
+	// Position the editor over the item
+	QRect rect = g_entprops_store->visualItemRect( item );
+	int headerWidth = g_entprops_store->columnWidth( 0 );
+	rect.setLeft( headerWidth );
+	
+	if( !g_inlineEditor ){
+		g_inlineEditor = new QLineEdit( g_entprops_store->viewport() );
+		QObject::connect( g_inlineEditor, &QLineEdit::returnPressed, [](){ EntityInspector_finishInlineEdit(); } );
+		
+		if( !g_inlineEditFilter ){
+			g_inlineEditFilter = new InlineEditEventFilter;
+		}
+		g_inlineEditor->installEventFilter( g_inlineEditFilter );
+	}
+	
+	g_inlineEditor->setText( item->text( 1 ) );
+	g_inlineEditor->setGeometry( rect );
+	g_inlineEditor->show();
+	g_inlineEditor->setFocus();
+	g_inlineEditor->selectAll();
+}
+
 void EntityInspector_updateKeyValues(){
+	// Cancel any active inline edit when updating
+	EntityInspector_cancelInlineEdit();
+	
 	g_selectedKeyValues.clear();
 	g_selectedDefaultKeyValues.clear();
 	Entity_GetKeyValues_Selected( g_selectedKeyValues, g_selectedDefaultKeyValues );
 
-	EntityInspector_setEntityClass( GlobalEntityClassManager().findOrInsert( keyvalues_valueforkey( g_selectedKeyValues, "classname" ), false ) );
+	EntityClass* eclass = GlobalEntityClassManager().findOrInsert( keyvalues_valueforkey( g_selectedKeyValues, "classname" ), false );
+	EntityInspector_setEntityClass( eclass );
 
 	EntityInspector_updateSpawnflags();
 
 	g_entprops_store->clear();
-	// Walk through list and add pairs
-	for ( const auto&[ key, value ] : g_selectedKeyValues )
-	{
-		g_entprops_store->addTopLevelItem( new QTreeWidgetItem( { key.c_str(), value.c_str() } ) );
+	
+	// Collect all keys: both current values AND default attributes from entity class
+	std::set<CopiedString> allKeys;
+	
+	// Add current key-values
+	for ( const auto&[ key, value ] : g_selectedKeyValues ){
+		allKeys.insert( key );
+	}
+	
+	// Add entity class attributes (these define the expected properties)
+	if( eclass ){
+		for ( const EntityClassAttributePair &pair : eclass->m_attributes ){
+			allKeys.insert( pair.first );
+		}
+	}
+	
+	// Add default values from entity class
+	for ( const auto&[ key, value ] : g_selectedDefaultKeyValues ){
+		allKeys.insert( key );
+	}
+	
+	// Build unified table
+	for ( const CopiedString& key : allKeys ){
+		// Get current value (or empty if not set)
+		QString currentValue;
+		QString defaultValue;
+		bool hasValue = false;
+		bool isDefault = false;
+		
+		// Check for actual value
+		auto it = g_selectedKeyValues.find( key );
+		if( it != g_selectedKeyValues.end() ){
+			currentValue = it->second.c_str();
+			hasValue = true;
+		}
+		
+		// Check for default value
+		auto dit = g_selectedDefaultKeyValues.find( key );
+		if( dit != g_selectedDefaultKeyValues.end() ){
+			defaultValue = dit->second.c_str();
+			if( !hasValue ){
+				currentValue = defaultValue;
+				isDefault = true;
+			}
+		}
+		
+		auto item = new QTreeWidgetItem( { key.c_str(), currentValue } );
+		
+		// Style based on state
+		if ( string_equal( key.c_str(), "classname" ) || string_equal( key.c_str(), "targetname" ) ) {
+			// Important keys: bold
+			QFont font = item->font( 0 );
+			font.setBold( true );
+			item->setFont( 0, font );
+			item->setFont( 1, font );
+		}
+		else if( isDefault || !hasValue ){
+			// Default/unset values: gray italic
+			item->setForeground( 1, QColor( 128, 128, 128 ) );
+			QFont font = item->font( 1 );
+			font.setItalic( true );
+			item->setFont( 1, font );
+		}
+		
+		// Store tooltip with description if available from entity class
+		if( eclass ){
+			for ( const EntityClassAttributePair &pair : eclass->m_attributes ){
+				if( string_equal( pair.first.c_str(), key.c_str() ) ){
+					QString tooltip = QString( "<b>%1</b>" ).arg( pair.second.m_name.c_str() );
+					if( !pair.second.m_description.empty() ){
+						tooltip += QString( "<br>%1" ).arg( pair.second.m_description.c_str() );
+					}
+					if( !defaultValue.isEmpty() ){
+						tooltip += QString( "<br><i>Default: %1</i>" ).arg( defaultValue );
+					}
+					item->setToolTip( 0, tooltip );
+					item->setToolTip( 1, tooltip );
+					break;
+				}
+			}
+		}
+		
+		g_entprops_store->addTopLevelItem( item );
 	}
 
-	for ( EntityAttribute *attr : g_entityAttributes )
-	{
+	for ( EntityAttribute *attr : g_entityAttributes ){
 		attr->update();
 	}
 }
@@ -1106,12 +1409,6 @@ void EntityInspector_clearAllKeyValues(){
 // =============================================================================
 // callbacks
 
-static void EntityClassList_selection_changed( QTreeWidgetItem *current, QTreeWidgetItem *previous ){
-	if( current != nullptr ){
-		SetComment( current->data( 0, Qt::ItemDataRole::UserRole ).value<EntityClass*>() );
-	}
-}
-
 static void EntityProperties_selection_changed( QTreeWidgetItem *item, int column ){
 	if( item != nullptr ){
 		g_entityKeyEntry->setText( item->text( 0 ) );
@@ -1152,197 +1449,335 @@ g_pressedKeysFilter;
 void EntityInspector_destroyWindow(){
 	g_entityInspector_windowConstructed = false;
 	GlobalEntityAttributes_clear();
+	MapEntitiesList_clear();
+}
+
+// Helper to create a styled group box
+static QGroupBox* createGroupBox( const QString& title ){
+	auto group = new QGroupBox( title );
+	return group;
+}
+
+// Helper to create section header label
+static QLabel* createSectionLabel( const QString& text ){
+	auto label = new QLabel( text );
+	QFont font = label->font();
+	font.setBold( true );
+	font.setPointSizeF( font.pointSizeF() * 1.1 );
+	label->setFont( font );
+	label->setContentsMargins( 0, 4, 0, 4 );
+	return label;
+}
+
+// Select entity in the scene from map entities list
+static void MapEntitiesList_selectEntity( QTreeWidgetItem *item ){
+	if( !item ) return;
+	
+	quintptr nodePtr = item->data( 0, Qt::ItemDataRole::UserRole ).value<quintptr>();
+	scene::Node* node = reinterpret_cast<scene::Node*>( nodePtr );
+	if( !node ) return;
+	
+	// Find the instance for this node and select it
+	class EntitySelector : public scene::Graph::Walker
+	{
+		scene::Node* m_targetNode;
+	public:
+		EntitySelector( scene::Node* target ) : m_targetNode( target ) {}
+		bool pre( const scene::Path& path, scene::Instance& instance ) const {
+			if( &path.top().get() == m_targetNode ){
+				Instance_setSelected( instance, true );
+				return false;
+			}
+			return true;
+		}
+	};
+	
+	GlobalSelectionSystem().setSelectedAll( false );
+	GlobalSceneGraph().traverse( EntitySelector( node ) );
 }
 
 QWidget* EntityInspector_constructWindow( QWidget* toplevel ){
-	auto splitter = new QSplitter( Qt::Vertical );
+	auto mainWidget = new QWidget;
+	mainWidget->setStyleSheet( g_inspectorStyle );
+	auto mainLayout = new QVBoxLayout( mainWidget );
+	mainLayout->setContentsMargins( 4, 4, 4, 4 );
+	mainLayout->setSpacing( 4 );
 
-	QObject::connect( splitter, &QObject::destroyed, EntityInspector_destroyWindow );
-	splitter->installEventFilter( &g_pressedKeysFilter );
+	QObject::connect( mainWidget, &QObject::destroyed, EntityInspector_destroyWindow );
+	mainWidget->installEventFilter( &g_pressedKeysFilter );
 
+	// Create main vertical splitter
+	auto mainSplitter = new QSplitter( Qt::Vertical );
+	mainLayout->addWidget( mainSplitter );
+
+	// ===== TOP SECTION: Map Entities =====
 	{
-		// class list
-		auto tree = g_entityClassList = new QTreeWidget;
-		tree->setColumnCount( 1 );
-		tree->setSortingEnabled( true );
-		tree->sortByColumn( 0, Qt::SortOrder::AscendingOrder );
-		tree->setUniformRowHeights( true ); // optimization
-		tree->setHorizontalScrollBarPolicy( Qt::ScrollBarPolicy::ScrollBarAlwaysOff );
-		tree->setSizeAdjustPolicy( QAbstractScrollArea::SizeAdjustPolicy::AdjustToContents ); // scroll area will inherit column size
-		tree->header()->setStretchLastSection( false ); // non greedy column sizing
-		tree->header()->setSectionResizeMode( QHeaderView::ResizeMode::ResizeToContents ); // no text elision
-		tree->setHeaderHidden( true );
-		tree->setRootIsDecorated( false );
-		tree->setEditTriggers( QAbstractItemView::EditTrigger::NoEditTriggers );
-		tree->setAutoScroll( true );
+		auto mapEntitiesWidget = new QWidget;
+		auto mapEntitiesLayout = new QVBoxLayout( mapEntitiesWidget );
+		mapEntitiesLayout->setContentsMargins( 0, 0, 0, 0 );
+		mapEntitiesLayout->setSpacing( 4 );
 
-		QObject::connect( tree, &QTreeWidget::itemActivated, []( QTreeWidgetItem *item, int column ){
-			Scene_EntitySetClassname_Selected( item->text( 0 ).toLatin1().constData() );
-		} );
-		QObject::connect( tree, &QTreeWidget::currentItemChanged, EntityClassList_selection_changed );
-
-		splitter->addWidget( tree );
-	}
-	{
-		auto text = g_entityClassComment = new QPlainTextEdit;
-		text->setReadOnly( true );
-		text->setUndoRedoEnabled( false );
-
-		splitter->addWidget( text );
-	}
-	{
-		QWidget *containerWidget = new QWidget; // Adding a QLayout to a QSplitter is not supported, use proxy widget
-		splitter->addWidget( containerWidget );
-		auto vbox = new QVBoxLayout( containerWidget );
-		vbox->setContentsMargins( 0, 0, 0, 0 );
+		// Header with refresh button
+		auto headerLayout = new QHBoxLayout;
+		headerLayout->addWidget( createSectionLabel( "📍 Map Entities" ) );
+		headerLayout->addStretch();
 		{
-			// Spawnflags (4 colums wide max, or window gets too wide.)
-			auto grid = g_spawnflagsTable = new QGridLayout;
-			grid->setAlignment( Qt::AlignmentFlag::AlignLeft );
-			vbox->addLayout( grid );
+			auto refreshBtn = new QToolButton;
+			refreshBtn->setText( "⟳" );
+			refreshBtn->setToolTip( "Refresh entity list" );
+			QObject::connect( refreshBtn, &QAbstractButton::clicked, [](){ MapEntitiesList_fill(); } );
+			headerLayout->addWidget( refreshBtn );
+		}
+		mapEntitiesLayout->addLayout( headerLayout );
+
+		// Filter
+		{
+			g_mapEntitiesFilter = new QLineEdit;
+			g_mapEntitiesFilter->setPlaceholderText( "Filter entities..." );
+			g_mapEntitiesFilter->setClearButtonEnabled( true );
+			QObject::connect( g_mapEntitiesFilter, &QLineEdit::textChanged, [](){ MapEntitiesList_fill(); } );
+			mapEntitiesLayout->addWidget( g_mapEntitiesFilter );
+		}
+
+		// Entity list
+		{
+			auto tree = g_mapEntitiesList = new QTreeWidget;
+			tree->setColumnCount( 1 );
+			tree->setHeaderHidden( true );
+			tree->setRootIsDecorated( false );
+			tree->setAlternatingRowColors( true );
+			tree->setUniformRowHeights( true );
+			tree->setSelectionMode( QAbstractItemView::SelectionMode::SingleSelection );
+			
+			// Single click selects entity and shows its properties
+			QObject::connect( tree, &QTreeWidget::itemClicked, []( QTreeWidgetItem *item, int ){
+				MapEntitiesList_selectEntity( item );
+			} );
+			
+			// Double click also focuses the view
+			QObject::connect( tree, &QTreeWidget::itemDoubleClicked, []( QTreeWidgetItem *item, int ){
+				MapEntitiesList_selectEntity( item );
+				if( g_focusToggleButton->isChecked() || true ){
+					FocusAllViews();
+				}
+			} );
+			
+			mapEntitiesLayout->addWidget( tree, 1 );
+		}
+
+		mainSplitter->addWidget( mapEntitiesWidget );
+	}
+
+	// ===== BOTTOM SECTION: Entity Properties (merged Properties + Attributes) =====
+	{
+		auto propsWidget = new QWidget;
+		auto propsLayout = new QVBoxLayout( propsWidget );
+		propsLayout->setContentsMargins( 0, 0, 0, 0 );
+		propsLayout->setSpacing( 4 );
+
+		propsLayout->addWidget( createSectionLabel( "⚙ Entity Properties" ) );
+
+		// Scrollable area for all properties
+		auto scroll = new QScrollArea;
+		scroll->setHorizontalScrollBarPolicy( Qt::ScrollBarPolicy::ScrollBarAlwaysOff );
+		scroll->setWidgetResizable( true );
+		scroll->setFrameShape( QFrame::Shape::NoFrame );
+
+		auto scrollContent = new QWidget;
+		auto scrollLayout = new QVBoxLayout( scrollContent );
+		scrollLayout->setContentsMargins( 0, 0, 4, 0 );
+		scrollLayout->setSpacing( 4 );
+
+		// Spawnflags group
+		{
+			g_spawnflagsGroup = createGroupBox( "⚑ Spawnflags" );
+			auto flagsLayout = g_spawnflagsTable = new QGridLayout( g_spawnflagsGroup );
+			flagsLayout->setSpacing( 2 );
+			flagsLayout->setContentsMargins( 6, 6, 6, 6 );
+
 			for ( int i = 0; i < MAX_FLAGS; i++ )
 			{
 				auto check = g_entitySpawnflagsCheck[i] = new QCheckBox;
-				grid->addWidget( check, i / 4, i % 4 );
+				flagsLayout->addWidget( check, i / 4, i % 4 );
 				check->hide();
 				QObject::connect( check, &QAbstractButton::clicked, EntityInspector_applySpawnflags );
 			}
+
+			g_spawnflagsGroup->setVisible( false );
+			scrollLayout->addWidget( g_spawnflagsGroup );
 		}
+
+		// Unified Key/Value table (shows all attributes with current values)
 		{
-			// key/value list
+			auto propsGroup = createGroupBox( "🔑 Properties" );
+			auto propsGroupLayout = new QVBoxLayout( propsGroup );
+			propsGroupLayout->setContentsMargins( 6, 6, 6, 6 );
+			propsGroupLayout->setSpacing( 4 );
+			
+			// Help text
+			auto helpLabel = new QLabel( "<i>Double-click value to edit. Gray italic = default/unset.</i>" );
+			helpLabel->setStyleSheet( "color: gray; font-size: 10px;" );
+			propsGroupLayout->addWidget( helpLabel );
+
 			auto tree = g_entprops_store = new QTreeWidget;
 			tree->setColumnCount( 2 );
-			tree->setUniformRowHeights( true ); // optimization
-			tree->setHorizontalScrollBarPolicy( Qt::ScrollBarPolicy::ScrollBarAlwaysOff );
-			tree->header()->setSectionResizeMode( 0, QHeaderView::ResizeMode::ResizeToContents ); // no text elision
-			tree->setHeaderHidden( true );
+			tree->setUniformRowHeights( true );
+			tree->setAlternatingRowColors( true );
+			tree->setHeaderLabels( { "Key", "Value" } );
+			tree->header()->setVisible( true );
+			tree->header()->setSectionResizeMode( 0, QHeaderView::ResizeMode::ResizeToContents );
+			tree->header()->setSectionResizeMode( 1, QHeaderView::ResizeMode::Stretch );
 			tree->setRootIsDecorated( false );
 			tree->setEditTriggers( QAbstractItemView::EditTrigger::NoEditTriggers );
+			tree->setMinimumHeight( 200 );
 
+			// Single click selects and populates edit fields
 			QObject::connect( tree, &QTreeWidget::itemPressed, EntityProperties_selection_changed );
+			
+			// Double click enables inline editing
+			QObject::connect( tree, &QTreeWidget::itemDoubleClicked, []( QTreeWidgetItem *item, int column ){
+				EntityInspector_startInlineEdit( item, column );
+			});
+			
 			tree->installEventFilter( &g_EntityProperties_keypress );
 
-			vbox->addWidget( tree );
+			propsGroupLayout->addWidget( tree, 1 );
+			scrollLayout->addWidget( propsGroup, 1 );
 		}
 
+		// Hidden attribute widgets container (for special attribute types like color pickers)
 		{
-			// key/value entry
-			auto grid = new QGridLayout;
-			grid->setContentsMargins( 4, 0, 4, 0 );
-			vbox->addLayout( grid );
+			auto attrWidget = new QWidget;
+			attrWidget->hide();  // Hidden - attributes shown in table above
+			g_attributeBox = new QGridLayout( attrWidget );
+			g_attributeBox->setAlignment( Qt::AlignmentFlag::AlignTop );
+			g_attributeBox->setColumnStretch( 0, 1 );
+			g_attributeBox->setColumnStretch( 1, 2 );
+			g_attributeBox->setSpacing( 4 );
+			g_attributeBox->setContentsMargins( 0, 0, 0, 0 );
+			scrollLayout->addWidget( attrWidget );
+		}
+
+		scrollLayout->addStretch();
+		scroll->setWidget( scrollContent );
+		propsLayout->addWidget( scroll, 1 );
+
+		// key/value entry at the bottom (outside scroll)
+		{
+			auto entryGroup = createGroupBox( "✏ Edit / Add Property" );
+			auto grid = new QGridLayout( entryGroup );
+			grid->setSpacing( 4 );
+			grid->setContentsMargins( 6, 6, 6, 6 );
 			{
-				grid->addWidget( new QLabel( "Key" ), 0, 0 );
-				grid->addWidget( new QLabel( "Value" ), 1, 0 );
-			}
-			{
+				grid->addWidget( new QLabel( "Key:" ), 0, 0 );
 				auto line = g_entityKeyEntry = new LineEdit;
 				grid->addWidget( line, 0, 1 );
 				QObject::connect( line, &QLineEdit::returnPressed, [](){ g_entityValueEntry->setFocus(); g_entityValueEntry->selectAll(); } );
 			}
-
 			{
+				grid->addWidget( new QLabel( "Value:" ), 1, 0 );
 				auto line = g_entityValueEntry = new LineEdit;
 				grid->addWidget( line, 1, 1 );
 				QObject::connect( line, &QLineEdit::returnPressed, [](){ EntityInspector_applyKeyValue(); } );
 			}
-			/* select by key/value buttons */
+			// Apply button
 			{
-				auto b = new QToolButton;
-				b->setText( "+" );
-				b->setToolTip( "Select by key" );
-				grid->addWidget( b, 0, 2 );
-				QObject::connect( b, &QAbstractButton::clicked, [](){
-					Select_EntitiesByKeyValue( g_entityKeyEntry->text().toLatin1().constData(), nullptr );
-				} );
+				auto applyBtn = new QPushButton( "Apply" );
+				applyBtn->setToolTip( "Apply key/value change (Enter)" );
+				QObject::connect( applyBtn, &QAbstractButton::clicked, [](){ EntityInspector_applyKeyValue(); } );
+				grid->addWidget( applyBtn, 0, 2, 2, 1 );
 			}
-			{
-				auto b = new QToolButton;
-				b->setText( "+" );
-				b->setToolTip( "Select by value" );
-				grid->addWidget( b, 1, 2 );
-				QObject::connect( b, &QAbstractButton::clicked, [](){
-					Select_EntitiesByKeyValue( nullptr, g_entityValueEntry->text().toLatin1().constData() );
-				} );
-			}
-			{
-				auto b = new QToolButton;
-				b->setText( "+" );
-				b->setToolTip( "Select by key + value" );
-				grid->addWidget( b, 0, 3, 2, 1 );
-				QObject::connect( b, &QAbstractButton::clicked, [](){
-					Select_EntitiesByKeyValue( g_entityKeyEntry->text().toLatin1().constData(), g_entityValueEntry->text().toLatin1().constData() );
-				} );
-			}
+			propsLayout->addWidget( entryGroup );
 		}
+
+		// Action buttons
 		{
-			auto hbox = new QHBoxLayout;
-			hbox->setContentsMargins( 4, 0, 4, 0 );
-			vbox->addLayout( hbox );
+			auto btnLayout = new QHBoxLayout;
+			btnLayout->setSpacing( 4 );
+
 			{
-				auto b = new QPushButton( "Clear All" );
-				hbox->addWidget( b );
+				auto b = new QPushButton( "🗑 Clear All" );
+				b->setToolTip( "Remove all custom properties" );
 				QObject::connect( b, &QAbstractButton::clicked, EntityInspector_clearAllKeyValues );
+				btnLayout->addWidget( b );
 			}
 			{
-				auto b = new QPushButton( "Delete Key" );
-				hbox->addWidget( b );
+				auto b = new QPushButton( "✕ Delete" );
+				b->setToolTip( "Delete selected property" );
 				QObject::connect( b, &QAbstractButton::clicked, EntityInspector_clearKeyValue );
+				btnLayout->addWidget( b );
 			}
+
+			btnLayout->addStretch();
+
+			// Connection buttons
 			{
 				auto b = new QToolButton;
-				hbox->addWidget( b );
-				b->setText( "<" );
+				b->setText( "◀" );
 				b->setToolTip( "Select targeting entities" );
 				QObject::connect( b, &QAbstractButton::clicked, [](){ Select_ConnectedEntities( true, false, g_focusToggleButton->isChecked() ); } );
+				btnLayout->addWidget( b );
 			}
 			{
 				auto b = new QToolButton;
-				hbox->addWidget( b );
-				b->setText( ">" );
+				b->setText( "▶" );
 				b->setToolTip( "Select targets" );
 				QObject::connect( b, &QAbstractButton::clicked, [](){ Select_ConnectedEntities( false, true, g_focusToggleButton->isChecked() ); } );
+				btnLayout->addWidget( b );
 			}
 			{
 				auto b = new QToolButton;
-				hbox->addWidget( b );
-				b->setText( "<->" );
-				b->setToolTip( "Select connected entities" );
+				b->setText( "◀▶" );
+				b->setToolTip( "Select all connected entities" );
 				QObject::connect( b, &QAbstractButton::clicked, [](){ Select_ConnectedEntities( true, true, g_focusToggleButton->isChecked() ); } );
+				btnLayout->addWidget( b );
 			}
 			{
 				auto b = g_focusToggleButton = new QToolButton;
-				hbox->addWidget( b );
-				b->setText( u8"👀" );
-				b->setToolTip( "AutoFocus on Selection" );
+				b->setText( "👁" );
+				b->setToolTip( "Auto-focus on selection" );
 				b->setCheckable( true );
 				QObject::connect( b, &QAbstractButton::clicked, []( bool checked ){ if( checked ) FocusAllViews(); } );
+				btnLayout->addWidget( b );
 			}
-		}
-	}
-	{
-		auto scroll = new QScrollArea;
-		scroll->setHorizontalScrollBarPolicy( Qt::ScrollBarPolicy::ScrollBarAlwaysOff );
-		scroll->setWidgetResizable( true );
-		splitter->addWidget( scroll );
 
-		QWidget *containerWidget = new QWidget; // Adding a QLayout to a QScrollArea is not supported, use proxy widget
-		g_attributeBox = new QGridLayout( containerWidget );
-		g_attributeBox->setAlignment( Qt::AlignmentFlag::AlignTop );
-		g_attributeBox->setColumnStretch( 0, 111 );
-		g_attributeBox->setColumnStretch( 1, 333 );
-		scroll->setWidget( containerWidget ); // widget's layout must be set b4 this!
+			propsLayout->addLayout( btnLayout );
+		}
+
+		mainSplitter->addWidget( propsWidget );
 	}
+
+	// Hidden entity class list for internal lookups
+	g_entityClassList = new QTreeWidget;
+	g_entityClassList->hide();
 
 	g_entityInspector_windowConstructed = true;
 	EntityClassList_fill();
+	
+	// Auto-refresh map entities when inspector becomes visible
+	// Use event filter to detect show events (works with tab switching)
+	class ShowEventFilter : public QObject {
+	public:
+		bool eventFilter( QObject* obj, QEvent* event ) override {
+			if( event->type() == QEvent::Show || event->type() == QEvent::WindowActivate ){
+				QTimer::singleShot( 0, [](){ MapEntitiesList_fill(); } );
+			}
+			return QObject::eventFilter( obj, event );
+		}
+	};
+	static ShowEventFilter* showFilter = new ShowEventFilter;
+	mainWidget->installEventFilter( showFilter );
+	
+	// Initial fill
+	QTimer::singleShot( 100, [](){ MapEntitiesList_fill(); } );
 
 	typedef FreeCaller1<const Selectable&, EntityInspector_selectionChanged> EntityInspectorSelectionChangedCaller;
 	GlobalSelectionSystem().addSelectionChangeCallback( EntityInspectorSelectionChangedCaller() );
 	GlobalEntityCreator().setKeyValueChangedFunc( EntityInspector_keyValueChanged );
 
-	g_guiSettings.addSplitter( splitter, "EntityInspector/splitter", { 55, 175, 255, 255 } );
+	g_guiSettings.addSplitter( mainSplitter, "EntityInspector/mainSplitter", { 200, 400 } );
 
-	return splitter;
+	return mainWidget;
 }
 
 class EntityInspector : public ModuleObserver
@@ -1356,6 +1791,7 @@ public:
 			if ( g_entityInspector_windowConstructed ) {
 				//globalOutputStream() << "Entity Inspector: realise\n";
 				EntityClassList_fill();
+				MapEntitiesList_fill();
 			}
 		}
 	}
@@ -1364,6 +1800,7 @@ public:
 			if ( g_entityInspector_windowConstructed ) {
 				//globalOutputStream() << "Entity Inspector: unrealise\n";
 				EntityClassList_clear();
+				MapEntitiesList_clear();
 			}
 		}
 	}
