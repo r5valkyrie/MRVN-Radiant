@@ -133,40 +133,39 @@ struct ShadowMeshAlphaVertex_t {
 #pragma pack(pop)
 static_assert(sizeof(ShadowMeshAlphaVertex_t) == 20, "ShadowMeshAlphaVertex_t must be exactly 20 bytes");
 
-// Light Probe structure (lump 0x65)
-// Version differences:
-//   v47-v50: 48 bytes (dlightprobe_v50_t) - extra 4 bytes of unknown data
-//   v51+:    44 bytes (dlightprobe_t) - current format
-// We use v51+ format (44 bytes) since Apex v47+ BSP loader supports both
-// Stores ambient lighting as spherical harmonics + references to static lights
+// Light Probe structure (lump 0x65) - 48 bytes
+// Used for BSP v47+ (Apex Legends). Verified against official map lump sizes:
+//   - mp_rr_canyonlands: 28352592 bytes / 48 = 590679 probes (exact)
+//   - mp_rr_desertlands: 33877392 bytes / 48 = 705779 probes (exact)
+// Stores ambient lighting as L1 spherical harmonics + references to static lights
 // Used by Mod_LeafAmbientColorAtPosWithNormal for ambient lighting lookups
+//
+// SH coefficient format per channel:
+//   [0] = X gradient (posX - negX directional difference)
+//   [1] = Y gradient (posY - negY directional difference)  
+//   [2] = Z gradient (posZ - negZ directional difference)
+//   [3] = DC term (average ambient, typically 500-3000 for well-lit areas)
+//
+// Official map analysis shows:
+//   - DC range: 0 to ~3500
+//   - Gradient range: -3500 to +3500
+//   - Unknown field (offset 36): usually 0x0096 (150 decimal)
+//   - Padding0 (offset 40): usually 0xFFFFFFFF for most probes
+//   - Padding1 (offset 44): always 0x00000000
 #pragma pack(push, 1)
 struct LightProbe_t {
-    int16_t  ambientSH[3][4];    // +0x00 - Spherical harmonics for R, G, B (24 bytes)
-                                 //         Each row: [X, Y, Z, DC] coefficients
-                                 //         DC component scaled to ~0x2000 for neutral
-    uint16_t staticLightIndexes[4]; // +0x18 - Indices into worldLights (8 bytes)
-                                    //         0xFFFF = no light, otherwise index + 32
-    uint8_t  staticLightFlags[4];   // +0x20 - Flags for each static light (4 bytes)
-    uint32_t padding0;              // +0x24 - Padding (4 bytes)
-    uint32_t padding1;              // +0x28 - Padding (4 bytes)
-};
-#pragma pack(pop)
-static_assert(sizeof(LightProbe_t) == 44, "LightProbe_t must be exactly 44 bytes");
-
-// Light Probe v50 structure (lump 0x65) - for BSP versions 47-50
-// Contains extra unknown field compared to v51+ format
-#pragma pack(push, 1)
-struct LightProbe_v50_t {
     int16_t  ambientSH[3][4];       // +0x00 - Spherical harmonics for R, G, B (24 bytes)
     uint16_t staticLightIndexes[4]; // +0x18 - Indices into worldLights (8 bytes)
+                                    //         0xFFFF = no light, otherwise light index
     uint8_t  staticLightFlags[4];   // +0x20 - Flags for each static light (4 bytes)
-    uint32_t unknown;               // +0x24 - Unknown (extra in v50)
-    uint32_t padding0;              // +0x28 - Padding (4 bytes)
-    uint32_t padding1;              // +0x2C - Padding (4 bytes)
+                                    //         First byte usually 0xFF
+    uint16_t lightingFlags;         // +0x24 - Lighting flags (usually 0x0096 = 150)
+    uint16_t reserved;              // +0x26 - Reserved (usually 0xFFFF)
+    uint32_t padding0;              // +0x28 - Padding (usually 0xFFFFFFFF)
+    uint32_t padding1;              // +0x2C - Padding (always 0x00000000)
 };
 #pragma pack(pop)
-static_assert(sizeof(LightProbe_v50_t) == 48, "LightProbe_v50_t must be exactly 48 bytes");
+static_assert(sizeof(LightProbe_t) == 48, "LightProbe_t must be exactly 48 bytes");
 
 // Light Probe Reference (lump 0x68) - 20 bytes  
 // References a light probe in the spatial lookup tree
@@ -554,7 +553,7 @@ namespace ApexLegends {
         // Light probe lumps (0x04, 0x65-0x68)
         // These provide ambient lighting for models and world geometry
         inline std::vector<LightProbeParentInfo_t> lightprobeParentInfos;   // Lump 0x04
-        inline std::vector<LightProbe_v50_t>       lightprobes;             // Lump 0x65 (48 bytes for v50)
+        inline std::vector<LightProbe_t>           lightprobes;             // Lump 0x65 (48 bytes)
         inline std::vector<uint32_t>               staticPropLightprobeIndices; // Lump 0x66
         inline std::vector<LightProbeTree_t>       lightprobeTree;          // Lump 0x67
         inline std::vector<LightProbeRef_t>        lightprobeReferences;    // Lump 0x68

@@ -1368,18 +1368,18 @@ static bool ParseLightKey(const char *value, Vector3 &outColor, float &outBright
     
     float r, g, b, brightness;
     if (sscanf(value, "%f %f %f %f", &r, &g, &b, &brightness) == 4) {
-        // Normalize RGB from 0-255 to 0-1
-        outColor[0] = r;
-        outColor[1] = g;
-        outColor[2] = b;
+        // Normalize RGB from 0-255 to 0-1 range
+        outColor[0] = r / 255.0f;
+        outColor[1] = g / 255.0f;
+        outColor[2] = b / 255.0f;
         outBrightness = brightness;
         return true;
     }
     // Try 3-component format (no brightness)
     if (sscanf(value, "%f %f %f", &r, &g, &b) == 3) {
-        outColor[0] = r;
-        outColor[1] = g;
-        outColor[2] = b;
+        outColor[0] = r / 255.0f;
+        outColor[1] = g / 255.0f;
+        outColor[2] = b / 255.0f;
         outBrightness = 1.0f;
         return true;
     }
@@ -1707,12 +1707,18 @@ static int16_t ClampToInt16(float value) {
     - [1] = Y gradient (difference between +Y and -Y)
     - [2] = Z gradient (difference between +Z and -Z)
     - [3] = DC (average/constant term)
+    
+    Based on official map analysis:
+    - DC values typically range from 0 to 3500 for normally lit areas
+    - Gradient values range from -3500 to +3500
+    - Input cube colors should be in 0-1 normalized range
 */
 static void ConvertCubeToSphericalHarmonics(const Vector3 lightBoxColor[6], 
-                                             LightProbe_v50_t &probe) {
-    // SH scale factor - based on analysis of official maps
-    // DC values typically 2000-4000 for well-lit areas
-    const float shScale = 8000.0f;
+                                             LightProbe_t &probe) {
+    // SH scale factor - based on analysis of official Apex Legends maps
+    // With normalized 0-1 input colors, scale to target DC range of ~500-2000
+    // Official maps show DC values typically 500-3000 for well-lit outdoor areas
+    const float shScale = 2500.0f;
     
     for (int channel = 0; channel < 3; channel++) {
         // Extract color components for this channel from each cube side
@@ -2149,6 +2155,107 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
 }
 
 /*
+    AssignStaticLightsToProbe
+    Finds the most influential worldlights for a probe at the given position.
+    Assigns up to 4 light indices to the probe's staticLightIndexes array.
+    Sets staticLightFlags[0] based on how many valid lights were found.
+    
+    The algorithm:
+    1. Skip sky lights (emit_skyambient, emit_skylight) - they don't use indices
+    2. For each point/spot light, calculate influence based on distance and intensity
+    3. Sort by influence and take the top 4
+    4. Assign indices, using 0xFFFF for empty slots
+*/
+static void AssignStaticLightsToProbe(const Vector3 &probePos, LightProbe_t &probe) {
+    // Structure to hold light influence data
+    struct LightInfluence {
+        uint16_t index;
+        float influence;
+    };
+    
+    std::vector<LightInfluence> influences;
+    influences.reserve(ApexLegends::Bsp::worldLights.size());
+    
+    // Calculate influence for each non-sky worldlight
+    for (size_t i = 0; i < ApexLegends::Bsp::worldLights.size(); i++) {
+        const WorldLight_t &light = ApexLegends::Bsp::worldLights[i];
+        
+        // Skip sky lights - they're handled separately via SH ambient
+        if (light.type == emit_skyambient || light.type == emit_skylight) {
+            continue;
+        }
+        
+        // Calculate distance to light
+        Vector3 delta = light.origin - probePos;
+        float distSq = vector3_dot(delta, delta);
+        float dist = std::sqrt(distSq);
+        
+        // Skip lights that are too far away (optimization)
+        // Use a reasonable max distance - adjust based on map scale
+        const float maxDist = 4096.0f;
+        if (dist > maxDist) {
+            continue;
+        }
+        
+        // Calculate light intensity magnitude
+        float intensityMag = vector3_length(light.intensity);
+        if (intensityMag < 0.001f) {
+            continue;
+        }
+        
+        // Calculate influence based on intensity and distance falloff
+        // Use quadratic falloff as a reasonable approximation
+        float influence = intensityMag / (1.0f + distSq * 0.0001f);
+        
+        // For spotlights, reduce influence if probe is outside the cone
+        if (light.type == emit_spotlight) {
+            Vector3 dirToProbe = vector3_normalised(delta);
+            float dot = -vector3_dot(dirToProbe, light.normal);  // Negative because delta points from light to probe
+            
+            // If outside outer cone, skip this light
+            if (dot < light.stopdot2) {
+                continue;
+            }
+            
+            // Attenuate based on cone falloff
+            if (dot < light.stopdot) {
+                float t = (dot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                influence *= t * t;  // Quadratic falloff in penumbra
+            }
+        }
+        
+        if (influence > 0.001f) {
+            influences.push_back({static_cast<uint16_t>(i), influence});
+        }
+    }
+    
+    // Sort by influence (highest first)
+    std::sort(influences.begin(), influences.end(), 
+              [](const LightInfluence &a, const LightInfluence &b) {
+                  return a.influence > b.influence;
+              });
+    
+    // Assign up to 4 lights
+    int validLightCount = 0;
+    for (int slot = 0; slot < 4; slot++) {
+        if (slot < static_cast<int>(influences.size())) {
+            probe.staticLightIndexes[slot] = influences[slot].index;
+            validLightCount++;
+        } else {
+            probe.staticLightIndexes[slot] = 0xFFFF;  // No light in this slot
+        }
+    }
+    
+    // Set staticLightFlags based on valid light count
+    // From analysis: flags[0] is 0xFF when there are valid lights, 0x00 otherwise
+    // flags[1-3] are typically 0x00
+    probe.staticLightFlags[0] = (validLightCount > 0) ? 0xFF : 0x00;
+    probe.staticLightFlags[1] = 0x00;
+    probe.staticLightFlags[2] = 0x00;
+    probe.staticLightFlags[3] = 0x00;
+}
+
+/*
     CompressProbeList
     Remove redundant probes that can be reconstructed from neighbors.
     Adapted from Source SDK's CompressAmbientSampleList.
@@ -2291,13 +2398,22 @@ void ApexLegends::EmitLightProbes() {
         Sys_Printf("     Using single probe at world center\n");
     }
     
-    // Create base probe template
-    LightProbe_v50_t baseProbe;
+    // Create base probe template with correct default values
+    // Based on analysis of official Apex Legends BSP files
+    LightProbe_t baseProbe;
     memset(&baseProbe, 0, sizeof(baseProbe));
     baseProbe.staticLightIndexes[0] = 0xFFFF;
     baseProbe.staticLightIndexes[1] = 0xFFFF;
     baseProbe.staticLightIndexes[2] = 0xFFFF;
     baseProbe.staticLightIndexes[3] = 0xFFFF;
+    baseProbe.staticLightFlags[0] = 0xFF;  // First flag byte is always 0xFF in official maps
+    baseProbe.staticLightFlags[1] = 0x00;
+    baseProbe.staticLightFlags[2] = 0x00;
+    baseProbe.staticLightFlags[3] = 0x00;
+    baseProbe.lightingFlags = 0x0096;      // Usually 150 (0x96) in official maps
+    baseProbe.reserved = 0xFFFF;           // Usually 0xFFFF in official maps
+    baseProbe.padding0 = 0xFFFFFFFF;       // Usually 0xFFFFFFFF in official maps  
+    baseProbe.padding1 = 0x00000000;       // Always 0 in official maps
     
     // Compute per-probe lighting using spherical sampling
     Sys_Printf("     Computing probe lighting using 162-direction spherical sampling...\n");
@@ -2332,10 +2448,14 @@ void ApexLegends::EmitLightProbes() {
     
     // Convert candidates to final probe data
     for (const ProbeCandidate &candidate : candidates) {
-        LightProbe_v50_t probe = baseProbe;
+        LightProbe_t probe = baseProbe;
         
         // Convert 6-sided cube to spherical harmonics
         ConvertCubeToSphericalHarmonics(candidate.cube, probe);
+        
+        // Assign static worldlight indices for entity lighting
+        // This finds the most influential lights at this probe's position
+        AssignStaticLightsToProbe(candidate.pos, probe);
         
         ApexLegends::Bsp::lightprobes.push_back(probe);
         
@@ -2372,6 +2492,15 @@ void ApexLegends::EmitLightProbes() {
     Sys_Printf("     %9zu probe references\n", ApexLegends::Bsp::lightprobeReferences.size());
     Sys_Printf("     %9zu tree nodes\n", ApexLegends::Bsp::lightprobeTree.size());
     
+    // Count probes with static lights assigned
+    size_t probesWithLights = 0;
+    for (const auto &probe : ApexLegends::Bsp::lightprobes) {
+        if (probe.staticLightIndexes[0] != 0xFFFF) {
+            probesWithLights++;
+        }
+    }
+    Sys_Printf("     %9zu probes with static lights\n", probesWithLights);
+    
     // Export probe positions for visualization in Radiant
     if (!ApexLegends::Bsp::lightprobeReferences.empty()) {
         // Write .probes file (simple XYZ format, one probe per line)
@@ -2391,13 +2520,14 @@ void ApexLegends::EmitLightProbes() {
                 // Get the probe's ambient color from spherical harmonics (DC term)
                 float r = 0.5f, g = 0.5f, b = 0.5f;  // default gray
                 if (ref.lightProbeIndex < ApexLegends::Bsp::lightprobes.size()) {
-                    const LightProbe_v50_t &probe = ApexLegends::Bsp::lightprobes[ref.lightProbeIndex];
-                    // SH DC term is the average ambient - extract from coefficient 0
+                    const LightProbe_t &probe = ApexLegends::Bsp::lightprobes[ref.lightProbeIndex];
+                    // SH DC term is the average ambient - extract from coefficient 3 (not 0!)
                     // ambientSH[channel][coefficient] where channel 0=R, 1=G, 2=B
-                    // The DC coefficient (index 0) represents average irradiance
-                    r = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[0][0] / 32767.0f));
-                    g = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[1][0] / 32767.0f));
-                    b = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[2][0] / 32767.0f));
+                    // Coefficients: [0]=X gradient, [1]=Y gradient, [2]=Z gradient, [3]=DC
+                    // Scale back from int16 range using the same scale factor (2500)
+                    r = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[0][3] / 2500.0f));
+                    g = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[1][3] / 2500.0f));
+                    b = std::min(1.0f, std::max(0.0f, (float)probe.ambientSH[2][3] / 2500.0f));
                 }
                 
                 fprintf(probesFile, "%.2f %.2f %.2f %.3f %.3f %.3f\n", 
