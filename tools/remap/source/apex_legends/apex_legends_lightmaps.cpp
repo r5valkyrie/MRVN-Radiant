@@ -82,7 +82,7 @@ constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(45 degrees)
 constexpr int LIGHT_PROBE_GRID_SPACING = 256;   // Units between probes on grid
 constexpr int LIGHT_PROBE_MIN_SPACING = 128;    // Minimum spacing between probes
 constexpr int LIGHT_PROBE_MAX_PER_AXIS = 64;    // Max probes per axis (prevent explosion)
-constexpr int LIGHT_PROBE_MAX_COUNT = 1024;    // Maximum total light probes
+constexpr int LIGHT_PROBE_MAX_COUNT = 10000;    // Maximum total light probes
 constexpr float LIGHT_PROBE_TRACE_DIST = 16384.0f;  // Ray trace distance
 
 
@@ -2519,13 +2519,16 @@ static void AssignStaticLightsToProbe(const Vector3 &probePos, LightProbe_t &pro
         }
     }
     
-    // Set staticLightFlags based on valid light count
-    // From analysis: flags[0] is 0xFF when there are valid lights, 0x00 otherwise
-    // flags[1-3] are typically 0x00
-    probe.staticLightFlags[0] = (validLightCount > 0) ? 0xFF : 0x00;
-    probe.staticLightFlags[1] = 0x00;
-    probe.staticLightFlags[2] = 0x00;
-    probe.staticLightFlags[3] = 0x00;
+    // Set staticLightFlags - each VALID light slot needs 0xFF!
+    // CRITICAL: Game breaks the loop when flag == 0, so each valid slot must have 0xFF
+    // Pattern from official maps:
+    //   1 light:  (255, 0, 0, 0)
+    //   2 lights: (255, 255, 0, 0)
+    //   3 lights: (255, 255, 255, 0)
+    //   4 lights: (255, 255, 255, 255)
+    for (int slot = 0; slot < 4; slot++) {
+        probe.staticLightFlags[slot] = (slot < validLightCount) ? 0xFF : 0x00;
+    }
 }
 
 /*
@@ -2945,7 +2948,9 @@ void ApexLegends::EmitLightProbes() {
     baseProbe.staticLightIndexes[1] = 0xFFFF;
     baseProbe.staticLightIndexes[2] = 0xFFFF;
     baseProbe.staticLightIndexes[3] = 0xFFFF;
-    baseProbe.staticLightFlags[0] = 0xFF;  // First flag byte is always 0xFF in official maps
+    // staticLightFlags: 0xFF for each valid light slot, 0x00 for unused
+    // Template starts with no valid lights - AssignNearestLights will set these
+    baseProbe.staticLightFlags[0] = 0x00;
     baseProbe.staticLightFlags[1] = 0x00;
     baseProbe.staticLightFlags[2] = 0x00;
     baseProbe.staticLightFlags[3] = 0x00;
