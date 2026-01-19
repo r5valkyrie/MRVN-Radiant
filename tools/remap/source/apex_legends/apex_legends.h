@@ -133,6 +133,98 @@ struct ShadowMeshAlphaVertex_t {
 #pragma pack(pop)
 static_assert(sizeof(ShadowMeshAlphaVertex_t) == 20, "ShadowMeshAlphaVertex_t must be exactly 20 bytes");
 
+// Light Probe structure (lump 0x65)
+// Version differences:
+//   v47-v50: 48 bytes (dlightprobe_v50_t) - extra 4 bytes of unknown data
+//   v51+:    44 bytes (dlightprobe_t) - current format
+// We use v51+ format (44 bytes) since Apex v47+ BSP loader supports both
+// Stores ambient lighting as spherical harmonics + references to static lights
+// Used by Mod_LeafAmbientColorAtPosWithNormal for ambient lighting lookups
+#pragma pack(push, 1)
+struct LightProbe_t {
+    int16_t  ambientSH[3][4];    // +0x00 - Spherical harmonics for R, G, B (24 bytes)
+                                 //         Each row: [X, Y, Z, DC] coefficients
+                                 //         DC component scaled to ~0x2000 for neutral
+    uint16_t staticLightIndexes[4]; // +0x18 - Indices into worldLights (8 bytes)
+                                    //         0xFFFF = no light, otherwise index + 32
+    uint8_t  staticLightFlags[4];   // +0x20 - Flags for each static light (4 bytes)
+    uint32_t padding0;              // +0x24 - Padding (4 bytes)
+    uint32_t padding1;              // +0x28 - Padding (4 bytes)
+};
+#pragma pack(pop)
+static_assert(sizeof(LightProbe_t) == 44, "LightProbe_t must be exactly 44 bytes");
+
+// Light Probe v50 structure (lump 0x65) - for BSP versions 47-50
+// Contains extra unknown field compared to v51+ format
+#pragma pack(push, 1)
+struct LightProbe_v50_t {
+    int16_t  ambientSH[3][4];       // +0x00 - Spherical harmonics for R, G, B (24 bytes)
+    uint16_t staticLightIndexes[4]; // +0x18 - Indices into worldLights (8 bytes)
+    uint8_t  staticLightFlags[4];   // +0x20 - Flags for each static light (4 bytes)
+    uint32_t unknown;               // +0x24 - Unknown (extra in v50)
+    uint32_t padding0;              // +0x28 - Padding (4 bytes)
+    uint32_t padding1;              // +0x2C - Padding (4 bytes)
+};
+#pragma pack(pop)
+static_assert(sizeof(LightProbe_v50_t) == 48, "LightProbe_v50_t must be exactly 48 bytes");
+
+// Light Probe Reference (lump 0x68) - 20 bytes  
+// References a light probe in the spatial lookup tree
+#pragma pack(push, 1)
+struct LightProbeRef_t {
+    Vector3  origin;             // +0x00 - Position of the probe (12 bytes)
+    uint32_t lightProbeIndex;    // +0x0C - Index into lightprobes lump
+    int16_t  cubemapID;          // +0x10 - Cubemap index (-1 = invalid)
+    int16_t  padding;            // +0x12 - Padding/unknown
+};
+#pragma pack(pop)
+static_assert(sizeof(LightProbeRef_t) == 20, "LightProbeRef_t must be exactly 20 bytes");
+
+// Light Probe Tree Node (lump 0x67) - 8 bytes
+// Binary tree for spatial light probe lookup
+// Tag format: (index << 2) | type
+//   type 0: internal node, split on X axis
+//   type 1: internal node, split on Y axis
+//   type 2: internal node, split on Z axis
+//   type 3: leaf node pointing to LightProbeRef range
+#pragma pack(push, 1)
+struct LightProbeTree_t {
+    uint32_t tag;                // +0x00 - Encoded type and child/ref index
+    union {
+        float    splitValue;     // +0x04 - Split plane coordinate (for internal nodes, type 0-2)
+        uint32_t refCount;       // +0x04 - Number of probe refs (for leaf nodes, type 3)
+    };
+};
+#pragma pack(pop)
+static_assert(sizeof(LightProbeTree_t) == 8, "LightProbeTree_t must be exactly 8 bytes");
+
+// Cubemap Sample (lump 0x2A) - 16 bytes
+// Defines positions where cubemaps should be captured
+// The engine's buildcubemaps command uses these to create environment maps
+// NOTE: Origin is stored as int32[3] in the lump, engine converts to float
+#pragma pack(push, 1)
+struct CubemapSample_t {
+    int32_t  origin[3];          // +0x00 - Position for cubemap capture (as int32, converted to float by engine)
+    uint32_t guid;               // +0x0C - Asset GUID (0 if not pre-baked, runtime will generate)
+};
+#pragma pack(pop)
+static_assert(sizeof(CubemapSample_t) == 16, "CubemapSample_t must be exactly 16 bytes");
+
+// Light Probe Parent Info (lump 0x04) - 28 bytes
+// Associates light probes with brush models (0 = worldspawn)
+#pragma pack(push, 1)
+struct LightProbeParentInfo_t {
+    uint32_t brushIdx;           // +0x00 - Brush model index (0 for worldspawn)
+    uint32_t cubemapIdx;         // +0x04 - Associated cubemap index
+    uint32_t lightProbeCount;    // +0x08 - Number of light probes for this model
+    uint32_t firstLightProbeRef; // +0x0C - First reference index
+    uint32_t lightProbeTreeHead; // +0x10 - Root of probe tree
+    uint32_t lightProbeTreeNodeCount; // +0x14 - Number of tree nodes
+    uint32_t lightProbeRefCount; // +0x18 - Number of references
+};
+#pragma pack(pop)
+static_assert(sizeof(LightProbeParentInfo_t) == 28, "LightProbeParentInfo_t must be exactly 28 bytes");
+
 // CSM AABB Node (lump 0x63) - 32 bytes
 // Bounding volume hierarchy for cascaded shadow map culling
 #pragma pack(push, 1)
@@ -168,11 +260,18 @@ namespace ApexLegends {
     void        EmitVisTree();
     void        EmitLevelInfo();
     void        EmitWorldLights();
+    void        EmitCubemaps();
     void        EmitShadowEnvironments();
     void        EmitShadowMeshes();
     void        EmitLightmaps();
     void        SetupSurfaceLightmaps();
     void        ComputeLightmapLighting();
+    
+    // Light probe system - generates ambient lighting data for the map
+    // Light probes store spherical harmonics for ambient + references to static lights
+    void        EmitLightProbes();
+    void        EmitLightProbeTree();
+    void        EmitRealTimeLightmaps();
     
     // Lightmap UV lookup - returns UV in [0,1] range for the lightmap atlas
     // Returns false if mesh has no lightmap allocation
@@ -452,18 +551,25 @@ namespace ApexLegends {
         inline std::vector<uint8_t>             lightmapDataRTLPage;    // Lump 0x5A
         inline std::vector<LightmapPage_t>      lightmapPages;          // Working data during build
 
+        // Light probe lumps (0x04, 0x65-0x68)
+        // These provide ambient lighting for models and world geometry
+        inline std::vector<LightProbeParentInfo_t> lightprobeParentInfos;   // Lump 0x04
+        inline std::vector<LightProbe_v50_t>       lightprobes;             // Lump 0x65 (48 bytes for v50)
+        inline std::vector<uint32_t>               staticPropLightprobeIndices; // Lump 0x66
+        inline std::vector<LightProbeTree_t>       lightprobeTree;          // Lump 0x67
+        inline std::vector<LightProbeRef_t>        lightprobeReferences;    // Lump 0x68
+        
+        // Realtime light data (lump 0x69)
+        // Per-texel data for dynamic lights affecting lightmapped surfaces
+        inline std::vector<uint8_t>                lightmapDataRealTimeLights; // Lump 0x69
+        
+        // Cubemap lumps (0x2A, 0x2B)
+        inline std::vector<CubemapSample_t>      cubemaps;            // Lump 0x2A - cubemap sample positions
+        inline std::vector<float>                cubemapsAmbientRcp;  // Lump 0x2B - ambient reciprocal per cubemap
+        
         // Stubs (for lumps not yet implemented)
-        inline std::vector<uint8_t>  lightprobeParentInfos_stub;
         inline std::vector<uint8_t>  surfaceProperties_stub;
         inline std::vector<uint8_t>  unknown25_stub;
         inline std::vector<uint8_t>  unknown27_stub;
-        inline std::vector<uint8_t>  cubemaps_stub;
-        
-        // Realtime lighting lumps (stubs for now)
-        inline std::vector<uint8_t>  lightprobes_stub;                  // Lump 0x65
-        inline std::vector<uint8_t>  staticPropLightprobeIndices_stub;  // Lump 0x66
-        inline std::vector<uint8_t>  lightprobeTree_stub;               // Lump 0x67
-        inline std::vector<uint8_t>  lightprobeReferences_stub;         // Lump 0x68
-        inline std::vector<uint8_t>  lightmapDataRealTimeLights_stub;   // Lump 0x69
     }
 }

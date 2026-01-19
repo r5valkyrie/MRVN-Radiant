@@ -57,6 +57,7 @@
 #include "entityinspector.h"
 #include "entitylist.h"
 #include "points.h"
+#include "probes.h"
 #include "gtkmisc.h"
 #include "texwindow.h"
 #include "modelwindow.h"
@@ -252,6 +253,7 @@ public:
 		Grid_construct();
 		MRU_Construct();
 		Pointfile_Construct();
+		Probes_Construct();
 		BuildMenu_Construct();
 		Map_Construct();
 		EntityList_Construct();
@@ -293,6 +295,7 @@ public:
 		EntityList_Destroy();
 		Map_Destroy();
 		BuildMenu_Destroy();
+		Probes_Destroy();
 		Pointfile_Destroy();
 		MRU_Destroy();
 		Grid_destroy();

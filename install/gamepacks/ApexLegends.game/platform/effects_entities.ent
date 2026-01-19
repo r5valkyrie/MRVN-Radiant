@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+
+<classes>
+<list name="script_names_fx">
+<item name="wraith_tt_portal_fx" value="wraith_tt_portal_fx"/>
+</list>
+
+<list name="editor_classes_fx">
+<item name="info_particle_system_clientside" value="info_particle_system_clientside"/>
+</list>
+
+<point name="info_particle_system" color="1 0 1" box="-8 -8 -8 8 8 8">
+----- KEYS -----
+<angles key="angles" name="angles">Auto-generated</angles>
+<boolean key="ClientSide" name="ClientSide">Auto-generated</boolean>
+<editor_classes_fx key="editorclass" name="editorclass">Auto-generated</editor_classes_fx>
+<string key="effect_name" name="effect_name">Auto-generated</string>
+<string key="flag_reverse" name="flag_reverse">Auto-generated</string>
+<color key="fogcolor" name="fogcolor">Auto-generated</color>
+<string key="fogenable" name="fogenable">Auto-generated</string>
+<string key="in_skybox" name="in_skybox">Auto-generated</string>
+<boolean key="kill_for_replay" name="kill_for_replay">Auto-generated</boolean>
+<boolean key="kill_if_over_limit" name="kill_if_over_limit">Auto-generated</boolean>
+<string key="link_guid" name="link_guid">Auto-generated</string>
+<model key="model" name="model">Auto-generated</model>
+<real3 key="origin" name="origin">Auto-generated</real3>
+<string key="parentBrushModel" name="parentBrushModel">Auto-generated</string>
+<boolean key="playEndCap" name="playEndCap">Auto-generated</boolean>
+<string key="radius" name="radius">Auto-generated</string>
+<real key="scale" name="scale">Auto-generated</real>
+<string key="script_flag" name="script_flag">Auto-generated</string>
+<script_names_fx key="script_name" name="script_name">Auto-generated</script_names_fx>
+<string key="solid" name="solid">Auto-generated</string>
+<string key="spawnclass" name="spawnclass">Auto-generated</string>
+<boolean key="start_active" name="start_active">Auto-generated</boolean>
+<string key="start_delay" name="start_delay">Auto-generated</string>
+<string key="stop_delay" name="stop_delay">Auto-generated</string>
+<targetname key="targetname" name="targetname">Auto-generated</targetname>
+<string key="VisibilityFlags" name="VisibilityFlags">Auto-generated</string>
+<string key="warmup_and_pause" name="warmup_and_pause">Auto-generated</string>
+<string key="warmup_time" name="warmup_time">Auto-generated</string>
+</point>
+
+</classes>
+

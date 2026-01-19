@@ -54,6 +54,7 @@ add_executable(radiant
                plugin.cpp
                plugintoolbar.cpp
                points.cpp
+               probes.cpp
                preferencedictionary.cpp
                preferences.cpp
                qe3.cpp

@@ -898,6 +898,7 @@ void create_file_menu( QMenuBar *menubar ){
 //	create_menu_item_with_mnemonic( menu, "&Refresh models", "RefreshReferences" );
 //	menu->addSeparator();
 	create_menu_item_with_mnemonic( menu, "&Pointfile", "TogglePointfile" );
+	create_menu_item_with_mnemonic( menu, "&Light Probes", "ToggleLightProbes" );
 	menu->addSeparator();
 	MRU_constructMenu( menu );
 	menu->addSeparator();
@@ -1801,7 +1802,55 @@ void MainFrame::Create(){
 
 		GroupDialog_show();
 	}
-	else // 4 way
+	else if ( CurrentStyle() == eComplete ) // Complete layout: 4 views + textures + console
+	{
+		window->setCentralWidget( m_hSplit = new QSplitter() );
+		
+		// Left side: 4 viewports in a 2x2 grid
+		QSplitter* viewportsHSplit = new QSplitter();
+		m_hSplit->addWidget( viewportsHSplit );
+		
+		m_vSplit = new QSplitter( Qt::Vertical );
+		m_vSplit2 = new QSplitter( Qt::Vertical );
+		viewportsHSplit->addWidget( m_vSplit );
+		viewportsHSplit->addWidget( m_vSplit2 );
+
+		// Camera (top-left)
+		m_pCamWnd = NewCamWnd();
+		GlobalCamera_setCamWnd( *m_pCamWnd );
+		CamWnd_setParent( *m_pCamWnd, window );
+		m_vSplit->addWidget( CamWnd_getWidget( *m_pCamWnd ) );
+
+		// YZ view (bottom-left)
+		m_pYZWnd = new XYWnd();
+		m_pYZWnd->SetViewType( YZ );
+		m_vSplit->addWidget( m_pYZWnd->GetWidget() );
+
+		// XY view (top-right)
+		m_pXYWnd = new XYWnd();
+		m_pXYWnd->SetViewType( XY );
+		m_vSplit2->addWidget( m_pXYWnd->GetWidget() );
+
+		// XZ view (bottom-right)
+		m_pXZWnd = new XYWnd();
+		m_pXZWnd->SetViewType( XZ );
+		m_vSplit2->addWidget( m_pXZWnd->GetWidget() );
+
+		// Right side: Textures on top, Console on bottom
+		QSplitter* rightPanel = new QSplitter( Qt::Vertical );
+		m_hSplit->addWidget( rightPanel );
+		
+		// Texture browser
+		rightPanel->addWidget( TextureBrowser_constructWindow( window ) );
+		
+		// Console
+		rightPanel->addWidget( Console_constructWindow() );
+		
+		// Set splitter proportions (viewports get more space)
+		m_hSplit->setStretchFactor( 0, 3 );
+		m_hSplit->setStretchFactor( 1, 1 );
+	}
+	else // 4 way (eSplit)
 	{
 		window->setCentralWidget( m_hSplit = new QSplitter() );
 		m_hSplit->addWidget( m_vSplit = new QSplitter( Qt::Vertical ) );
@@ -1998,7 +2047,7 @@ void GlobalGL_sharedContextDestroyed(){
 
 void Layout_constructPreferences( PreferencesPage& page ){
 	{
-		const char* layouts[] = { "window1.png", "window2.png", "window3.png", "window4.png" };
+		const char* layouts[] = { "window1.png", "window2.png", "window3.png", "window4.png", "window5.png" };
 		page.appendRadioIcons(
 		    "Window Layout",
 		    StringArrayRange( layouts ),
