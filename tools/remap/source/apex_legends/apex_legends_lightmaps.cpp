@@ -82,7 +82,7 @@ constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(0 degrees) - all edg
 constexpr int LIGHT_PROBE_GRID_SPACING = 256;   // Units between probes on grid
 constexpr int LIGHT_PROBE_MIN_SPACING = 128;    // Minimum spacing between probes
 constexpr int LIGHT_PROBE_MAX_PER_AXIS = 64;    // Max probes per axis (prevent explosion)
-constexpr int LIGHT_PROBE_MAX_COUNT = 10000;    // Maximum total light probes
+constexpr int LIGHT_PROBE_MAX_COUNT = -1;       // Maximum total light probes (-1 = unlimited)
 constexpr float LIGHT_PROBE_TRACE_DIST = 64000.0f;  // Ray trace distance
 
 
@@ -2073,12 +2073,17 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     float avgDimension = std::cbrt(worldVolume);
     
     // Aim for roughly GRID_SPACING spacing, but let geometry density influence
-    int targetProbes = std::max(8, std::min(LIGHT_PROBE_MAX_COUNT, 
-        (int)(worldVolume / (LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING))));
+    int targetProbes = std::max(8, 
+        (int)(worldVolume / (LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING)));
     
     // Increase target if we have dense geometry
     float densityFactor = std::min(4.0f, (float)candidatePositions.size() / 1000.0f);
-    targetProbes = std::min(LIGHT_PROBE_MAX_COUNT, (int)(targetProbes * (1.0f + densityFactor)));
+    targetProbes = (int)(targetProbes * (1.0f + densityFactor));
+    
+    // Apply max count limit if not unlimited (-1)
+    if (LIGHT_PROBE_MAX_COUNT >= 0) {
+        targetProbes = std::min(LIGHT_PROBE_MAX_COUNT, targetProbes);
+    }
     
     Sys_Printf("     Target probe count: %d (world avg dimension: %.0f)\n", targetProbes, avgDimension);
     
