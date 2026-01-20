@@ -30,6 +30,13 @@
 /*
     EmitVisTree
     Emits the vistree to the bsp file
+    
+    Generates:
+    - cellAABBNodes (lump 0x77): BVH nodes for visibility culling
+    - objReferences (lump 0x78): Object reference indices
+    - objReferenceBounds (lump 0x79): Bounds per object reference
+    - cellAABBNumObjRefsTotal (lump 0x25): Cumulative obj ref count per node
+    - cellAABBFadeDists (lump 0x27): Fade distances for LOD/streaming
 */
 void ApexLegends::EmitVisTree() {
     Shared::visNode_t &root = Shared::visRoot;
@@ -51,14 +58,22 @@ void ApexLegends::EmitVisTree() {
     bn.objRefCount = Shared::visRefs.size();
     bn.objRefFlags = 0x40;
     
-    // Emit all references with large bounds
+    // Emit all references with large bounds and fade distances
     for (Shared::visRef_t &ref : Shared::visRefs) {
         Titanfall::ObjReferenceBounds_t &rb = Titanfall::Bsp::objReferenceBounds.emplace_back();
         rb.maxs = largeMax;
         rb.mins = largeMin;
 
         ApexLegends::Bsp::objReferences.emplace_back(ref.index);
+        
+        // Fade distance: 0xFFFF = maximum draw distance (no fade)
+        ApexLegends::Bsp::cellAABBFadeDists.push_back(0xFFFF);
     }
+    
+    // Emit cumulative obj ref count for each AABB node
+    // For a single root node, this is just the total count
+    uint32_t numObjRefs = static_cast<uint32_t>(Shared::visRefs.size());
+    ApexLegends::Bsp::cellAABBNumObjRefsTotal.push_back(numObjRefs);
 }
 
 

@@ -76,14 +76,14 @@ constexpr int RADIOSITY_SAMPLES = 32;       // Hemisphere samples for indirect l
 
 // Phong shading settings (smooth normal interpolation)
 constexpr float PHONG_ANGLE_THRESHOLD = 45.0f;  // Degrees - edges sharper than this won't smooth
-constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(45 degrees)
+constexpr float SMOOTHING_GROUP_HARD_EDGE = 0.707f;  // cos(0 degrees) - all edges hard
 
 // Light probe settings (adapted from Source SDK leaf_ambient_lighting.cpp)
 constexpr int LIGHT_PROBE_GRID_SPACING = 256;   // Units between probes on grid
 constexpr int LIGHT_PROBE_MIN_SPACING = 128;    // Minimum spacing between probes
 constexpr int LIGHT_PROBE_MAX_PER_AXIS = 64;    // Max probes per axis (prevent explosion)
 constexpr int LIGHT_PROBE_MAX_COUNT = 10000;    // Maximum total light probes
-constexpr float LIGHT_PROBE_TRACE_DIST = 16384.0f;  // Ray trace distance
+constexpr float LIGHT_PROBE_TRACE_DIST = 64000.0f;  // Ray trace distance
 
 
 // =============================================================================
@@ -2509,10 +2509,15 @@ static void AssignStaticLightsToProbe(const Vector3 &probePos, LightProbe_t &pro
               });
     
     // Assign up to 4 lights
+    // CRITICAL: The game expects stored indices to be offset by (32 - numShadowEnvironments)
+    // Game retrieves actual index as: storedIndex - (32 - numShadowEnvironments)
+    // So we must store: actualIndex + (32 - numShadowEnvironments)
+    uint16_t lightIndexOffset = static_cast<uint16_t>(32 - ApexLegends::Bsp::shadowEnvironments.size());
+    
     int validLightCount = 0;
     for (int slot = 0; slot < 4; slot++) {
         if (slot < static_cast<int>(influences.size())) {
-            probe.staticLightIndexes[slot] = influences[slot].index;
+            probe.staticLightIndexes[slot] = influences[slot].index + lightIndexOffset;
             validLightCount++;
         } else {
             probe.staticLightIndexes[slot] = 0xFFFF;  // No light in this slot

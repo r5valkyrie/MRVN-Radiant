@@ -31,6 +31,8 @@
 #include <cstring>
 #include <map>
 #include <tuple>
+#include <string>
+#include <cctype>
 
 // BVH4 Collision System
 //
@@ -91,6 +93,7 @@ namespace {
         Vector3 normal;
         int contentFlags;
         int surfaceFlags;
+        int surfPropIdx;      // Index into Surface Properties lump
     };
 
     struct CollisionHull_t {
@@ -136,6 +139,96 @@ namespace {
     float g_bvhScale = 1.0f / 65536.0f;
     uint32_t g_modelPackedVertexBase = 0;
     uint32_t g_modelCollisionVertexBase = 0;
+
+    // Map from (surfaceFlags, contentFlags, surfaceName) to surface property index
+    // This ensures we don't emit duplicate surface property entries
+    std::map<std::tuple<uint16_t, int, std::string>, int> g_surfacePropertyMap;
+
+    // Emits a surface property and returns its index (0-2047 range, 11-bit)
+    // Surface properties link collision surfaces to material names, content masks, and surface flags
+    int EmitSurfaceProperty(int surfaceFlags, int contentFlags, const char* surfaceName) {
+        // Get or create contents mask index
+        int contentsIdx = ApexLegends::EmitContentsMask(contentFlags);
+        if (contentsIdx > 255) {
+            Sys_FPrintf(SYS_WRN, "Warning: Contents mask index %d exceeds uint8_t max, clamping\n", contentsIdx);
+            contentsIdx = 255;
+        }
+
+        // Sanitize surface name for the BSP (strip 'textures/' prefix, convert slashes)
+        std::string name = surfaceName ? surfaceName : "concrete";
+        if (name.rfind("textures/", 0) == 0) {
+            name.erase(0, 9);  // Remove 'textures/' prefix
+        }
+        std::replace(name.begin(), name.end(), '/', '\\');
+        // Convert to uppercase to match official maps
+        for (char& c : name) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+
+        // Clamp surfaceFlags to uint16
+        uint16_t surfFlags = static_cast<uint16_t>(surfaceFlags & 0xFFFF);
+
+        // Check if we already have this surface property
+        auto key = std::make_tuple(surfFlags, contentFlags, name);
+        auto it = g_surfacePropertyMap.find(key);
+        if (it != g_surfacePropertyMap.end()) {
+            return it->second;
+        }
+
+        // Find or add the surface name to the Surface Names lump (textureDataData)
+        // Search for exact null-terminated string match
+        size_t nameOffset = std::string::npos;
+        std::string searchName = name + '\0';
+        const char* tableData = Titanfall::Bsp::textureDataData.data();
+        size_t tableSize = Titanfall::Bsp::textureDataData.size();
+        
+        for (size_t pos = 0; pos < tableSize; ) {
+            // Find the end of current string
+            size_t strEnd = pos;
+            while (strEnd < tableSize && tableData[strEnd] != '\0') {
+                strEnd++;
+            }
+            
+            // Compare string at this position
+            size_t strLen = strEnd - pos;
+            if (strLen == name.size() && std::memcmp(tableData + pos, name.c_str(), strLen) == 0) {
+                nameOffset = pos;
+                break;
+            }
+            
+            // Move to next string (skip the null terminator)
+            pos = strEnd + 1;
+        }
+        
+        if (nameOffset == std::string::npos) {
+            // Not found, append it
+            nameOffset = Titanfall::Bsp::textureDataData.size();
+            Titanfall::Bsp::textureDataData.insert(
+                Titanfall::Bsp::textureDataData.end(),
+                name.begin(), name.end());
+            Titanfall::Bsp::textureDataData.push_back('\0');
+        }
+
+        // Create the surface property entry
+        ApexLegends::CollSurfProps_t prop;
+        prop.surfFlags = surfFlags;
+        prop.surfTypeID = 0;  // Default surface type (could be extended to parse from surfaceproperties.txt)
+        prop.contentsIdx = static_cast<uint8_t>(contentsIdx);
+        prop.nameOffset = static_cast<uint32_t>(nameOffset);
+
+        int propIdx = static_cast<int>(ApexLegends::Bsp::surfaceProperties.size());
+        
+        // Check if we exceed the 12-bit limit (0-4095, but bit 11 is a flag so 0-2047 safe)
+        if (propIdx >= 2048) {
+            Sys_FPrintf(SYS_WRN, "Warning: Surface property index %d exceeds 11-bit limit, clamping\n", propIdx);
+            return 2047;
+        }
+
+        ApexLegends::Bsp::surfaceProperties.push_back(prop);
+        g_surfacePropertyMap[key] = propIdx;
+
+        return propIdx;
+    }
 
     // Snaps vertex to grid to prevent floating point precision issues
     Vector3 SnapVertexToGrid(const Vector3& vert) {
@@ -526,6 +619,17 @@ namespace {
         return leafIndex;
     }
 
+    // Get the most common surface property index from a set of triangles
+    // Returns 0 if no triangles provided
+    int GetLeafSurfPropIdx(const std::vector<int>& triIndices) {
+        if (triIndices.empty()) {
+            return 0;
+        }
+        // Use the first triangle's surface property (they should all be the same material in a leaf)
+        // Could be extended to track per-poly surface properties if needed
+        return g_collisionTris[triIndices[0]].surfPropIdx;
+    }
+
     int SelectBestLeafType(const std::vector<int>& triIndices, int preferredType = BVH4_TYPE_TRISTRIP) {
         if (triIndices.empty()) {
             return BVH4_TYPE_EMPTY;
@@ -534,10 +638,12 @@ namespace {
         return BVH4_TYPE_TRISTRIP;
     }
 
-    int EmitLeafDataForType(int leafType, const std::vector<int>& triIndices, int surfPropIdx = 0) {
+    int EmitLeafDataForType(int leafType, const std::vector<int>& triIndices) {
         if (triIndices.empty()) {
             return 0;
         }
+
+        int surfPropIdx = GetLeafSurfPropIdx(triIndices);
 
         switch (leafType) {
             case BVH4_TYPE_TRISTRIP:
@@ -804,14 +910,20 @@ namespace {
 
     void CollectTrianglesFromMeshes() {
         g_collisionTris.clear();
+        g_surfacePropertyMap.clear();
 
         int skippedDegenerate = 0;
         int totalTris = 0;
 
         for (const Shared::Mesh_t& mesh : Shared::meshes) {
             int contentFlags = CONTENTS_SOLID;
+            int surfaceFlags = 0;
+            const char* surfaceName = "concrete";
+            
             if (mesh.shaderInfo) {
                 contentFlags = mesh.shaderInfo->contentFlags;
+                surfaceFlags = mesh.shaderInfo->surfaceFlags;
+                surfaceName = mesh.shaderInfo->shader.c_str();
 
                 if (!(contentFlags & CONTENTS_SOLID) &&
                     !(contentFlags & CONTENTS_PLAYERCLIP) &&
@@ -819,6 +931,9 @@ namespace {
                     continue;
                 }
             }
+
+            // Get or create surface property for this mesh
+            int surfPropIdx = EmitSurfaceProperty(surfaceFlags, contentFlags, surfaceName);
 
             const std::vector<Shared::Vertex_t>& verts = mesh.vertices;
             const std::vector<uint16_t>& indices = mesh.triangles;
@@ -845,7 +960,8 @@ namespace {
                 }
 
                 tri.contentFlags = contentFlags;
-                tri.surfaceFlags = mesh.shaderInfo ? mesh.shaderInfo->surfaceFlags : 0;
+                tri.surfaceFlags = surfaceFlags;
+                tri.surfPropIdx = surfPropIdx;
 
                 g_collisionTris.push_back(tri);
             }
@@ -945,6 +1061,7 @@ void ApexLegends::EmitBVHNode() {
     Sys_FPrintf(SYS_VRB, "  Emitted %zu BVH nodes\n", ApexLegends::Bsp::bvhNodes.size() - model.bvhNodeIndex);
     Sys_FPrintf(SYS_VRB, "  Emitted %zu BVH leaf data entries\n", ApexLegends::Bsp::bvhLeafDatas.size() - model.bvhLeafIndex);
     Sys_FPrintf(SYS_VRB, "  Emitted %zu collision vertices\n", ApexLegends::Bsp::collisionVertices.size() - g_modelCollisionVertexBase);
+    Sys_FPrintf(SYS_VRB, "  Emitted %zu surface properties\n", ApexLegends::Bsp::surfaceProperties.size());
 
     g_bvhBuildNodes.clear();
     g_collisionTris.clear();

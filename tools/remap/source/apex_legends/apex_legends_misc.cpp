@@ -30,6 +30,20 @@
     BeginModel
 */
 void ApexLegends::BeginModel(entity_t &entity) {
+    // Clear surface properties for first model (worldspawn)
+    if (ApexLegends::Bsp::models.empty()) {
+        ApexLegends::Bsp::surfaceProperties.clear();
+        
+        // Emit a default surface property at index 0 for fallback
+        // This ensures there's always at least one valid entry
+        ApexLegends::CollSurfProps_t defaultProp;
+        defaultProp.surfFlags = 0;
+        defaultProp.surfTypeID = 0;  // Default surface type
+        defaultProp.contentsIdx = 0; // Will reference CONTENTS_SOLID
+        defaultProp.nameOffset = 0;  // Will reference first string in Surface Names
+        ApexLegends::Bsp::surfaceProperties.push_back(defaultProp);
+    }
+    
     ApexLegends::Model_t &model = ApexLegends::Bsp::models.emplace_back();
     model.meshIndex = ApexLegends::Bsp::meshes.size();
     model.bvhNodeIndex = 0;  // Will be set by EmitBVHNode

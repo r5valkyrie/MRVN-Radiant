@@ -362,6 +362,21 @@ namespace ApexLegends {
     };
     static_assert(sizeof(BVHNode_t) == 64, "BVHNode_t must be exactly 64 bytes");
 
+    // 0x11 - CollSurfProps_s (8 bytes)
+    // Surface properties for collision system
+    // References Surface Names lump (0x0F) via nameOffset
+    // References Contents Masks lump (0x10) via contentsIdx
+    // From IDA reverse engineering of Coll_ExpandQueryResultProperties
+    #pragma pack(push, 1)
+    struct CollSurfProps_t {
+        uint16_t surfFlags;      // +0x00: Surface flags (SURF_* flags)
+        uint8_t  surfTypeID;     // +0x02: Surface type ID (for footsteps, impacts, decals)
+        uint8_t  contentsIdx;    // +0x03: Index into Contents Masks lump
+        uint32_t nameOffset;     // +0x04: Offset into Surface Names lump
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(CollSurfProps_t) == 8, "CollSurfProps_t must be exactly 8 bytes");
+
     // 0x47
     struct VertexUnlit_t {
         uint32_t  vertexIndex;
@@ -575,9 +590,12 @@ namespace ApexLegends {
         inline std::vector<CubemapSample_t>      cubemaps;            // Lump 0x2A - cubemap sample positions
         inline std::vector<float>                cubemapsAmbientRcp;  // Lump 0x2B - ambient reciprocal per cubemap
         
-        // Stubs (for lumps not yet implemented)
-        inline std::vector<uint8_t>  surfaceProperties_stub;
-        inline std::vector<uint8_t>  unknown25_stub;
-        inline std::vector<uint8_t>  unknown27_stub;
+        // Surface Properties lump (0x11)
+        // Maps surface property indices to contents masks, surface types, and surface names
+        inline std::vector<CollSurfProps_t>      surfaceProperties;   // Lump 0x11
+        
+        // Cell AABB system lumps (visibility/streaming)
+        inline std::vector<uint32_t>             cellAABBNumObjRefsTotal;  // Lump 0x25 - cumulative obj ref count per node
+        inline std::vector<uint16_t>             cellAABBFadeDists;        // Lump 0x27 - fade distances for objects
     }
 }

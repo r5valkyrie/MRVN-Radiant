@@ -174,17 +174,22 @@
 #define R5_LUMP_BVH_NODES						0x12
 #define R5_LUMP_BVH_LEAF_DATA					0x13
 #define R5_LUMP_PACKED_VERTICES					0x14
+#define R5_LUMP_COLL_HEIGHTFIELDS				0x15  // Heightfield collision definitions
+#define R5_LUMP_COLL_HEIGHTFIELD_SAMPLES		0x16  // Heightfield height samples
 #define R5_LUMP_ENTITY_PARTITIONS				0x18
 #define R5_LUMP_VERTEX_NORMALS					0x1E
 #define R5_LUMP_GAME_LUMP						0x23
-#define R5_LUMP_UNKNOWN_37						0x25
-#define R5_LUMP_CSM_NUM_OBJ_REFS_TOTAL			0x26  // numObjRefsTotalForAabb - cumulative obj ref count per AABB node
-#define R5_LUMP_UNKNOWN_38						0x26  // Deprecated alias
-#define R5_LUMP_UNKNOWN_39						0x27
+#define R5_LUMP_CELL_AABB_NUM_OBJ_REFS_TOTAL	0x25  // Cumulative obj ref count per cell AABB node
+#define R5_LUMP_CSM_AABB_NUM_OBJ_REFS_TOTAL		0x26  // Cumulative obj ref count per CSM AABB node
+#define R5_LUMP_CELL_AABB_FADEDISTS				0x27  // Fade distances for cell AABB objects
 #define R5_LUMP_PAKFILE							0x28
 #define R5_LUMP_CUBEMAPS						0x2A
 #define R5_LUMP_CUBEMAPS_AMBIENT_RCP			0x2B
-#define R5_LUMP_UNKNOWN_43						0x2B  // Deprecated alias
+#define R5_LUMP_WATER_BODIES					0x2C  // Water body definitions
+#define R5_LUMP_WATER_NODES						0x2D  // Water body BVH nodes
+#define R5_LUMP_WATER_BODY_VERTS				0x2E  // Water mesh vertices
+#define R5_LUMP_WATER_BODY_INDICES				0x2F  // Water mesh indices
+#define R5_LUMP_WATER_WAVE_DATA					0x30  // Water wave simulation data
 #define R5_LUMP_WORLD_LIGHTS					0x36
 #define R5_LUMP_WORLD_LIGHT_PARENT_INFOS		0x37
 #define R5_LUMP_VERTEX_UNLIT					0x47
@@ -201,7 +206,8 @@
 #define R5_LUMP_MATERIAL_SORT					0x52
 #define R5_LUMP_LIGHTMAP_HEADERS				0x53
 #define R5_LUMP_TWEAK_LIGHTS					0x55
-#define R5_LUMP_UNKNOWN_97						0x61
+#define R5_LUMP_SOUND_PROBES					0x60  // Sound probe data for audio propagation
+#define R5_LUMP_LIGHTMAP_DATA_SKY_COMPRESSED	0x61  // Compressed sky lightmap data
 #define R5_LUMP_LIGHTMAP_DATA_SKY				0x62
 #define R5_LUMP_CSM_AABB_NODES					0x63
 #define R5_LUMP_CSM_OBJ_REFERENCES				0x64
