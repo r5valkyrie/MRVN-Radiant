@@ -20,11 +20,20 @@ MRVN-Radiant is a fork of NetRadiant-custom (GtkRadiant 1.4 &rarr; massive rewri
 |------|----------|------|
 | Titanfall Online | 38% | No triangle collision, no lighting, no portals |
 | Titanfall 2 | 37% | No triangle collision, no lighting, no portals |
-| Apex Legends | 50% | basic lighting, no portals, no culling |
+| Apex Legends | 62% | No realtime lights, no portals, no water, no heightfields |
 
-> Coverage = Lumps generated / Total lump count. Stubbed lumps arent counted because they're not custom.
+> Coverage = Lumps with generated data / Total lump count (128). Stub/empty lumps not counted.
 
 > NOTE: These values are updated manually.
+
+### Apex Legends Features
+- **Geometry**: Meshes, mesh bounds, vertex types (unlit, lit flat, lit bump, unlit TS)
+- **Collision**: BVH nodes, packed vertices, contents masks, surface properties
+- **Lighting**: HDR lightmaps, light probes, world lights (point/spot/sky)
+- **Shadows**: Shadow meshes (opaque/alpha), shadow environments, CSM AABB tree
+- **Visibility**: Cell AABB tree, object references, fade distances, occlusion meshes
+- **Materials**: Texture data, material sorts, surface names
+- **Misc**: Cubemaps, static props (game lump), entity partitions, level info
 
 ## Other tools
 - [bsp_tool](https://github.com/snake-biscuits/bsp_tool)
