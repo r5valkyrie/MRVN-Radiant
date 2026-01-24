@@ -1,6 +1,6 @@
 /* -------------------------------------------------------------------------------
 
-   Copyright (C) 2022-2023 MRVN-Radiant and contributors.
+   Copyright (C) 2022-2025 MRVN-Radiant and contributors.
    For a list of contributors, see the accompanying CONTRIBUTORS file.
 
    This file is part of MRVN-Radiant.
@@ -21,13 +21,23 @@
 
    ------------------------------------------------------------------------------- */
 
+/*
+    Apex Legends Model Lumps
+
+    This file handles model-related BSP lumps:
+    - Models lump (0x0F): Model descriptors
+    - Level Info lump (0x7B): Level information
+*/
 
 #include "../remap.h"
 #include "../bspfile_abstract.h"
-#include <ctime>
 
 /*
     BeginModel
+    Begins emitting a model (brush entity) into the BSP
+    
+    This function initializes a new model entry and sets up surface properties
+    for the first model (worldspawn).
 */
 void ApexLegends::BeginModel(entity_t &entity) {
     // Clear surface properties for first model (worldspawn)
@@ -56,6 +66,10 @@ void ApexLegends::BeginModel(entity_t &entity) {
 
 /*
     EndModel
+    Ends emitting a model into the BSP
+    
+    This function finalizes the model by setting the mesh count and
+    computing the model bounds from its mesh bounds.
 */
 void ApexLegends::EndModel() {
     ApexLegends::Model_t &model = ApexLegends::Bsp::models.back();
@@ -66,5 +80,50 @@ void ApexLegends::EndModel() {
         Titanfall::MeshBounds_t &meshBounds = Titanfall::Bsp::meshBounds.at(i);
         model.minmax.extend(meshBounds.origin - meshBounds.extents);
         model.minmax.extend(meshBounds.origin + meshBounds.extents);
+    }
+}
+
+/*
+    EmitLevelInfo
+    Emits apex level info
+    
+    Level info contains global level data including:
+    - Various unknown fields
+    - Model count
+    - Sun direction vector (from light_environment)
+*/
+void ApexLegends::EmitLevelInfo() {
+    ApexLegends::LevelInfo_t &li = ApexLegends::Bsp::levelInfo.emplace_back();
+    li.unk0 = 51;
+    li.unk1 = 51;
+    li.unk2 = 51;
+    li.unk3 = 256;
+    li.unk4 = 22;
+
+    // Find the last light_environment entity and extract sun direction for unk5
+    // unk5 is the sun direction vector used by the engine
+    Vector3 sunDir(0.0f, 0.0f, -1.0f);  // Default: straight down
+    for (const entity_t& e : entities) {
+        if (striEqual(e.classname(), "light_environment")) {
+            // Get sun direction from angles
+            // light_environment uses "angles" key with format "pitch yaw roll"
+            // or separate "pitch" key. The pitch key seems to be the primary one.
+            Vector3 angles = e.vectorForKey("angles");
+            float pitch = e.floatForKey("pitch", "0");
+            // If pitch key exists, it takes precedence (and is often the negative)
+            if (e.valueForKey("pitch")) {
+                angles[0] = -pitch;  // pitch key is negative of the actual pitch
+            }
+            sunDir = ApexLegends::vector3_from_angles(angles);
+        }
+    }
+    li.unk5[0] = sunDir.x();
+    li.unk5[1] = sunDir.y();
+    li.unk5[2] = sunDir.z();
+
+    li.modelCount = 0;
+    for( Model_t &model : ApexLegends::Bsp::models ) {
+        if( model.meshCount )
+            li.modelCount++;
     }
 }

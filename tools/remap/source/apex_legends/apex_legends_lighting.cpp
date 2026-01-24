@@ -1,6 +1,6 @@
 /* -------------------------------------------------------------------------------
 
-   Copyright (C) 2022-2023 MRVN-Radiant and contributors.
+   Copyright (C) 2022-2025 MRVN-Radiant and contributors.
    For a list of contributors, see the accompanying CONTRIBUTORS file.
 
    This file is part of MRVN-Radiant.
@@ -21,256 +21,23 @@
 
    ------------------------------------------------------------------------------- */
 
+/*
+    Apex Legends Lighting Lumps
+
+    This file handles lighting-related BSP lumps:
+    - World Lights lump (0x36): Dynamic light sources
+    - Cubemaps lump (0x2A): Cubemap sample positions
+    - Cubemaps Ambient RCP lump (0x2B): Ambient reciprocal per cubemap
+    - Shadow Environments lump (0x05): Shadow environment data
+    - Shadow Mesh lumps (0x7C-0x7F): Shadow mesh geometry
+    - CSM AABB lumps (0x63-0x64): Cascaded shadow map data
+*/
 
 #include "../remap.h"
 #include "../bspfile_abstract.h"
-#include "../embree_trace.h"
-#include <ctime>
-#include <cstdio>
+#include <algorithm>
+#include <cmath>
 #include <unordered_map>
-#include <cfloat>
-
-
-/*
-   LoadR2BSPFile()
-   loads a titanfall2 bsp file
-*/
-void LoadR5BSPFile(rbspHeader_t *header, const char *filename) {
-    // Nothing yet
-}
-
-
-/*
-   WriteR2BSPFile()
-   writes a apex bsp file
-*/
-void WriteR5BSPFile(const char *filename) {
-    rbspHeader_t header{};
-
-    /* set up header */
-    memcpy(header.ident, g_game->bspIdent, 4);
-    header.version = LittleLong(g_game->bspVersion);
-    header.mapVersion = 30;
-    header.maxLump = 127;
-
-    /* write initial header */
-    FILE* file = SafeOpenWrite(filename);
-    SafeWrite(file, &header, sizeof(header));    /* overwritten later */
-
-
-    /* :) */
-    {
-        char message[64] = REMAP_MOTD;
-        SafeWrite(file, &message, sizeof(message));
-    }
-    {
-        char message[64];
-        strncpy(message, StringOutputStream(64)("Version:        ", Q3MAP_VERSION).c_str(), 63);
-        SafeWrite(file, &message, sizeof(message));
-    }
-    {
-        time_t t;
-        time(&t);
-        char message[64];
-        strncpy(message, StringOutputStream(64)("Time:           ", asctime(localtime(&t))).c_str(), 63);
-        SafeWrite(file, &message, sizeof(message));
-    }
-
-    /* Write lumps */
-    AddLump(file, header.lumps[R5_LUMP_ENTITIES],                 Titanfall::Bsp::entities);
-    AddLump(file, header.lumps[R5_LUMP_TEXTURE_DATA],             ApexLegends::Bsp::textureData);
-    
-    // Write lump 3: Render vertices followed by collision vertices
-    // Both are float3 format. Collision's model.vertexIndex points past render verts.
-    {
-        header.lumps[R5_LUMP_VERTICES].offset = ftell(file);
-        // Write render vertices first
-        if (!Titanfall::Bsp::vertices.empty()) {
-            SafeWrite(file, Titanfall::Bsp::vertices.data(), 
-                      Titanfall::Bsp::vertices.size() * sizeof(Vector3));
-        }
-        // Append collision vertices
-        if (!ApexLegends::Bsp::collisionVertices.empty()) {
-            SafeWrite(file, ApexLegends::Bsp::collisionVertices.data(),
-                      ApexLegends::Bsp::collisionVertices.size() * sizeof(ApexLegends::CollisionVertex_t));
-        }
-        header.lumps[R5_LUMP_VERTICES].length = ftell(file) - header.lumps[R5_LUMP_VERTICES].offset;
-    }
-    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBE_PARENT_INFOS],  ApexLegends::Bsp::lightprobeParentInfos);
-    AddLump(file, header.lumps[R5_LUMP_SHADOW_ENVIRONMENTS],      ApexLegends::Bsp::shadowEnvironments);
-    AddLump(file, header.lumps[R5_LUMP_MODELS],                   ApexLegends::Bsp::models);
-    AddLump(file, header.lumps[R5_LUMP_SURFACE_NAMES],            Titanfall::Bsp::textureDataData);
-    AddLump(file, header.lumps[R5_LUMP_CONTENTS_MASKS],           ApexLegends::Bsp::contentsMasks);
-    AddLump(file, header.lumps[R5_LUMP_SURFACE_PROPERTIES],       ApexLegends::Bsp::surfaceProperties);
-    AddLump(file, header.lumps[R5_LUMP_BVH_NODES],                ApexLegends::Bsp::bvhNodes);
-    AddLump(file, header.lumps[R5_LUMP_BVH_LEAF_DATA],            ApexLegends::Bsp::bvhLeafDatas);
-    AddLump(file, header.lumps[R5_LUMP_PACKED_VERTICES],          ApexLegends::Bsp::packedVertices);
-    AddLump(file, header.lumps[R5_LUMP_ENTITY_PARTITIONS],        Titanfall::Bsp::entityPartitions);
-    AddLump(file, header.lumps[R5_LUMP_VERTEX_NORMALS],           Titanfall::Bsp::vertexNormals);
-
-    // GameLump
-    {
-        header.lumps[R5_LUMP_GAME_LUMP].offset = ftell(file);
-        header.lumps[R5_LUMP_GAME_LUMP].length = sizeof(Titanfall2::GameLumpHeader_t)
-                                               + sizeof(Titanfall2::GameLumpPathHeader_t)
-                                               + sizeof(Titanfall::GameLumpPath_t) * Titanfall2::Bsp::gameLumpPathHeader.numPaths
-                                               + sizeof(Titanfall2::GameLumpPropHeader_t)
-                                               + sizeof(Titanfall2::GameLumpProp_t) * Titanfall2::Bsp::gameLumpPropHeader.numProps
-                                               + sizeof(Titanfall2::GameLumpUnknownHeader_t);
-
-        Titanfall2::Bsp::gameLumpHeader.offset = ftell(file) + sizeof(Titanfall2::GameLumpHeader_t);
-        Titanfall2::Bsp::gameLumpHeader.length = sizeof(Titanfall2::GameLumpPathHeader_t)
-                                              + sizeof(Titanfall::GameLumpPath_t) * Titanfall2::Bsp::gameLumpPathHeader.numPaths
-                                              + sizeof(Titanfall2::GameLumpPropHeader_t)
-                                              + sizeof(Titanfall2::GameLumpProp_t) * Titanfall2::Bsp::gameLumpPropHeader.numProps
-                                              + sizeof(Titanfall2::GameLumpUnknownHeader_t);
-
-        SafeWrite(file, &Titanfall2::Bsp::gameLumpHeader, sizeof(Titanfall2::GameLumpHeader_t));
-        SafeWrite(file, &Titanfall2::Bsp::gameLumpPathHeader, sizeof(Titanfall2::GameLumpPathHeader_t));
-        SafeWrite(file, Titanfall::Bsp::gameLumpPaths.data(), sizeof(Titanfall::GameLumpPath_t) * Titanfall::Bsp::gameLumpPaths.size());
-        SafeWrite(file, &Titanfall2::Bsp::gameLumpPropHeader, sizeof(Titanfall2::GameLumpPropHeader_t));
-        SafeWrite(file, Titanfall2::Bsp::gameLumpProps.data(), sizeof(Titanfall2::GameLumpProp_t) * Titanfall2::Bsp::gameLumpProps.size());
-        SafeWrite(file, &Titanfall2::Bsp::gameLumpUnknownHeader, sizeof(Titanfall2::GameLumpUnknownHeader_t));
-    }
-
-    AddLump(file, header.lumps[R5_LUMP_CELL_AABB_NUM_OBJ_REFS_TOTAL], ApexLegends::Bsp::cellAABBNumObjRefsTotal);
-    AddLump(file, header.lumps[R5_LUMP_CSM_AABB_NUM_OBJ_REFS_TOTAL],  ApexLegends::Bsp::csmNumObjRefsTotalForAabb);
-    AddLump(file, header.lumps[R5_LUMP_CELL_AABB_FADEDISTS],         ApexLegends::Bsp::cellAABBFadeDists);
-    AddLump(file, header.lumps[R5_LUMP_CUBEMAPS],                ApexLegends::Bsp::cubemaps);
-    AddLump(file, header.lumps[R5_LUMP_CUBEMAPS_AMBIENT_RCP],    ApexLegends::Bsp::cubemapsAmbientRcp);
-    AddLump(file, header.lumps[R5_LUMP_WORLD_LIGHTS],            ApexLegends::Bsp::worldLights);
-    AddLump(file, header.lumps[R5_LUMP_VERTEX_UNLIT],            ApexLegends::Bsp::vertexUnlitVertices);
-    AddLump(file, header.lumps[R5_LUMP_VERTEX_LIT_FLAT],         ApexLegends::Bsp::vertexLitFlatVertices);
-    AddLump(file, header.lumps[R5_LUMP_VERTEX_LIT_BUMP],         ApexLegends::Bsp::vertexLitBumpVertices);
-    AddLump(file, header.lumps[R5_LUMP_VERTEX_UNLIT_TS],         ApexLegends::Bsp::vertexUnlitTSVertices);
-    AddLump(file, header.lumps[R5_LUMP_MESH_INDICES],            Titanfall::Bsp::meshIndices);
-    AddLump(file, header.lumps[R5_LUMP_MESHES],                  ApexLegends::Bsp::meshes);
-    AddLump(file, header.lumps[R5_LUMP_MESH_BOUNDS],             Titanfall::Bsp::meshBounds);
-    AddLump(file, header.lumps[R5_LUMP_MATERIAL_SORT],           ApexLegends::Bsp::materialSorts);
-    
-    // Lightmap lumps - generated by EmitLightmaps()
-    AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_HEADERS],        ApexLegends::Bsp::lightmapHeaders);
-    AddLump(file, header.lumps[R5_LUMP_TWEAK_LIGHTS],            ApexLegends::Bsp::tweakLights);
-    AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_DATA_SKY],       ApexLegends::Bsp::lightmapDataSky);
-    AddLump(file, header.lumps[R5_LUMP_CSM_AABB_NODES],          ApexLegends::Bsp::csmAABBNodes);
-    AddLump(file, header.lumps[R5_LUMP_CSM_OBJ_REFERENCES],      ApexLegends::Bsp::csmObjRefsTotal);
-    
-    // Light probe lumps - generated by EmitLightProbes()
-    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBES],                    ApexLegends::Bsp::lightprobes);
-    AddLump(file, header.lumps[R5_LUMP_STATIC_PROP_LIGHTPROBE_INDICES], ApexLegends::Bsp::staticPropLightprobeIndices);
-    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBE_TREE],                ApexLegends::Bsp::lightprobeTree);
-    AddLump(file, header.lumps[R5_LUMP_LIGHTPROBE_REFERENCES],          ApexLegends::Bsp::lightprobeReferences);
-    //AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_DATA_REAL_TIME_LIGHTS], ApexLegends::Bsp::lightmapDataRealTimeLights);
-    
-    AddLump(file, header.lumps[R5_LUMP_CELL_BSP_NODES],          Titanfall::Bsp::cellBSPNodes_stub);           // stub
-    AddLump(file, header.lumps[R5_LUMP_CELLS],                   Titanfall::Bsp::cells_stub);                  // stub
-    AddLump(file, header.lumps[R5_LUMP_OCCLUSION_MESH_VERTICES], Titanfall::Bsp::occlusionMeshVertices);
-    AddLump(file, header.lumps[R5_LUMP_OCCLUSION_MESH_INDICES],  Titanfall::Bsp::occlusionMeshIndices);
-    AddLump(file, header.lumps[R5_LUMP_CELL_AABB_NODES],         ApexLegends::Bsp::cellAABBNodes);
-    AddLump(file, header.lumps[R5_LUMP_OBJ_REFERENCES],          ApexLegends::Bsp::objReferences);
-    AddLump(file, header.lumps[R5_LUMP_OBJ_REFERENCE_BOUNDS],    Titanfall::Bsp::objReferenceBounds);
-    //AddLump(file, header.lumps[R5_LUMP_LIGHTMAP_DATA_RTL_PAGE],  ApexLegends::Bsp::lightmapDataRTLPage);
-    AddLump(file, header.lumps[R5_LUMP_LEVEL_INFO],              ApexLegends::Bsp::levelInfo);
-
-    // Shadow mesh lumps
-    AddLump(file, header.lumps[R5_LUMP_SHADOW_MESH_OPAQUE_VERTICES], ApexLegends::Bsp::shadowMeshOpaqueVerts);
-    AddLump(file, header.lumps[R5_LUMP_SHADOW_MESH_ALPHA_VERTICES],  ApexLegends::Bsp::shadowMeshAlphaVerts);
-    AddLump(file, header.lumps[R5_LUMP_SHADOW_MESH_INDICES],         ApexLegends::Bsp::shadowMeshIndices);
-    AddLump(file, header.lumps[R5_LUMP_SHADOW_MESHES],               ApexLegends::Bsp::shadowMeshes);
-
-    /* emit bsp size */
-    const int size = ftell(file);
-    //Sys_Printf("Wrote %.1f MB (%d bytes)\n", (float)size / (1024 * 1024), size);
-
-    /* write the completed header */
-    fseek(file, 0, SEEK_SET);
-    SafeWrite(file, &header, sizeof(header));
-
-    /* ensure all data is written to disk */
-    fflush(file);
-
-    /* close the file */
-    fclose(file);
-}
-
-
-/*
-   CompileR5BSPFile()
-   Compiles a v47 bsp file
-*/
-void CompileR5BSPFile() {
-    ApexLegends::SetupGameLump();
-    
-    for (entity_t &entity : entities) {
-        const char *pszClassname = entity.classname();
-
-        #define ENT_IS(classname) striEqual(pszClassname, classname)
-
-        /* visible geo */
-        if (ENT_IS("worldspawn")) {
-            ApexLegends::BeginModel(entity);
-
-            /* generate bsp meshes from map brushes */
-            Shared::MakeMeshes(entity);
-            ApexLegends::EmitMeshes(entity);
-
-            ApexLegends::EmitBVHNode();
-
-            ApexLegends::EndModel();
-        }  else if (ENT_IS("prop_static")) { // Compile as static props into gamelump
-            // TODO: use prop_static instead
-            ApexLegends::EmitStaticProp(entity);
-            continue; // Don't emit as entity
-        } else if (ENT_IS("func_occluder")) {
-            Titanfall::EmitOcclusionMeshes( entity );
-            continue; // Don't emit as entity
-        } else {
-        }
-
-        ApexLegends::EmitEntity(entity);
-
-        #undef ENT_IS
-    }
-
-    Shared::MakeVisReferences();
-    Shared::visRoot = Shared::MakeVisTree(Shared::visRefs, 1e30f);
-    Shared::MergeVisTree(Shared::visRoot);
-    ApexLegends::EmitVisTree();
-
-    Titanfall::EmitEntityPartitions();
-
-    ApexLegends::EmitLevelInfo();
-    ApexLegends::EmitWorldLights();
-    ApexLegends::EmitCubemaps();           // Cubemap sample positions
-    ApexLegends::EmitShadowMeshes();
-    ApexLegends::EmitShadowEnvironments();
-    
-    // Initialize Embree for accelerated ray tracing (used by lightmaps and light probes)
-    if (EmbreeTrace::Init()) {
-        EmbreeTrace::BuildScene(true);  // Build BVH, skip sky meshes for shadow rays
-    }
-    
-    ApexLegends::EmitLightmaps();
-    ApexLegends::EmitLightProbes();        // Light probes for ambient lighting
-    
-    // Clean up Embree resources
-    EmbreeTrace::Shutdown();
-
-    //TODO: Implement real-time lightmaps
-    //ApexLegends::EmitRealTimeLightmaps();  // Per-texel RTL data
-
-    Titanfall::EmitStubs();
-    ApexLegends::EmitStubs();
-}
-
-
-/*
-    EmitStubs
-    Fills out all the nessesary lumps we dont generate so the map at least boots and we can noclip around
-*/
-void ApexLegends::EmitStubs() {
-    // No longer needed - cell AABB lumps are now generated in EmitVisTree()
-}
 
 /*
     EmitCubemaps

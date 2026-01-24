@@ -50,11 +50,16 @@ add_executable(remap
                common/vfs.h
                source/embree_trace.cpp
                source/embree_trace.h
+               source/apex_legends/apex_legends_bsp.cpp
                source/apex_legends/apex_legends_collisions.cpp
+               source/apex_legends/apex_legends_entities.cpp
+               source/apex_legends/apex_legends_lighting.cpp
                source/apex_legends/apex_legends_lightmaps.cpp
-               source/apex_legends/apex_legends_misc.cpp
-               source/apex_legends/apex_legends_vis.cpp
-               source/apex_legends/apex_legends.cpp
+               source/apex_legends/apex_legends_meshes.cpp
+               source/apex_legends/apex_legends_models.cpp
+               source/apex_legends/apex_legends_textures.cpp
+               source/apex_legends/apex_legends_vertices.cpp
+               source/apex_legends/apex_legends_visibility.cpp
                source/apex_legends/apex_legends.h
                source/titanfall/titanfall_collisions.cpp
                source/titanfall/titanfall_decompile.cpp
