@@ -173,116 +173,102 @@ void R5MDLLoader::parse_mdl_file() {
     scene_->mMeshes = new aiMesh *[iCurrentMesh];
     iCurrentMesh = 0;
 
-    // Build the scene tree and build the meshes it uses
+    // Build a simplified scene tree using VG structure instead of MDL's bodypart hierarchy
+    // This avoids mismatches between MDL bodypart/model counts and VG mesh structure
     aiNode *pRootNode = new aiNode();
-    pRootNode->mNumChildren = header_->numbodyparts;
-    pRootNode->mChildren = new aiNode *[header_->numbodyparts];
     scene_->mRootNode = pRootNode;
-    // Populate the meshes
-    for(int i = 0; i < header_->numbodyparts; i++) {
-        const mstudiobodyparts_t *bodypart = (const mstudiobodyparts_t *)(mdl_buffer_ + header_->bodypartindex + sizeof(mstudiobodyparts_t) * i);
+    
+    // Count total meshes across all LODs for the root node
+    int totalMeshNodes = 0;
+    for(int k = 0; k < 1 /*vg_header_->numLODs*/; k++) {
+        const ModelLODHeader_t *lod = (const ModelLODHeader_t *)(vg_buffer_ + vg_header_->lodOffset + sizeof(ModelLODHeader_t) * k);
+        totalMeshNodes += lod->numMeshes;
+    }
+    
+    pRootNode->mNumChildren = totalMeshNodes;
+    pRootNode->mChildren = new aiNode *[totalMeshNodes];
+    
+    int childIndex = 0;
+    for(int k = 0; k < 1 /*vg_header_->numLODs*/; k++) {
+        const ModelLODHeader_t *lod = (const ModelLODHeader_t *)(vg_buffer_ + vg_header_->lodOffset + sizeof(ModelLODHeader_t) * k);
 
-        aiNode *pBodyPartNode = new aiNode();
-        pBodyPartNode->mNumChildren = bodypart->nummodels;
-        pBodyPartNode->mChildren = new aiNode *[bodypart->nummodels];
-        pRootNode->mChildren[i] = pBodyPartNode;
-        pBodyPartNode->mParent = pRootNode;
+        for(int l = 0; l < lod->numMeshes; l++) {
+            // FSeek(vhdr.meshOffset + (j * sizeof(MeshHeader_VG_t)) + (lod.meshOffset * sizeof(MeshHeader_VG_t)));
+            const MeshHeader_VG_t *vg_mesh = (const MeshHeader_VG_t *)(vg_buffer_ + vg_header_->meshOffset + sizeof(MeshHeader_VG_t) * l + lod->meshOffset * sizeof(MeshHeader_VG_t));
+            
+            // Get material index - use mesh index modulo number of textures to avoid out of bounds
+            int materialIndex = l < header_->numtextures ? l : (l % header_->numtextures);
 
-        for(int j = 0; j < bodypart->nummodels; j++) {
-            const mstudiomodel_t *model = (const mstudiomodel_t *)((const char*)bodypart + bodypart->modelindex + sizeof(mstudiomodel_t) * j);
+            aiNode *pMeshNode = new aiNode();
+            pRootNode->mChildren[childIndex++] = pMeshNode;
+            pMeshNode->mParent = pRootNode;
+            pMeshNode->mNumMeshes = vg_mesh->numStrips;
+            pMeshNode->mMeshes = new unsigned int[vg_mesh->numStrips];
 
-            aiNode *pModelNode = new aiNode();
-            pModelNode->mNumChildren = 1 /*vg_header_->numLODs*/;
-            pModelNode->mChildren = new aiNode *[1 /*vg_header_->numLODs*/];
-            pBodyPartNode->mChildren[j] = pModelNode;
-            pModelNode->mParent = pBodyPartNode;
+            for(int m = 0; m < vg_mesh->numStrips; m++) {
+                // FSeek(vhdr.stripOffset + ((mesh.stripOffset + n) * sizeof(StripHeader_t)));
+                const StripHeader_t *stripHeader = (const StripHeader_t *)(vg_buffer_ + vg_header_->stripOffset + (vg_mesh->stripOffset + m) * sizeof(StripHeader_t) );
+                pMeshNode->mMeshes[m] = iCurrentMesh;
 
-            for(int k = 0; k < 1 /*vg_header_->numLODs*/; k++) {
-                const ModelLODHeader_t *lod = (const ModelLODHeader_t *)(vg_buffer_ + vg_header_->lodOffset + sizeof(ModelLODHeader_t) * k);
+                // Build the aiMesh
+                aiMesh *pMesh = new aiMesh();
 
-                aiNode *pModelLODNode = new aiNode();
-                pModelLODNode->mNumChildren = model->nummeshes;
-                pModelLODNode->mChildren = new aiNode *[model->nummeshes];
-                pModelNode->mChildren[k] = pModelLODNode;
-                pModelLODNode->mParent = pModelNode;
+                pMesh->mMaterialIndex = materialIndex;
 
-                for(int l = 0; l < lod->numMeshes; l++) {
-                    // FSeek(vhdr.meshOffset + (j * sizeof(MeshHeader_VG_t)) + (lod.meshOffset * sizeof(MeshHeader_VG_t)));
-                    const MeshHeader_VG_t *vg_mesh = (const MeshHeader_VG_t *)(vg_buffer_ + vg_header_->meshOffset + sizeof(MeshHeader_VG_t) * l + lod->meshOffset * sizeof(MeshHeader_VG_t));
-                    const mstudiomesh_t *mdl_mesh = (const mstudiomesh_t*)((const char*)model + model->meshindex + sizeof(mstudiomesh_t) * (k % lod->numMeshes));
-
-                    aiNode *pMeshNode = new aiNode();
-                    pModelLODNode->mChildren[l] = pMeshNode;
-                    pMeshNode->mParent = pModelLODNode;
-                    pMeshNode->mNumMeshes = vg_mesh->numStrips;
-                    pMeshNode->mMeshes = new unsigned int[vg_mesh->numStrips];
-
-                    for(int m = 0; m < vg_mesh->numStrips; m++) {
-                        // FSeek(vhdr.stripOffset + ((mesh.stripOffset + n) * sizeof(StripHeader_t)));
-                        const StripHeader_t *stripHeader = (const StripHeader_t *)(vg_buffer_ + vg_header_->stripOffset + (vg_mesh->stripOffset + m) * sizeof(StripHeader_t) );
-                        pMeshNode->mMeshes[m] = iCurrentMesh;
-
-                        // Build te aiMesh
-                        aiMesh *pMesh = new aiMesh();
-
-                        pMesh->mMaterialIndex = mdl_mesh->material;
-
-                        // Build vertices
-                        pMesh->mNumVertices = stripHeader->numVerts;
-                        pMesh->mVertices = new aiVector3D[pMesh->mNumVertices];
-                        pMesh->mNormals = new aiVector3D[pMesh->mNumVertices];
-                        pMesh->mTextureCoords[0] = new aiVector3D[pMesh->mNumVertices];
-                        pMesh->mNumUVComponents[0] = 2;
-                        for(unsigned int v = 0; v < pMesh->mNumVertices; v++) {
-                            const void *vertex = (const void *)(vg_buffer_ + vg_header_->vertOffset + vg_mesh->vertOffset + (vg_mesh->vertCacheSize * v));
-                            int shift = 0;
-                            if(vg_mesh->flags & VG_POSITION) {
-                                const Position_t *pos = (const Position_t *)vertex;
-                                pMesh->mVertices[v] = aiVector3D(pos->xyz[0], pos->xyz[1], pos->xyz[2]);
-                                shift += sizeof(Position_t);
-                            } else if(vg_mesh->flags & VG_PACKED_POSITION) {
-                                const PackedPosition_t *pos = (const PackedPosition_t *)vertex;
-                                float x, y, z;
-                                x = pos->x * 0.0009765625 - 1024.0f;
-                                y = pos->y * 0.0009765625 - 1024.0f;
-                                z = pos->z * 0.0009765625 - 2048.0f;
-                                pMesh->mVertices[v] = aiVector3D(x, y, z);
-                                shift += sizeof(PackedPosition_t);
-                            }
-
-                            if(vg_mesh->flags & VG_PACKED_WEIGHTS)
-                                shift += 8;
-                            
-                            const PackedNormalTangent_t *tbn = (const PackedNormalTangent_t *)((const char *)vertex + shift);
-                            shift += sizeof(PackedNormalTangent_t);
-                            vec3_t normal;
-                            UnpackNormal(normal, tbn);
-                            pMesh->mNormals[v] = aiVector3D(normal[0], normal[1], normal[2]);
-
-                            if(vg_mesh->flags & VG_VERTEX_COLOR)
-                                shift += sizeof(uint8_t) * 4;
-                            
-                            const TexCoord_t *texCoord = (const TexCoord_t *)((const char *)vertex + shift);
-
-                            pMesh->mTextureCoords[0][v] = aiVector3D(texCoord->st[0], texCoord->st[1], 0.0);
-                        }
-                        
-                        // Build faces
-                        pMesh->mNumFaces = stripHeader->numIndices / 3;
-                        pMesh->mFaces = new aiFace[pMesh->mNumFaces];
-                        const uint16_t *indices = (const uint16_t *)((const char *)vg_buffer_ + vg_header_->indexOffset + (vg_mesh->indexOffset * 2) + (stripHeader->indexOffset * 2));
-                        for(unsigned int f = 0; f < pMesh->mNumFaces; f++) {
-                            pMesh->mFaces[f].mNumIndices = 3;
-                            pMesh->mFaces[f].mIndices = new unsigned int[3];
-                            pMesh->mFaces[f].mIndices[0] = *(uint16_t*)((const char *)indices + sizeof(uint16_t) * (f * 3 + 2) );
-                            pMesh->mFaces[f].mIndices[1] = *(uint16_t*)((const char *)indices + sizeof(uint16_t) * (f * 3 + 1) );
-                            pMesh->mFaces[f].mIndices[2] = *(uint16_t*)((const char *)indices + sizeof(uint16_t) * (f * 3 + 0) );
-                        }
-
-                        scene_->mMeshes[iCurrentMesh] = pMesh;
-                        iCurrentMesh++;
+                // Build vertices
+                pMesh->mNumVertices = stripHeader->numVerts;
+                pMesh->mVertices = new aiVector3D[pMesh->mNumVertices];
+                pMesh->mNormals = new aiVector3D[pMesh->mNumVertices];
+                pMesh->mTextureCoords[0] = new aiVector3D[pMesh->mNumVertices];
+                pMesh->mNumUVComponents[0] = 2;
+                for(unsigned int v = 0; v < pMesh->mNumVertices; v++) {
+                    const void *vertex = (const void *)(vg_buffer_ + vg_header_->vertOffset + vg_mesh->vertOffset + (vg_mesh->vertCacheSize * v));
+                    int shift = 0;
+                    if(vg_mesh->flags & VG_POSITION) {
+                        const Position_t *pos = (const Position_t *)vertex;
+                        pMesh->mVertices[v] = aiVector3D(pos->xyz[0], pos->xyz[1], pos->xyz[2]);
+                        shift += sizeof(Position_t);
+                    } else if(vg_mesh->flags & VG_PACKED_POSITION) {
+                        const PackedPosition_t *pos = (const PackedPosition_t *)vertex;
+                        float x, y, z;
+                        x = pos->x * 0.0009765625 - 1024.0f;
+                        y = pos->y * 0.0009765625 - 1024.0f;
+                        z = pos->z * 0.0009765625 - 2048.0f;
+                        pMesh->mVertices[v] = aiVector3D(x, y, z);
+                        shift += sizeof(PackedPosition_t);
                     }
+
+                    if(vg_mesh->flags & VG_PACKED_WEIGHTS)
+                        shift += 8;
+                    
+                    const PackedNormalTangent_t *tbn = (const PackedNormalTangent_t *)((const char *)vertex + shift);
+                    shift += sizeof(PackedNormalTangent_t);
+                    vec3_t normal;
+                    UnpackNormal(normal, tbn);
+                    pMesh->mNormals[v] = aiVector3D(normal[0], normal[1], normal[2]);
+
+                    if(vg_mesh->flags & VG_VERTEX_COLOR)
+                        shift += sizeof(uint8_t) * 4;
+                    
+                    const TexCoord_t *texCoord = (const TexCoord_t *)((const char *)vertex + shift);
+
+                    pMesh->mTextureCoords[0][v] = aiVector3D(texCoord->st[0], texCoord->st[1], 0.0);
                 }
+                
+                // Build faces
+                pMesh->mNumFaces = stripHeader->numIndices / 3;
+                pMesh->mFaces = new aiFace[pMesh->mNumFaces];
+                const uint16_t *indices = (const uint16_t *)((const char *)vg_buffer_ + vg_header_->indexOffset + (vg_mesh->indexOffset * 2) + (stripHeader->indexOffset * 2));
+                for(unsigned int f = 0; f < pMesh->mNumFaces; f++) {
+                    pMesh->mFaces[f].mNumIndices = 3;
+                    pMesh->mFaces[f].mIndices = new unsigned int[3];
+                    pMesh->mFaces[f].mIndices[0] = *(uint16_t*)((const char *)indices + sizeof(uint16_t) * (f * 3 + 2) );
+                    pMesh->mFaces[f].mIndices[1] = *(uint16_t*)((const char *)indices + sizeof(uint16_t) * (f * 3 + 1) );
+                    pMesh->mFaces[f].mIndices[2] = *(uint16_t*)((const char *)indices + sizeof(uint16_t) * (f * 3 + 0) );
+                }
+
+                scene_->mMeshes[iCurrentMesh] = pMesh;
+                iCurrentMesh++;
             }
         }
     }
