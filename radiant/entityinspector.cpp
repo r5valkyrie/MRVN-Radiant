@@ -1446,7 +1446,17 @@ void EntityInspector_updateKeyValues(){
 	}
 	
 	// Build unified table
+	const char *className = keyvalues_valueforkey( g_selectedKeyValues, "classname" );
+	const bool isBrushEntity = eclass && !eclass->fixedsize;
 	for ( const CopiedString& key : allKeys ){
+		// Hide compiler-generated collision blob keys and origin for brush entities
+		if ( string_equal_prefix( key.c_str(), "*coll" ) ){
+			continue;
+		}
+		if ( string_equal( key.c_str(), "origin" ) && isBrushEntity ){
+			continue;
+		}
+
 		// Get current value (or empty if not set)
 		QString currentValue;
 		QString defaultValue;
