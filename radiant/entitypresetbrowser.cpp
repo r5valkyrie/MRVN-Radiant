@@ -73,6 +73,7 @@
 #include "gtkutil/guisettings.h"
 #include "ifilesystem.h"
 #include "igl.h"
+#include "imap.h"
 #include "imodel.h"
 #include "ientity.h"
 #include "iselection.h"
@@ -257,7 +258,9 @@ struct EntityPresetEntity
 {
 	CopiedString name;
 	CopiedString description;
+	CopiedString placementOrigin;
 	std::vector<EntityPresetKeyValue> keyValues;
+	std::vector<CopiedString> brushes;
 
 	const char* valueForKey( const char* key ) const {
 		for( const EntityPresetKeyValue& keyValue : keyValues ){
@@ -342,13 +345,23 @@ bool preset_entity_from_json( const QJsonValue& value, EntityPresetEntity& prese
 
 	presetEntity.name = qstring_to_copied_string( object.value( "name" ).toString() );
 	presetEntity.description = qstring_to_copied_string( object.value( "description" ).toString() );
+	presetEntity.placementOrigin = qstring_to_copied_string( object.value( "placement_origin" ).toString() );
 	presetEntity.keyValues.clear();
+	presetEntity.brushes.clear();
 
 	for( auto i = entityObject.begin(); i != entityObject.end(); ++i ){
 		EntityPresetKeyValue keyValue;
 		keyValue.key = qstring_to_copied_string( i.key() );
 		keyValue.value = qstring_to_copied_string( json_to_string( i.value() ) );
 		presetEntity.keyValues.push_back( std::move( keyValue ) );
+	}
+
+	if( object.contains( "brushes" ) && object.value( "brushes" ).isArray() ){
+		for( const QJsonValue& brushValue : object.value( "brushes" ).toArray() ){
+			if( brushValue.isString() ){
+				presetEntity.brushes.push_back( qstring_to_copied_string( brushValue.toString() ) );
+			}
+		}
 	}
 
 	preset_normalize_key_order( presetEntity );
@@ -400,12 +413,22 @@ QJsonObject preset_entity_to_json( const EntityPresetEntity& presetEntity ){
 	if( string_not_empty( presetEntity.description.c_str() ) ){
 		object.insert( "description", presetEntity.description.c_str() );
 	}
+	if( string_not_empty( presetEntity.placementOrigin.c_str() ) ){
+		object.insert( "placement_origin", presetEntity.placementOrigin.c_str() );
+	}
 
 	QJsonObject entityObject;
 	for( const EntityPresetKeyValue& keyValue : presetEntity.keyValues ){
 		entityObject.insert( keyValue.key.c_str(), keyValue.value.c_str() );
 	}
 	object.insert( "entity", entityObject );
+	if( !presetEntity.brushes.empty() ){
+		QJsonArray brushesArray;
+		for( const CopiedString& brush : presetEntity.brushes ){
+			brushesArray.append( brush.c_str() );
+		}
+		object.insert( "brushes", brushesArray );
+	}
 	return object;
 }
 
@@ -449,6 +472,7 @@ struct SelectedPresetEntity
 {
 	scene::Node* node = nullptr;
 	Entity* entity = nullptr;
+	Vector3 placementOrigin = g_vector3_identity;
 };
 
 std::vector<SelectedPresetEntity> selected_preset_entities(){
@@ -464,16 +488,27 @@ std::vector<SelectedPresetEntity> selected_preset_entities(){
 			const scene::Path& path = instance.path();
 			Entity* entity = Node_getEntity( path.top() );
 			scene::Node* node = &path.top().get();
+			scene::Path entityPath( path );
 			if( entity == nullptr && path.size() > 1 ){
 				entity = Node_getEntity( path.parent() );
 				node = &path.parent().get();
+				entityPath.pop();
 			}
 
 			if( entity == nullptr || node == nullptr || !m_seenNodes.insert( node ).second ){
 				return;
 			}
 
-			m_selected.push_back( { node, entity } );
+			Vector3 placementOrigin = g_vector3_identity;
+			if( !string_parse_vector3( entity->getKeyValue( "origin" ), placementOrigin ) ){
+				scene::Instance* entityInstance = &instance;
+				if( entityPath.top().get_pointer() != path.top().get_pointer() ){
+					entityInstance = &findInstance( entityPath );
+				}
+				placementOrigin = entityInstance->worldAABB().origin;
+			}
+
+			m_selected.push_back( { node, entity, placementOrigin } );
 		}
 	};
 
@@ -485,6 +520,49 @@ std::vector<SelectedPresetEntity> selected_preset_entities(){
 	SelectedPresetEntitiesVisitor visitor( selected );
 	GlobalSelectionSystem().foreachSelected( visitor );
 	return selected;
+}
+
+inline MapExporter* Node_getMapExporter( scene::Node& node ){
+	return NodeTypeCast<MapExporter>::cast( node );
+}
+
+CopiedString export_primitive_tokens( scene::Node& node ){
+	MapExporter* exporter = Node_getMapExporter( node );
+	if( exporter == nullptr ){
+		return "";
+	}
+
+	StringOutputStream output( 2048 );
+	TokenWriter& writer = GlobalScriptLibrary().m_pfnNewSimpleTokenWriter( output );
+	exporter->exportTokens( writer );
+	writer.release();
+	return output.c_str();
+}
+
+void append_entity_brushes( scene::Node& node, std::vector<CopiedString>& brushes ){
+	scene::Traversable* traversable = Node_getTraversable( node );
+	if( traversable == nullptr ){
+		return;
+	}
+
+	class CollectBrushesWalker : public scene::Traversable::Walker
+	{
+		std::vector<CopiedString>& m_brushes;
+	public:
+		CollectBrushesWalker( std::vector<CopiedString>& brushes ) : m_brushes( brushes ){
+		}
+		bool pre( scene::Node& node ) const override {
+			if( Node_isPrimitive( node ) ){
+				const CopiedString tokens = export_primitive_tokens( node );
+				if( string_not_empty( tokens.c_str() ) ){
+					m_brushes.push_back( tokens );
+				}
+			}
+			return false;
+		}
+	} walker( brushes );
+
+	traversable->traverse( walker );
 }
 
 QString default_name_for_entity( const Entity& entity ){
@@ -539,8 +617,9 @@ Vector3 preset_preview_angles( const EntityPresetEntity& presetEntity ){
 	return angles;
 }
 
-EntityPresetEntity preset_entity_from_entity( const Entity& entity, const bool includeOrigin, const Vector3& originOffset ){
+EntityPresetEntity preset_entity_from_entity( const SelectedPresetEntity& selectedEntity, const bool includeOrigin, const Vector3& originOffset ){
 	EntityPresetEntity presetEntity;
+	const Entity& entity = *selectedEntity.entity;
 	class CollectKeyValues : public Entity::Visitor
 	{
 		std::vector<EntityPresetKeyValue>& m_keyValues;
@@ -580,6 +659,11 @@ EntityPresetEntity preset_entity_from_entity( const Entity& entity, const bool i
 
 	entity.forEachKeyValue( collector );
 	presetEntity.name = qstring_to_copied_string( default_name_for_entity( entity ) );
+	const Vector3 relativePlacementOrigin = selectedEntity.placementOrigin - originOffset;
+	presetEntity.placementOrigin = StringStream<96>( relativePlacementOrigin[0], ' ', relativePlacementOrigin[1], ' ', relativePlacementOrigin[2] ).c_str();
+	if( selectedEntity.node != nullptr ){
+		append_entity_brushes( *selectedEntity.node, presetEntity.brushes );
+	}
 	preset_normalize_key_order( presetEntity );
 	return presetEntity;
 }
@@ -589,7 +673,10 @@ EntityPreset preset_from_entity( const Entity& entity, const QString& name, cons
 	preset.name = qstring_to_copied_string( name );
 	preset.category = qstring_to_copied_string( category );
 	preset.description = qstring_to_copied_string( description );
-	preset.entities.push_back( preset_entity_from_entity( entity, false, g_vector3_identity ) );
+	SelectedPresetEntity selectedEntity;
+	selectedEntity.entity = const_cast<Entity*>( &entity );
+	selectedEntity.placementOrigin = g_vector3_identity;
+	preset.entities.push_back( preset_entity_from_entity( selectedEntity, false, g_vector3_identity ) );
 	return preset;
 }
 
@@ -603,21 +690,29 @@ EntityPreset preset_from_selection( const std::vector<SelectedPresetEntity>& sel
 		return preset;
 	}
 
+	bool captureAbsolute = false;
+	for( const SelectedPresetEntity& selectedEntity : selected ){
+		if( selectedEntity.node != nullptr ){
+			scene::Traversable* traversable = Node_getTraversable( *selectedEntity.node );
+			if( traversable != nullptr && !traversable->empty() ){
+				captureAbsolute = true;
+				break;
+			}
+		}
+	}
+
 	if( selected.size() == 1 ){
-		preset.entities.push_back( preset_entity_from_entity( *selected.front().entity, false, g_vector3_identity ) );
+		preset.entities.push_back( preset_entity_from_entity( selected.front(), false, captureAbsolute ? g_vector3_identity : selected.front().placementOrigin ) );
 		return preset;
 	}
 
-	Vector3 anchorOrigin( 0, 0, 0 );
-	if( !string_parse_vector3( selected.front().entity->getKeyValue( "origin" ), anchorOrigin ) ){
-		anchorOrigin = g_vector3_identity;
-	}
+	const Vector3 anchorOrigin = captureAbsolute ? g_vector3_identity : selected.front().placementOrigin;
 
 	for( const SelectedPresetEntity& selectedEntity : selected ){
 		if( selectedEntity.entity == nullptr ){
 			continue;
 		}
-		preset.entities.push_back( preset_entity_from_entity( *selectedEntity.entity, true, anchorOrigin ) );
+		preset.entities.push_back( preset_entity_from_entity( selectedEntity, true, anchorOrigin ) );
 	}
 
 	return preset;
@@ -965,9 +1060,34 @@ CopiedString format_vector3( const Vector3& value ){
 	return StringStream<96>( value[0], ' ', value[1], ' ', value[2] );
 }
 
-CopiedString generate_link_guid(){
-	return StringStream<32>( QString::number( static_cast<qulonglong>( QRandomGenerator::global()->generate64() ), 16 ).toLatin1().constData() );
-}
+	CopiedString generate_link_guid(){
+		return StringStream<32>( QString::number( static_cast<qulonglong>( QRandomGenerator::global()->generate64() ), 16 ).toLatin1().constData() );
+	}
+
+	class PresetStringInputStream : public TextInputStream
+	{
+		const char* m_data;
+		std::size_t m_length;
+		std::size_t m_offset;
+	public:
+		explicit PresetStringInputStream( const char* data ) :
+			m_data( data != nullptr ? data : "" ),
+			m_length( string_length( m_data ) ),
+			m_offset( 0 ){
+		}
+
+		std::size_t read( char* buffer, std::size_t length ) override {
+			if( buffer == nullptr || length == 0 || m_offset >= m_length ){
+				return 0;
+			}
+
+			const std::size_t remaining = m_length - m_offset;
+			const std::size_t count = remaining < length ? remaining : length;
+			std::memcpy( buffer, m_data + m_offset, count );
+			m_offset += count;
+			return count;
+		}
+	};
 
 class PreviewModelGraph final : public scene::Graph, public scene::Instantiable::Observer
 {
@@ -1942,38 +2062,6 @@ class EntityPresetBrowser
 		if( m_deleteButton != nullptr ) m_deleteButton->setEnabled( true );
 	}
 
-	struct CreatedPresetEntity
-	{
-		Entity* entity{};
-		scene::Instance* instance{};
-	};
-
-	CreatedPresetEntity createPresetPointEntity( EntityClass* entityClass, const Vector3& origin ){
-		CreatedPresetEntity created;
-
-		const bool isModel = entityClass->miscmodel_is;
-		if( !( entityClass->fixedsize || isModel ) ){
-			return created;
-		}
-
-		NodeSmartReference node( GlobalEntityCreator().createEntity( entityClass ) );
-		Node_getTraversable( GlobalSceneGraph().root() )->insert( node );
-
-		scene::Path entityPath( makeReference( GlobalSceneGraph().root() ) );
-		entityPath.push( makeReference( node.get() ) );
-		scene::Instance& instance = findInstance( entityPath );
-
-		if( Transformable* transform = Instance_getTransformable( instance ) ){
-			transform->setType( TRANSFORM_PRIMITIVE );
-			transform->setTranslation( origin );
-			transform->freezeTransform();
-		}
-
-		created.entity = Node_getEntity( node );
-		created.instance = &instance;
-		return created;
-	}
-
 	void replaceLinkGuidReferences( CopiedString& value, const QMap<QString, QString>& guidRemap ) const {
 		const QString oldGuid = QString::fromUtf8( value.c_str() );
 		const QString newGuid = guidRemap.value( oldGuid );
@@ -1981,22 +2069,98 @@ class EntityPresetBrowser
 			value = qstring_to_copied_string( newGuid );
 		}
 	}
+
+	Vector3 preset_entity_anchor_origin( const EntityPresetEntity& presetEntity ) const {
+		Vector3 origin;
+		if( string_parse_vector3( presetEntity.placementOrigin.c_str(), origin ) ){
+			return origin;
+		}
+		if( string_parse_vector3( presetEntity.valueForKey( "origin" ), origin ) ){
+			return origin;
+		}
+		return g_vector3_identity;
+	}
+
+	CopiedString buildPresetImportText( const EntityPreset& preset, const QMap<QString, QString>& guidRemap ) const {
+		StringOutputStream output( 8192 );
+		TokenWriter& writer = GlobalScriptLibrary().m_pfnNewSimpleTokenWriter( output );
+
+		for( const EntityPresetEntity& presetEntity : preset.entities ){
+			writer.writeToken( "{" );
+			writer.nextLine();
+
+			for( const EntityPresetKeyValue& sourceKeyValue : presetEntity.keyValues ){
+				CopiedString value = sourceKeyValue.value;
+				const char* key = sourceKeyValue.key.c_str();
+				if( string_equal( key, "link_guid" ) || string_equal_prefix( key, "link_to_guid_" ) ){
+					replaceLinkGuidReferences( value, guidRemap );
+				}
+				writer.writeString( key );
+				writer.writeString( value.c_str() );
+				writer.nextLine();
+			}
+
+			for( const CopiedString& brush : presetEntity.brushes ){
+				output << brush.c_str();
+				if( brush.c_str()[0] != '\0' && brush.c_str()[string_length( brush.c_str() ) - 1] != '\n' ){
+					output << '\n';
+				}
+			}
+
+			writer.writeToken( "}" );
+			writer.nextLine();
+		}
+
+		writer.release();
+		return output.c_str();
+	}
+
+	void translateImportedPresetEntities( const Vector3& translation ) const {
+		if( translation == g_vector3_identity ){
+			return;
+		}
+
+		GlobalSelectionSystem().translateSelected( translation );
+
+		const auto selected = selected_preset_entities();
+		for( const SelectedPresetEntity& selectedEntity : selected ){
+			if( selectedEntity.entity == nullptr ){
+				continue;
+			}
+
+			class CollectKeyValues final : public Entity::Visitor
+			{
+				std::vector<CopiedString>& m_keys;
+			public:
+				explicit CollectKeyValues( std::vector<CopiedString>& keys ) : m_keys( keys ){
+				}
+				void visit( const char* key, const char* value ) override {
+					(void)value;
+					if( !string_equal( key, "origin" ) && is_translated_vector_key( key ) ){
+						m_keys.push_back( key );
+					}
+				}
+			};
+
+			std::vector<CopiedString> translatedKeys;
+			CollectKeyValues collector( translatedKeys );
+			selectedEntity.entity->forEachKeyValue( collector );
+
+			for( const CopiedString& key : translatedKeys ){
+				Vector3 value;
+				if( string_parse_vector3( selectedEntity.entity->getKeyValue( key.c_str() ), value ) ){
+					selectedEntity.entity->setKeyValue( key.c_str(), format_vector3( value + translation ).c_str() );
+				}
+			}
+		}
+	}
+
 	bool usePresetAtOrigin( const EntityPreset& preset, const Vector3& insertOrigin ){
 		if( preset.entities.empty() ){
 			return false;
 		}
 
-		Vector3 anchorOrigin( 0, 0, 0 );
-		bool anchorOriginFound = false;
-		for( const EntityPresetEntity& presetEntity : preset.entities ){
-			if( string_parse_vector3( presetEntity.valueForKey( "origin" ), anchorOrigin ) ){
-				anchorOriginFound = true;
-				break;
-			}
-		}
-		if( !anchorOriginFound ){
-			anchorOrigin = g_vector3_identity;
-		}
+		const Vector3 anchorOrigin = preset_entity_anchor_origin( preset.entities.front() );
 
 		const Vector3 translationDelta = insertOrigin - anchorOrigin;
 
@@ -2016,62 +2180,17 @@ class EntityPresetBrowser
 
 		const bool previousSuppressModelPrompt = Entity_setSuppressModelPrompt( true );
 		GlobalSelectionSystem().setSelectedAll( false );
-
-		std::vector<CreatedPresetEntity> createdEntities;
-		createdEntities.reserve( preset.entities.size() );
-
-		for( const EntityPresetEntity& presetEntity : preset.entities ){
-			const char* classname = presetEntity.valueForKey( "classname" );
-			if( string_empty( classname ) ){
-				continue;
-			}
-
-			EntityClass* entityClass = GlobalEntityClassManager().findOrInsert( classname, true );
-			if( entityClass == nullptr ){
-				continue;
-			}
-
-			Vector3 presetOrigin = anchorOrigin;
-			if( !string_parse_vector3( presetEntity.valueForKey( "origin" ), presetOrigin ) ){
-				presetOrigin = anchorOrigin;
-			}
-
-			const CreatedPresetEntity created = createPresetPointEntity( entityClass, presetOrigin + translationDelta );
-			if( created.entity == nullptr ){
-				continue;
-			}
-
-			for( const EntityPresetKeyValue& sourceKeyValue : presetEntity.keyValues ){
-				const char* key = sourceKeyValue.key.c_str();
-				if( string_equal( key, "classname" ) || string_equal( key, "origin" ) ){
-					continue;
-				}
-
-				CopiedString value = sourceKeyValue.value;
-				if( string_equal( key, "link_guid" ) || string_equal_prefix( key, "link_to_guid_" ) ){
-					replaceLinkGuidReferences( value, guidRemap );
-				}
-				else if( is_translated_vector_key( key ) ){
-					Vector3 translated;
-					if( string_parse_vector3( value.c_str(), translated ) ){
-						value = format_vector3( translated + translationDelta );
-					}
-				}
-
-				created.entity->setKeyValue( key, value.c_str() );
-			}
-
-			if( created.instance != nullptr ){
-				Instance_setSelected( *created.instance, true );
-			}
-			createdEntities.push_back( created );
+		const CopiedString importText = buildPresetImportText( preset, guidRemap );
+		if( string_not_empty( importText.c_str() ) ){
+			PresetStringInputStream input( importText.c_str() );
+			Map_ImportSelected( input, Map_getFormat( g_map ) );
+			translateImportedPresetEntities( translationDelta );
 		}
-
 		Entity_setSuppressModelPrompt( previousSuppressModelPrompt );
 
-		if( createdEntities.empty() ){
+		if( GlobalSelectionSystem().countSelected() == 0 ){
 			QMessageBox::warning( m_parent, "Entity Presets",
-				"The preset did not create any entities. Multi-entity presets currently require point entities." );
+				"The preset did not create any entities." );
 			return false;
 		}
 
