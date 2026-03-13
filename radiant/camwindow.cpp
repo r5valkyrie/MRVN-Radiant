@@ -1993,14 +1993,15 @@ private:
 		}
 	}
 	void translateSpawnPreviewInstances( const Vector3& translation ){
-		for( Entity* entity : m_presetPreviewEntities ){
-			if( entity == nullptr ){
+		for( scene::Instance* instance : m_presetPreviewInstances ){
+			if( instance == nullptr ){
 				continue;
 			}
 
-			Vector3 origin;
-			if( string_parse_vector3( entity->getKeyValue( "origin" ), origin ) ){
-				entity->setKeyValue( "origin", StringStream<96>( origin[0] + translation[0], ' ', origin[1] + translation[1], ' ', origin[2] + translation[2] ) );
+			if( Transformable* transform = Instance_getTransformable( *instance ) ){
+				transform->setType( TRANSFORM_PRIMITIVE );
+				transform->setTranslation( translation );
+				transform->freezeTransform();
 			}
 		}
 	}
