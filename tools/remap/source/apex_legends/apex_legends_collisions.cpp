@@ -1256,20 +1256,30 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
     }
 
     /* ---- determine contents mask and surface name from entity class ---- */
-    // 0x00EB1280 = trigger contents mask from official Apex maps
-    // Allows traces from players, NPCs, titans, bullets, physics, etc.
     constexpr uint32_t TRIGGER_CONTENTS_MASK = 0x00EB1280;
     uint32_t contentsMask = TRIGGER_CONTENTS_MASK;
+
+    const char *cls = entity.classname();
     std::string surfaceName = "TOOLS\\TOOLSTRIGGER";
+    if (striEqualPrefix(cls, "trigger_out_of_bounds")) {
+        surfaceName = "TOOLS\\TOOLSOUT_OF_BOUNDS";
+    } else if (striEqualPrefix(cls, "trigger_no_zipline")) {
+        surfaceName = "TOOLS\\TOOLSTRIGGER_NO_ZIPLINE";
+    } else if (striEqualPrefix(cls, "trigger_slip")) {
+        surfaceName = "TOOLS\\TOOLSTRIGGER_SLIP";
+    }
 
     /* ---- collect per-brush convex hull geometry ---- */
     struct BrushHull {
         std::vector<Vector3> vertices;
-        std::vector<std::array<int, 3>> faces;   // triangulated
+        std::vector<std::vector<int>> sideWindings;  // full winding per brush side
         MinMax bounds;
     };
 
     std::vector<BrushHull> hulls;
+
+    /* compute entity origin from brush geometry for the "origin" key */
+    MinMax entityBounds;
 
     for (const brush_t &brush : entity.brushes) {
         BrushHull hull;
@@ -1278,7 +1288,6 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
         for (const side_t &side : brush.sides) {
             if (side.winding.size() < 3) continue;
 
-            /* collect unique vertices and fan-triangulate the winding */
             std::vector<int> sideIndices;
             for (const Vector3 &v : side.winding) {
                 auto key = std::make_tuple(v.x(), v.y(), v.z());
@@ -1288,20 +1297,19 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
                     vertexMap[key] = idx;
                     hull.vertices.push_back(v);
                     hull.bounds.extend(v);
+                    entityBounds.extend(v);
                     sideIndices.push_back(idx);
                 } else {
                     sideIndices.push_back(it->second);
                 }
             }
 
-            for (size_t i = 1; i + 1 < sideIndices.size(); i++) {
-                hull.faces.push_back({ sideIndices[0],
-                                       sideIndices[i],
-                                       sideIndices[i + 1] });
+            if (sideIndices.size() >= 3) {
+                hull.sideWindings.push_back(sideIndices);
             }
         }
 
-        if (!hull.vertices.empty() && !hull.faces.empty()) {
+        if (!hull.vertices.empty() && !hull.sideWindings.empty()) {
             hulls.push_back(std::move(hull));
         }
     }
@@ -1310,37 +1318,50 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
         return;
     }
 
-    /* BVH4 nodes support at most 4 children */
-    if (hulls.size() > 4) {
-        Sys_FPrintf(SYS_WRN,
-            "Warning: Entity %s has %zu brushes, only the first 4 will "
-            "have collision in *coll\n",
-            entity.classname(), hulls.size());
-        hulls.resize(4);
+    /* compute entity origin (center of all brush geometry) */
+    Vector3 entityOrigin = (entityBounds.mins + entityBounds.maxs) * 0.5f;
+
+    /* make all vertex positions relative to entityOrigin */
+    for (auto &hull : hulls) {
+        hull.bounds = MinMax();
+        for (Vector3 &v : hull.vertices) {
+            v = v - entityOrigin;
+            hull.bounds.extend(v);
+        }
     }
 
-    /* ---- compute overall bounds for the BVH node decode origin/scale ---- */
+    /* ---- compute overall relative bounds for BVH scale ---- */
     MinMax overallBounds;
     for (const auto &h : hulls) {
         overallBounds.extend(h.bounds);
     }
 
-    Vector3 center  = (overallBounds.mins + overallBounds.maxs) * 0.5f;
-    Vector3 extents = (overallBounds.maxs - overallBounds.mins) * 0.5f;
-    float maxExtent = std::max({ extents.x(), extents.y(), extents.z(), 1.0f });
+    /* BVH decode: worldPos = origin + (int16 * 65536) * scale
+       origin is (0,0,0) in the blob; entityOrigin goes in the "origin" key.
+       Scale must be small enough that bounds fit in int16 range. */
+    Vector3 absMax(
+        std::max(std::abs(overallBounds.mins.x()), std::abs(overallBounds.maxs.x())),
+        std::max(std::abs(overallBounds.mins.y()), std::abs(overallBounds.maxs.y())),
+        std::max(std::abs(overallBounds.mins.z()), std::abs(overallBounds.maxs.z()))
+    );
+    float maxCoord = std::max({ absMax.x(), absMax.y(), absMax.z(), 1.0f });
+    /* scale so that maxCoord = ~32000 * 65536 * scale */
+    float bvhScale = maxCoord / (32000.0f * 65536.0f);
 
-    float bvhScale = (maxExtent <= 32000.0f)
-                   ? 1.0f / 65536.0f
-                   : maxExtent / (32000.0f * 65536.0f);
-
-    float invBvhScale = 1.0f / (bvhScale * 65536.0f);
-
-    /* ---- build convex-hull leaf data for every brush ---- */
-    // Leaf data is serialised as a byte stream; offsets in uint32 units are
-    // stored in the BVH node later.
+    /* ---- build convex-hull leaf data ---- */
+    /* Leaf format (from engine):
+       +0x00: uint8 numVerts, numFaces, numTriFaces, numPolyFaces
+       +0x04: float origin[3], scale  (hull-local decode for packed int16 verts)
+       +0x14: int16[3] * numVerts     (6 bytes each, consecutive)
+       Then: face indices (3 bytes per face, padded to 4)
+       Then: face polygon data (CollLeafPoly_s)
+       Then: uint32 trailing surfProp word */
     std::vector<uint8_t> leafDataBytes;
-    std::vector<uint32_t> leafDataOffsets;   // byte offset per hull
+    std::vector<uint32_t> leafDataOffsets;
 
+    auto pushU8 = [&leafDataBytes](uint8_t val) {
+        leafDataBytes.push_back(val);
+    };
     auto pushU32 = [&leafDataBytes](uint32_t val) {
         uint8_t b[4];
         memcpy(b, &val, 4);
@@ -1351,100 +1372,228 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
         memcpy(b, &val, 4);
         leafDataBytes.insert(leafDataBytes.end(), b, b + 4);
     };
+    auto pushI16 = [&leafDataBytes](int16_t val) {
+        uint8_t b[2];
+        memcpy(b, &val, 2);
+        leafDataBytes.insert(leafDataBytes.end(), b, b + 2);
+    };
 
     for (const auto &hull : hulls) {
         leafDataOffsets.push_back(static_cast<uint32_t>(leafDataBytes.size()));
 
         int numVerts = std::min(static_cast<int>(hull.vertices.size()), 255);
-        int numFaces = std::min(static_cast<int>(hull.faces.size()), 255);
-        int numTriSets = 1;
 
-        /* header: numVerts | (numFaces << 8) | (numTriSets << 16) */
-        pushU32((numVerts & 0xFF)
-              | ((numFaces & 0xFF) << 8)
-              | ((numTriSets & 0xFF) << 16));
+        /* Categorize faces and build poly entries.
+           Face indices: 1 per brush side (3 verts defining face plane).
+           Tri polys: for 3-vert faces + fan-triangulated 5+-vert faces.
+           Quad polys: for 4-vert faces (parallelogram encoding). */
+        struct PolyEntry { int v0, v1, v2; };
 
-        /* hull-local origin + scale for packed-vertex decoding */
+        std::vector<std::array<int, 3>> faceIndices;
+        std::vector<PolyEntry> triPolys;
+        std::vector<PolyEntry> quadPolys;
+
+        for (const auto &winding : hull.sideWindings) {
+            int n = static_cast<int>(winding.size());
+            if (n < 3) continue;
+
+            /* Find vertex with minimum index to satisfy unsigned delta encoding */
+            int minPos = 0;
+            for (int i = 1; i < n; i++)
+                if (winding[i] < winding[minPos]) minPos = i;
+
+            /* Radiant windings are CW viewed from outside (outward normal side).
+               The engine containment test computes cross(v1-v0, v2-v0) and needs
+               it to point OUTWARD.  For CW winding, using {v0, prev, next} gives
+               cross(prev-v0, next-v0) = outward normal. */
+            if (n == 3) {
+                int a = winding[minPos];
+                int b = winding[(minPos + 1) % 3];  /* next */
+                int c = winding[(minPos + 2) % 3];  /* prev */
+                faceIndices.push_back({a, c, b});    /* {min, prev, next} → outward normal */
+                triPolys.push_back({a, b, c});       /* poly data: winding order for surface */
+            } else if (n == 4) {
+                int v0 = winding[minPos];
+                int v1 = winding[(minPos + 1) % 4];  /* next */
+                int v2 = winding[(minPos + 3) % 4];  /* prev */
+                /* derived v3 = winding[(minPos+2)%4] = v2+v1-v0 (parallelogram) */
+                faceIndices.push_back({v0, v2, v1});  /* {min, prev, next} → outward normal */
+                quadPolys.push_back({v0, v1, v2});    /* poly data unchanged */
+            } else {
+                /* 5+ vertex polygon: fan-triangulate for polys, face uses prev/next */
+                std::vector<int> rot;
+                rot.reserve(n);
+                for (int i = 0; i < n; i++)
+                    rot.push_back(winding[(minPos + i) % n]);
+                faceIndices.push_back({rot[0], rot[n - 1], rot[1]});  /* {min, prev, next} */
+                for (int i = 1; i + 1 < n; i++)
+                    triPolys.push_back({rot[0], rot[i], rot[i + 1]});
+            }
+        }
+
+        /* Sort polys by v0 for delta encoding */
+        std::sort(triPolys.begin(), triPolys.end(),
+            [](const PolyEntry &a, const PolyEntry &b) { return a.v0 < b.v0; });
+        std::sort(quadPolys.begin(), quadPolys.end(),
+            [](const PolyEntry &a, const PolyEntry &b) { return a.v0 < b.v0; });
+
+        int numFaces = std::min(static_cast<int>(faceIndices.size()), 255);
+        int numTriSets  = triPolys.empty()  ? 0 : (static_cast<int>(triPolys.size())  + 15) / 16;
+        int numQuadSets = quadPolys.empty() ? 0 : (static_cast<int>(quadPolys.size()) + 15) / 16;
+
+        /* header: 4 bytes */
+        pushU8(static_cast<uint8_t>(numVerts));
+        pushU8(static_cast<uint8_t>(numFaces));
+        pushU8(static_cast<uint8_t>(numTriSets));
+        pushU8(static_cast<uint8_t>(numQuadSets));
+
+        /* hull-local origin + scale */
         Vector3 hCenter  = (hull.bounds.mins + hull.bounds.maxs) * 0.5f;
-        Vector3 hExtents = (hull.bounds.maxs - hull.bounds.mins) * 0.5f;
-        float hMaxExt = std::max({ hExtents.x(), hExtents.y(), hExtents.z(), 1.0f });
-        float hScale  = hMaxExt / 32767.0f;
-        if (hScale < 1e-6f) hScale = 1.0f;
-        float invHScale = 1.0f / (hScale * 65536.0f);
+        Vector3 hAbsMax(
+            std::max(std::abs(hull.bounds.mins.x() - hCenter.x()),
+                     std::abs(hull.bounds.maxs.x() - hCenter.x())),
+            std::max(std::abs(hull.bounds.mins.y() - hCenter.y()),
+                     std::abs(hull.bounds.maxs.y() - hCenter.y())),
+            std::max(std::abs(hull.bounds.mins.z() - hCenter.z()),
+                     std::abs(hull.bounds.maxs.z() - hCenter.z()))
+        );
+        float hMaxCoord = std::max({ hAbsMax.x(), hAbsMax.y(), hAbsMax.z(), 1.0f });
+        float hScale = hMaxCoord / (32000.0f * 65536.0f);
 
         pushF32(hCenter.x());
         pushF32(hCenter.y());
         pushF32(hCenter.z());
         pushF32(hScale);
 
-        /* pack vertices as int16 triplets, stored in uint32 pairs */
-        std::vector<int16_t> packed;
-        packed.reserve(numVerts * 3);
+        /* pack vertices as int16[3] (6 bytes each) */
+        float invHScale = 1.0f / (hScale * 65536.0f);
         for (int i = 0; i < numVerts; i++) {
             const Vector3 &v = hull.vertices[i];
-            packed.push_back(static_cast<int16_t>(
-                std::clamp((v.x() - hCenter.x()) * invHScale, -32768.0f, 32767.0f)));
-            packed.push_back(static_cast<int16_t>(
-                std::clamp((v.y() - hCenter.y()) * invHScale, -32768.0f, 32767.0f)));
-            packed.push_back(static_cast<int16_t>(
-                std::clamp((v.z() - hCenter.z()) * invHScale, -32768.0f, 32767.0f)));
-        }
-        for (size_t i = 0; i < packed.size(); i += 2) {
-            uint32_t word = static_cast<uint16_t>(packed[i]);
-            if (i + 1 < packed.size())
-                word |= static_cast<uint32_t>(static_cast<uint16_t>(packed[i + 1])) << 16;
-            pushU32(word);
+            auto clampI16 = [](double val) -> int16_t {
+                if (val < -32768.0) val = -32768.0;
+                if (val >  32767.0) val =  32767.0;
+                return static_cast<int16_t>(val);
+            };
+            pushI16(clampI16((v.x() - hCenter.x()) * invHScale));
+            pushI16(clampI16((v.y() - hCenter.y()) * invHScale));
+            pushI16(clampI16((v.z() - hCenter.z()) * invHScale));
         }
 
-        /* face indices – 3 bytes per face, padded to uint32 */
-        std::vector<uint8_t> faceBytes;
-        faceBytes.reserve(numFaces * 3);
+        /* face indices – 3 bytes per face, padded to 4 */
         for (int i = 0; i < numFaces; i++) {
-            faceBytes.push_back(static_cast<uint8_t>(hull.faces[i][0]));
-            faceBytes.push_back(static_cast<uint8_t>(hull.faces[i][1]));
-            faceBytes.push_back(static_cast<uint8_t>(hull.faces[i][2]));
+            pushU8(static_cast<uint8_t>(faceIndices[i][0]));
+            pushU8(static_cast<uint8_t>(faceIndices[i][1]));
+            pushU8(static_cast<uint8_t>(faceIndices[i][2]));
         }
-        while (faceBytes.size() % 4 != 0) faceBytes.push_back(0);
-        for (size_t i = 0; i < faceBytes.size(); i += 4) {
-            pushU32(faceBytes[i]
-                  | (faceBytes[i + 1] << 8)
-                  | (faceBytes[i + 2] << 16)
-                  | (faceBytes[i + 3] << 24));
-        }
+        while (leafDataBytes.size() % 4 != 0) pushU8(0);
 
-        /* tri-set: required for ray-vs-hull traces that miss the GJK path */
-        int trisToEmit = std::min(numFaces, 16);
-        // header: surfPropIdx(12) | triCountMinusOne(4) | baseVertex(16)
-        pushU32(static_cast<uint32_t>((trisToEmit - 1) & 0xF) << 12);
+        /* Triangle poly sets (engine HullPolys_4_ format):
+           Per-entry: v0delta(11) | d1(9) | d2(9) | reserved(3) */
+        {
+            int idx = 0;
+            for (int s = 0; s < numTriSets; s++) {
+                int count = std::min(16, static_cast<int>(triPolys.size()) - idx);
+                uint16_t headerLow = static_cast<uint16_t>(((count - 1) & 0xF) << 12);
+                pushU32(static_cast<uint32_t>(headerLow));
 
-        uint32_t runBase = 0;
-        for (int i = 0; i < trisToEmit; i++) {
-            uint32_t v0 = hull.faces[i][0];
-            uint32_t v1 = hull.faces[i][1];
-            uint32_t v2 = hull.faces[i][2];
-
-            uint32_t v0ofs = v0 - runBase;
-            int32_t d1 = static_cast<int32_t>(v1) - static_cast<int32_t>(v0) - 1;
-            int32_t d2 = static_cast<int32_t>(v2) - static_cast<int32_t>(v0) - 1;
-            d1 = std::clamp(d1, -256, 255);
-            d2 = std::clamp(d2, -256, 255);
-
-            pushU32((v0ofs & 0x7FF)
-                  | ((static_cast<uint32_t>(d1) & 0x1FF) << 11)
-                  | ((static_cast<uint32_t>(d2) & 0x1FF) << 20));
-            runBase = v0;
+                uint32_t runBase = 0;
+                for (int i = 0; i < count; i++) {
+                    const auto &t = triPolys[idx + i];
+                    uint32_t v0delta = static_cast<uint32_t>(t.v0) - runBase;
+                    uint32_t d1 = static_cast<uint32_t>(t.v1 - t.v0 - 1);
+                    uint32_t d2 = static_cast<uint32_t>(t.v2 - t.v0 - 1);
+                    pushU32((v0delta & 0x7FF) | ((d1 & 0x1FF) << 11) | ((d2 & 0x1FF) << 20));
+                    runBase = static_cast<uint32_t>(t.v0);
+                }
+                idx += count;
+            }
         }
 
-        /* trailing surface-property word (engine reads low 12 bits) */
-        pushU32(0);   // surfProp index 0 in our local array
+        /* Quad poly sets (engine HullPolys_6_ format):
+           Per-entry: v0delta(10) | d1(9) | d2(9) | reserved(4) */
+        {
+            int idx = 0;
+            for (int s = 0; s < numQuadSets; s++) {
+                int count = std::min(16, static_cast<int>(quadPolys.size()) - idx);
+                uint16_t headerLow = static_cast<uint16_t>(((count - 1) & 0xF) << 12);
+                pushU32(static_cast<uint32_t>(headerLow));
+
+                uint32_t runBase = 0;
+                for (int i = 0; i < count; i++) {
+                    const auto &q = quadPolys[idx + i];
+                    uint32_t v0delta = static_cast<uint32_t>(q.v0) - runBase;
+                    uint32_t d1 = static_cast<uint32_t>(q.v1 - q.v0 - 1);
+                    uint32_t d2 = static_cast<uint32_t>(q.v2 - q.v0 - 1);
+                    pushU32((v0delta & 0x3FF) | ((d1 & 0x1FF) << 10) | ((d2 & 0x1FF) << 19));
+                    runBase = static_cast<uint32_t>(q.v0);
+                }
+                idx += count;
+            }
+        }
     }
 
     /* pad leaf data to 4-byte alignment */
     while (leafDataBytes.size() % 4 != 0) leafDataBytes.push_back(0);
 
-    /* ---- build the single BVH4 node ---- */
+    /* ---- surface property and name buffers ---- */
+    ApexLegends::CollSurfProps_t surfProp{};
+    surfProp.surfFlags   = 0x0400;
+    surfProp.surfTypeID  = 0;
+    surfProp.contentsIdx = 0;
+    surfProp.nameOffset  = 0;
+
+    std::vector<uint8_t> surfNameBuf(surfaceName.begin(), surfaceName.end());
+    surfNameBuf.push_back(0);
+    while (surfNameBuf.size() % 4 != 0) surfNameBuf.push_back(0);
+
+    /* ---- calculate blob layout (matching official order) ---- */
+    /* Official layout:
+       0x00: header (0x10 + numParts * 0x20)
+       Then: surfProps, contentsMask, surfNameBuf  (at fixed offsets 0x30, 0x38, 0x3C for 1 part)
+       Then: leaf data
+       Then: BVH nodes (64-byte aligned) */
+    const uint32_t headerSize = 0x10 + 1 * 0x20;  // 0x30
+
+    uint32_t surfPropsOfs    = headerSize;                                          // 0x30
+    uint32_t contentsMaskOfs = surfPropsOfs + sizeof(ApexLegends::CollSurfProps_t); // 0x38
+    uint32_t surfNameBufOfs  = contentsMaskOfs + sizeof(uint32_t);                  // 0x3C
+    uint32_t surfNameBufSize = static_cast<uint32_t>(surfNameBuf.size());
+
+    uint32_t leafDataOfs  = surfNameBufOfs + surfNameBufSize;
+    uint32_t leafDataSize = static_cast<uint32_t>(leafDataBytes.size());
+
+    /* BVH nodes: 64-byte aligned after leaf data */
+    uint32_t numNodes = 1;
+    if (hulls.size() > 4) numNodes = 2;  /* won't happen, capped at 4 */
+    uint32_t nodesOfs = (leafDataOfs + leafDataSize + 63) & ~63u;
+    uint32_t nodesSize = numNodes * sizeof(ApexLegends::BVHNode_t);
+
+    uint32_t totalBlobSize = nodesOfs + nodesSize;
+    /* round up to multiple of 4 */
+    totalBlobSize = (totalBlobSize + 3) & ~3u;
+
+    /* ---- build BVH node(s) ---- */
     ApexLegends::BVHNode_t bvhNode;
     memset(&bvhNode, 0, sizeof(bvhNode));
+
+    float invBvhScale = 1.0f / (bvhScale * 65536.0f);
+
+    /* Compute child-0 bounds first (always present) */
+    int16_t c0bounds[6]; /* minX, maxX, minY, maxY, minZ, maxZ */
+    {
+        const MinMax &hb = hulls[0].bounds;
+        auto clampI16 = [](double v) -> int16_t {
+            if (v < -32768.0) v = -32768.0;
+            if (v >  32767.0) v =  32767.0;
+            return static_cast<int16_t>(v);
+        };
+        c0bounds[0] = clampI16(std::floor(hb.mins.x() * invBvhScale));
+        c0bounds[1] = clampI16(std::ceil (hb.maxs.x() * invBvhScale));
+        c0bounds[2] = clampI16(std::floor(hb.mins.y() * invBvhScale));
+        c0bounds[3] = clampI16(std::ceil (hb.maxs.y() * invBvhScale));
+        c0bounds[4] = clampI16(std::floor(hb.mins.z() * invBvhScale));
+        c0bounds[5] = clampI16(std::ceil (hb.maxs.z() * invBvhScale));
+    }
 
     for (int c = 0; c < 4; c++) {
         int16_t bMinX, bMaxX, bMinY, bMaxY, bMinZ, bMaxZ;
@@ -1455,16 +1604,17 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
                 if (v >  32767.0) v =  32767.0;
                 return static_cast<int16_t>(v);
             };
-            bMinX = clampI16(std::floor((hb.mins.x() - center.x()) * invBvhScale));
-            bMaxX = clampI16(std::ceil ((hb.maxs.x() - center.x()) * invBvhScale));
-            bMinY = clampI16(std::floor((hb.mins.y() - center.y()) * invBvhScale));
-            bMaxY = clampI16(std::ceil ((hb.maxs.y() - center.y()) * invBvhScale));
-            bMinZ = clampI16(std::floor((hb.mins.z() - center.z()) * invBvhScale));
-            bMaxZ = clampI16(std::ceil ((hb.maxs.z() - center.z()) * invBvhScale));
+            bMinX = clampI16(std::floor(hb.mins.x() * invBvhScale));
+            bMaxX = clampI16(std::ceil (hb.maxs.x() * invBvhScale));
+            bMinY = clampI16(std::floor(hb.mins.y() * invBvhScale));
+            bMaxY = clampI16(std::ceil (hb.maxs.y() * invBvhScale));
+            bMinZ = clampI16(std::floor(hb.mins.z() * invBvhScale));
+            bMaxZ = clampI16(std::ceil (hb.maxs.z() * invBvhScale));
         } else {
-            /* unused child – inverted bounds so traversal never enters */
-            bMinX = bMinY = bMinZ = 32767;
-            bMaxX = bMaxY = bMaxZ = -32768;
+            /* unused child – flip child 0's bounds (min>max prevents traversal) */
+            bMinX = c0bounds[1]; bMaxX = c0bounds[0];
+            bMinY = c0bounds[3]; bMaxY = c0bounds[2];
+            bMinZ = c0bounds[5]; bMaxZ = c0bounds[4];
         }
         bvhNode.bounds[c]      = bMinX;
         bvhNode.bounds[4  + c] = bMaxX;
@@ -1474,7 +1624,7 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
         bvhNode.bounds[20 + c] = bMaxZ;
     }
 
-    /* set child types and leaf-data indices (uint32 offset from leaf start) */
+    /* child types and leaf-data indices (DWORD offset into leaf data) */
     for (int c = 0; c < 4; c++) {
         int childType, childIdx;
         if (c < static_cast<int>(hulls.size())) {
@@ -1492,35 +1642,7 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
         }
     }
 
-    bvhNode.cmIndex = 0;   // contents-mask index 0 in our local array
-
-    /* ---- build the surface-property entry ---- */
-    ApexLegends::CollSurfProps_t surfProp{};
-    surfProp.surfFlags   = 0;
-    surfProp.surfTypeID  = 0;
-    surfProp.contentsIdx = 0;   // index 0 in contents-mask array
-    surfProp.nameOffset  = 0;   // offset 0 in surface-name buffer
-
-    /* surface-name buffer (null-terminated, 4-byte padded) */
-    std::vector<uint8_t> surfNameBuf(surfaceName.begin(), surfaceName.end());
-    surfNameBuf.push_back(0);
-    while (surfNameBuf.size() % 4 != 0) surfNameBuf.push_back(0);
-
-    /* ---- calculate blob layout ---- */
-    const uint32_t headerSize = 0x30;            // 0x10 + 1 part * 0x20
-
-    uint32_t leafDataOfs  = headerSize;
-    uint32_t leafDataSize = static_cast<uint32_t>(leafDataBytes.size());
-
-    uint32_t nodesOfs = (leafDataOfs + leafDataSize + 63) & ~63u;   // 64-byte align
-    uint32_t nodesSize = sizeof(ApexLegends::BVHNode_t);            // 64 bytes
-
-    uint32_t contentsMaskOfs  = nodesOfs + nodesSize;
-    uint32_t surfPropsOfs     = contentsMaskOfs + sizeof(uint32_t);
-    uint32_t surfNameBufOfs   = surfPropsOfs + sizeof(ApexLegends::CollSurfProps_t);
-    uint32_t surfNameBufSize  = static_cast<uint32_t>(surfNameBuf.size());
-
-    uint32_t totalBlobSize = (surfNameBufOfs + surfNameBufSize + 3) & ~3u;
+    bvhNode.cmIndex = 0;
 
     /* ---- assemble the blob ---- */
     std::vector<uint8_t> blob(totalBlobSize, 0);
@@ -1532,24 +1654,24 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
     wr32(0x00, contentsMaskOfs);
     wr32(0x04, surfPropsOfs);
     wr32(0x08, surfNameBufOfs);
-    wr32(0x0C, 1);                        // numParts
+    wr32(0x0C, 1);
 
     /* part 0 */
-    wr32(0x10, 0);                         // bvhFlags
+    wr32(0x10, 1);                         // bvhFlags = 1 (packed int16 verts)
     wr32(0x14, nodesOfs);
-    wr32(0x18, leafDataOfs);               // vertsOfs  (hull verts live in leaf data)
-    wr32(0x1C, leafDataOfs);               // leafDataOfs
-    wrf (0x20, center.x());
-    wrf (0x24, center.y());
-    wrf (0x28, center.z());
+    wr32(0x18, leafDataOfs);
+    wr32(0x1C, leafDataOfs);
+    wrf (0x20, 0.0f);                     // origin = (0,0,0) in blob
+    wrf (0x24, 0.0f);
+    wrf (0x28, 0.0f);
     wrf (0x2C, bvhScale);
 
-    /* payload sections */
+    /* payload */
+    memcpy(blob.data() + surfPropsOfs,    &surfProp, sizeof(surfProp));
+    wr32(contentsMaskOfs, contentsMask);
+    memcpy(blob.data() + surfNameBufOfs,  surfNameBuf.data(), surfNameBufSize);
     memcpy(blob.data() + leafDataOfs,     leafDataBytes.data(), leafDataSize);
     memcpy(blob.data() + nodesOfs,        &bvhNode, sizeof(bvhNode));
-    wr32(contentsMaskOfs, contentsMask);
-    memcpy(blob.data() + surfPropsOfs,    &surfProp, sizeof(surfProp));
-    memcpy(blob.data() + surfNameBufOfs,  surfNameBuf.data(), surfNameBufSize);
 
     /* ---- base64 encode ---- */
     static const char b64[] =
@@ -1569,7 +1691,6 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
     }
 
     /* ---- split into *coll key-value pairs ---- */
-    // Each line must be a multiple of 4 chars for valid standalone base64.
     constexpr size_t COLL_LINE_LEN = 196;
 
     int lineNum = 0;
@@ -1584,4 +1705,10 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
     Sys_FPrintf(SYS_VRB,
         "  Serialized %u bytes collision (%zu hulls) into %d *coll keys for %s\n",
         totalBlobSize, hulls.size(), lineNum, entity.classname());
+
+    /* set origin key from brush geometry center */
+    char originBuf[128];
+    snprintf(originBuf, sizeof(originBuf), "%.1f %.1f %.1f",
+             entityOrigin.x(), entityOrigin.y(), entityOrigin.z());
+    entity.setKeyValue("origin", originBuf);
 }
