@@ -422,7 +422,7 @@ static CopiedString BuildLaunch_makeExePath(){
 	return path.c_str();
 }
 
-static void BuildLaunch_RunR5Apex( const char* mapName ){
+void BuildLaunch_RunR5Apex( const char* mapName ){
 	const auto exePath = BuildLaunch_makeExePath();
 	if ( !file_exists( exePath.c_str() ) ) {
 		const auto msg = StringStream(

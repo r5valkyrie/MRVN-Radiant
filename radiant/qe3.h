@@ -31,6 +31,7 @@ void    Sys_SetTitle( const char *text, bool modified );
 
 void RunBSP( size_t buildIdx );
 void BuildAndLaunchGame();
+void LaunchGameOnly();
 
 
 void QE_InitVFS();

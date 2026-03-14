@@ -45,3 +45,4 @@ extern bool g_WatchBSP0_DumpLog;
 void BuildLaunch_Request();
 bool BuildLaunch_IsPending();
 void BuildLaunch_Clear();
+void BuildLaunch_RunR5Apex( const char* mapName );

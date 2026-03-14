@@ -1147,6 +1147,7 @@ void create_bsp_menu( QMenuBar *menubar ){
 
 	create_menu_item_with_mnemonic( menu, "Customize...", "BuildMenuCustomize" );
 	create_menu_item_with_mnemonic( menu, "Run recent build", "Build_runRecentExecutedBuild" );
+	create_menu_item_with_mnemonic( menu, "Launch game without building", "LaunchGameOnly" );
 
 	menu->addSeparator();
 
@@ -1328,7 +1329,8 @@ void register_shortcuts(){
 void File_constructToolbar( QToolBar* toolbar ){
 	toolbar_append_button( toolbar, "Open an existing map", "file_open.png", "OpenMap" );
 	toolbar_append_button( toolbar, "Save the active map", "file_save.png", "SaveMap" );
-	toolbar_append_button( toolbar, "Build and launch game", "play.png", "BuildAndLaunchGame" );
+	toolbar_append_button( toolbar, "Build and launch game", "play-build.png", "BuildAndLaunchGame" );
+	toolbar_append_button( toolbar, "Launch game without building", "play-no-build.png", "LaunchGameOnly" );
 }
 
 void UndoRedo_constructToolbar( QToolBar* toolbar ){
@@ -2111,6 +2113,7 @@ void MainFrame_Construct(){
 	GlobalCommands_insert( "BuildMenuCustomize", FreeCaller<DoBuildMenu>() );
 	GlobalCommands_insert( "Build_runRecentExecutedBuild", FreeCaller<Build_runRecentExecutedBuild>(), QKeySequence( "F5" ) );
 	GlobalCommands_insert( "BuildAndLaunchGame", FreeCaller<BuildAndLaunchGame>() );
+	GlobalCommands_insert( "LaunchGameOnly", FreeCaller<LaunchGameOnly>() );
 
 	GlobalCommands_insert( "OpenGLFont", FreeCaller<OpenGLFont_select>() );
 
