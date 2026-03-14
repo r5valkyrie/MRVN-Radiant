@@ -591,11 +591,22 @@ class RenderableConnectionLines : public Renderable
 		m_zipline_lines.clear();
 		std::set<TargetPair> drawn;
 		Shader* shader = RenderablePivot::getShader();
+		const Vector3& viewer = volume.getViewer();
+		const float maxDistSq = 4096.f * 4096.f;
 
 		for ( TargetableInstances::const_iterator i = m_instances.begin(); i != m_instances.end(); ++i )
 		{
 			const TargetableInstance& source = **i;
 			if ( !source.path().top().get().visible() ) {
+				continue;
+			}
+
+			// Distance-based early-out
+			const Vector3& pos = source.world_position();
+			const float dx = pos.x() - viewer.x();
+			const float dy = pos.y() - viewer.y();
+			const float dz = pos.z() - viewer.z();
+			if ( dx * dx + dy * dy + dz * dz > maxDistSq ) {
 				continue;
 			}
 
@@ -640,9 +651,18 @@ public:
 
 	void renderSolid( Renderer& renderer, const VolumeTest& volume ) const {
 		if( g_showConnections ){
+			const Vector3& viewer = volume.getViewer();
 			for ( TargetableInstances::const_iterator i = m_instances.begin(); i != m_instances.end(); ++i )
 			{
 				if ( ( *i )->path().top().get().visible() ) {
+					// Distance-based early-out: skip entities far from the camera
+					const Vector3& pos = ( *i )->world_position();
+					const float dx = pos.x() - viewer.x();
+					const float dy = pos.y() - viewer.y();
+					const float dz = pos.z() - viewer.z();
+					if ( dx * dx + dy * dy + dz * dz > 4096.f * 4096.f ) {
+						continue;
+					}
 					( *i )->render( renderer, volume );
 				}
 			}

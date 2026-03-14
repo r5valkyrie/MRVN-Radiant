@@ -30,6 +30,7 @@
 #include "scenegraph.h"
 #include <vector>
 #include <cmath>
+#include <algorithm>
 #include <unordered_set>
 
 inline Cullable* Instance_getCullable( scene::Instance& instance ){
@@ -198,6 +199,79 @@ inline void Scene_Render( Renderer& renderer, const VolumeTest& volume, float ma
 	std::unordered_set<scene::Instance*> visibleSet;
 	bool hasOctree = SceneGraph_queryVisibleInstances( volume, visibleSet );
 	const auto* visPtr = hasOctree ? &visibleSet : nullptr;
-	GlobalSceneGraph().traverse( ForEachVisible<RenderHighlighted>( volume, RenderHighlighted( renderer, volume ), maxDistance, visPtr ) );
+
+	if ( hasOctree && maxDistance > 0 && !visibleSet.empty() ) {
+		// Fast path for 3D camera view: iterate only visible instances from octree
+		// Sort visible instances by path (gives parent-before-child ordering)
+		std::vector<scene::Instance*> sorted;
+		sorted.reserve( visibleSet.size() );
+		for ( auto* inst : visibleSet ) {
+			sorted.push_back( inst );
+		}
+		std::sort( sorted.begin(), sorted.end(), []( const scene::Instance* a, const scene::Instance* b ) {
+			return a->path() < b->path();
+		} );
+
+		ForEachVisible<RenderHighlighted> walker( volume, RenderHighlighted( renderer, volume ), maxDistance, visPtr );
+
+		// Walk sorted list with proper pre/post ordering for state management
+		struct ActiveEntry {
+			scene::Instance* instance;
+			std::size_t pathSize;
+		};
+		std::vector<ActiveEntry> activeStack;
+		activeStack.reserve( 8 );
+		std::size_t skipDepth = 0;
+
+		for ( scene::Instance* inst : sorted ) {
+			const scene::Path& path = inst->path();
+			const std::size_t pathSize = path.size();
+
+			// Skip children of rejected ancestors
+			if ( skipDepth > 0 && pathSize > skipDepth ) {
+				continue;
+			}
+			skipDepth = 0;
+
+			// Pop ancestors whose subtree is complete
+			while ( !activeStack.empty() ) {
+				const auto& top = activeStack.back();
+				if ( top.pathSize < pathSize ) {
+					// Check if top is an ancestor of current (path prefix match)
+					const scene::Path& topPath = top.instance->path();
+					bool isAncestor = true;
+					for ( std::size_t k = 0; k < top.pathSize; ++k ) {
+						if ( topPath[k].get_pointer() != path[k].get_pointer() ) {
+							isAncestor = false;
+							break;
+						}
+					}
+					if ( isAncestor ) break;
+				}
+				walker.post( top.instance->path(), *top.instance );
+				activeStack.pop_back();
+			}
+
+			// Visit current instance
+			if ( walker.pre( path, *inst ) ) {
+				activeStack.push_back( { inst, pathSize } );
+			}
+			else {
+				walker.post( path, *inst );
+				skipDepth = pathSize;
+			}
+		}
+
+		// Close remaining active ancestors
+		while ( !activeStack.empty() ) {
+			walker.post( activeStack.back().instance->path(), *activeStack.back().instance );
+			activeStack.pop_back();
+		}
+	}
+	else {
+		// Fallback: full scene graph traversal (XY views or no octree)
+		GlobalSceneGraph().traverse( ForEachVisible<RenderHighlighted>( volume, RenderHighlighted( renderer, volume ), maxDistance, visPtr ) );
+	}
+
 	GlobalShaderCache().forEachRenderable( RenderHighlighted::RenderCaller( RenderHighlighted( renderer, volume ) ) );
 }
