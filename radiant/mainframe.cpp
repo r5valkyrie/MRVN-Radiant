@@ -1384,60 +1384,6 @@ void Manipulators_constructToolbar( QToolBar* toolbar ){
 	toolbar_append_toggle_button( toolbar, "UV Tool", "select_mouseuv.png", "MouseUV" );
 }
 
-void create_main_toolbar( QToolBar *toolbar,  MainFrame::EViewStyle style ){
- 	File_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	UndoRedo_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	RotateFlip_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	Select_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	CSG_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	ComponentModes_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	if ( style != MainFrame::eSplit ) {
-		XYWnd_constructToolbar( toolbar );
-		toolbar->addSeparator();
-	}
-
-	CamWnd_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	Manipulators_constructToolbar( toolbar );
-	toolbar->addSeparator();
-
-	if ( !string_empty( g_pGameDescription->getKeyValue( "no_patch" ) ) ) {
-		Patch_constructToolbar( toolbar );
-		toolbar->addSeparator();
-	}
-
-	toolbar_append_toggle_button( toolbar, "Texture Lock", "texture_lock.png", "TogTexLock" );
-	toolbar_append_toggle_button( toolbar, "Texture Vertex Lock", "texture_vertexlock.png", "TogTexVertexLock" );
- 	toolbar->addSeparator();
-
-	toolbar_append_button( toolbar, "Entities", "entities.png", "ToggleEntityInspector" );
-	// disable the console and texture button in the regular layouts
-	if ( style != MainFrame::eRegular && style != MainFrame::eRegularLeft ) {
-		toolbar_append_button( toolbar, "Console", "console.png", "ToggleConsole" );
-	}
-	if ( ( style != MainFrame::eRegular && style != MainFrame::eRegularLeft ) || g_Layout_builtInGroupDialog.m_value ) {
-		toolbar_append_button( toolbar, "Texture Browser", "texture_browser.png", "ToggleTextures" );
-	}
-
-	// TODO: call light inspector
-	//QAction* g_view_lightinspector_button = toolbar_append_button(toolbar, "Light Inspector", "lightinspector.png", "ToggleLightInspector");
-
-	toolbar->addSeparator();
-	toolbar_append_button( toolbar, "Refresh Models", "refresh_models.png", "RefreshReferences" );
-}
 
 
 void create_main_statusbar( QStatusBar *statusbar, QLabel *pStatusLabel[c_status__count] ){
@@ -1666,17 +1612,74 @@ void MainFrame::Create(){
 	create_main_menu( window->menuBar(), CurrentStyle() );
 
 	{
+		// --- File Toolbar: Open, Save, Build ---
 		{
-			QToolBar *toolbar = window->addToolBar( "Main Toolbar" );
-			toolbar->setObjectName( "Main Toolbar" );
-			toolbar->setIconSize( QSize( 32, 32 ) );
-			create_main_toolbar( toolbar, CurrentStyle() );
+			QToolBar *toolbar = window->addToolBar( "File Toolbar" );
+			toolbar->setObjectName( "File Toolbar" );
+			toolbar->setIconSize( QSize( 24, 24 ) );
+
+			File_constructToolbar( toolbar );
 		}
+		// --- Edit Toolbar: Undo/Redo, Transform, Selection, CSG, Component Modes, Manipulators ---
+		{
+			QToolBar *toolbar = window->addToolBar( "Edit Toolbar" );
+			toolbar->setObjectName( "Edit Toolbar" );
+			toolbar->setIconSize( QSize( 24, 24 ) );
+
+			UndoRedo_constructToolbar( toolbar );
+			toolbar->addSeparator();
+
+			RotateFlip_constructToolbar( toolbar );
+			toolbar->addSeparator();
+
+			Select_constructToolbar( toolbar );
+			toolbar->addSeparator();
+
+			CSG_constructToolbar( toolbar );
+			toolbar->addSeparator();
+
+			ComponentModes_constructToolbar( toolbar );
+			toolbar->addSeparator();
+
+			Manipulators_constructToolbar( toolbar );
+
+			if ( !string_empty( g_pGameDescription->getKeyValue( "no_patch" ) ) ) {
+				toolbar->addSeparator();
+				Patch_constructToolbar( toolbar );
+			}
+		}
+		// --- View Toolbar: View settings, Texture lock, Panels ---
+		{
+			QToolBar *toolbar = window->addToolBar( "View Toolbar" );
+			toolbar->setObjectName( "View Toolbar" );
+			toolbar->setIconSize( QSize( 24, 24 ) );
+
+			if ( CurrentStyle() != MainFrame::eSplit ) {
+				XYWnd_constructToolbar( toolbar );
+			}
+			CamWnd_constructToolbar( toolbar );
+			toolbar->addSeparator();
+
+			toolbar_append_toggle_button( toolbar, "Texture Lock", "texture_lock.png", "TogTexLock" );
+			toolbar_append_toggle_button( toolbar, "Texture Vertex Lock", "texture_vertexlock.png", "TogTexVertexLock" );
+			toolbar->addSeparator();
+
+			toolbar_append_button( toolbar, "Entities", "entities.png", "ToggleEntityInspector" );
+			if ( CurrentStyle() != MainFrame::eRegular && CurrentStyle() != MainFrame::eRegularLeft ) {
+				toolbar_append_button( toolbar, "Console", "console.png", "ToggleConsole" );
+			}
+			if ( ( CurrentStyle() != MainFrame::eRegular && CurrentStyle() != MainFrame::eRegularLeft ) || g_Layout_builtInGroupDialog.m_value ) {
+				toolbar_append_button( toolbar, "Texture Browser", "texture_browser.png", "ToggleTextures" );
+			}
+			toolbar_append_button( toolbar, "Refresh Models", "refresh_models.png", "RefreshReferences" );
+		}
+		// --- Filter Toolbar ---
 		{
 			QToolBar *toolbar = window->addToolBar( "Filter Toolbar" );
 			toolbar->setObjectName( "Filter Toolbar" );
 			create_filter_toolbar( toolbar );
 		}
+		// --- Plugin Toolbar ---
 		{
 			QToolBar *toolbar = window->addToolBar( "Plugin Toolbar" );
 			toolbar->setObjectName( "Plugin Toolbar" );
