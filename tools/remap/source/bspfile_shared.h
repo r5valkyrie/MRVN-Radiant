@@ -50,6 +50,7 @@ namespace Shared {
         MinMax                 minmax;
         shaderInfo_t          *shaderInfo;
         int                    lightmapPage;
+        bool                   noCollision = false;
         std::vector<Vertex_t>  vertices;
         std::vector<uint16_t>  triangles;
     };

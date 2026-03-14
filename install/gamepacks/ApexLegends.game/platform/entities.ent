@@ -206,6 +206,14 @@ Introduced by Titanfall
 Introduced by Titanfall
 </group>
 
+<group name="func_group" color="0 0.5 0.8">
+----- KEYS -----
+<targetname key="targetname" name="Name">The name that other entities refer to this entity by.</targetname>
+<boolean key="_nocollision" name="No Collision" value="0">Set to 1 to disable collision for all brushes in this entity.</boolean>
+----- NOTES -----
+Brush grouping entity. Allows setting shared properties (e.g. no collision) on a group of brushes.
+</group>
+
 <group name="worldspawn" color="1 0 1">
 ----- KEYS -----
 <string key="lightprobe_voronoi_leafsize" name="lightprobe_voronoi_leafsize">New in Titanfall; TODO: identify</string>

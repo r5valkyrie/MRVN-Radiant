@@ -53,6 +53,7 @@ void Shared::MakeMeshes(const entity_t &e) {
 
             Shared::Mesh_t &mesh = Shared::meshes.emplace_back();
             mesh.shaderInfo = side.shaderInfo;
+            mesh.noCollision = brush.noCollision;
             Shared::Island_t  island;
 
             Vector3 normal = side.plane.normal();

@@ -1637,6 +1637,11 @@ static bool ParseMapEntity( bool onlyLights, bool noCollapseGroups, int mapEntit
 
 	/* group entities are just for editor convenience, toss all brushes into worldspawn */
 	if ( !noCollapseGroups && funcGroup ) {
+		if ( mapEnt.boolForKey( "_nocollision" ) ) {
+			for ( brush_t& brush : mapEnt.brushes ) {
+				brush.noCollision = true;
+			}
+		}
 		MoveBrushesToWorld( mapEnt );
 		entities.pop_back();
 		return true;

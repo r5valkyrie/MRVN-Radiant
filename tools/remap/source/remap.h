@@ -630,6 +630,7 @@ struct brush_t {
     int                  compileFlags;         /* ydnar */
     bool                 detail;
     bool                 opaque;
+    bool                 noCollision;
 
     int                  portalareas[2];
 

@@ -1012,6 +1012,10 @@ namespace {
         int totalTris = 0;
 
         for (const Shared::Mesh_t& mesh : Shared::meshes) {
+            if (mesh.noCollision) {
+                continue;
+            }
+
             int contentFlags = CONTENTS_SOLID;
             int surfaceFlags = 0;
             const char* surfaceName = "concrete";
