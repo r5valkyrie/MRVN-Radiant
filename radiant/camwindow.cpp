@@ -1027,6 +1027,10 @@ public:
 
 	Timer m_render_time;
 
+	Timer m_fps_timer;
+	int m_fps_frame_count = 0;
+	float m_fps = 0.0f;
+
 	CamWnd();
 	~CamWnd();
 
@@ -2514,6 +2518,17 @@ void CamWnd::Cam_Draw(){
 		GlobalOpenGL().drawString( Cull_GetStats() );
 	}
 
+	// FPS counter update
+	++m_fps_frame_count;
+	{
+		const int elapsed = m_fps_timer.elapsed_msec();
+		if ( elapsed >= 500 ) {
+			m_fps = m_fps_frame_count * 1000.0f / elapsed;
+			m_fps_frame_count = 0;
+			m_fps_timer.start();
+		}
+	}
+
 	if ( g_camwindow_globals_private.m_showDebugCoordinates ) {
 		const int line_height = GlobalOpenGL().m_font->getPixelHeight();
 		const float start_x = 4.0f;
@@ -2559,6 +2574,8 @@ void CamWnd::Cam_Draw(){
 				FloatFormat( bounds.origin[2], 7, 1 )
 			) );
 		}
+
+		draw_line( StringStream<64>( "FPS: ", FloatFormat( m_fps, 5, 1 ) ) );
 
 		std::set<CopiedString> shaders;
 		collect_selected_shaders( shaders );
