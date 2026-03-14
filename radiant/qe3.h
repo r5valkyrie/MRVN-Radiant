@@ -30,6 +30,7 @@ void    Sys_SetTitle( const char *text, bool modified );
 
 
 void RunBSP( size_t buildIdx );
+void RunBSPAndLaunch( size_t buildIdx );
 void BuildAndLaunchGame();
 void LaunchGameOnly();
 

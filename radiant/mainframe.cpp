@@ -58,6 +58,7 @@
 #include <QGroupBox>
 #include <QDialogButtonBox>
 #include <QPushButton>
+#include <QToolButton>
 
 #include "commandlib.h"
 #include "scenelib.h"
@@ -1326,11 +1327,43 @@ void register_shortcuts(){
 	Entity_registerShortcuts();
 }
 
+static QToolButton* g_buildLaunchButton = nullptr;
+
 void File_constructToolbar( QToolBar* toolbar ){
 	toolbar_append_button( toolbar, "Open an existing map", "file_open.png", "OpenMap" );
 	toolbar_append_button( toolbar, "Save the active map", "file_save.png", "SaveMap" );
-	toolbar_append_button( toolbar, "Build and launch game", "play-build.png", "BuildAndLaunchGame" );
+
+	// Build and launch with dropdown for build config selection (VS-style)
+	{
+		QAction* buildAction = toolbar_append_button( toolbar, "Build and launch game", "play-build.png", "BuildAndLaunchGame" );
+		if ( auto *toolButton = qobject_cast<QToolButton*>( toolbar->widgetForAction( buildAction ) ) ) {
+			toolButton->setPopupMode( QToolButton::MenuButtonPopup );
+			toolButton->setToolButtonStyle( Qt::ToolButtonTextBesideIcon );
+			toolButton->setStyleSheet(
+				"QToolButton { border: 1px solid rgba(255,255,255,40); border-radius: 2px; padding: 2px 12px 2px 4px; }"
+				"QToolButton::menu-button { border-left: 1px solid rgba(255,255,255,40); width: 16px; }"
+				"QToolButton:hover { border-color: rgba(255,255,255,80); }"
+			);
+			auto *dropdownMenu = new QMenu( toolButton );
+			QObject::connect( dropdownMenu, &QMenu::aboutToShow, [dropdownMenu]{
+				Build_constructBuildLaunchMenu( dropdownMenu );
+			} );
+			toolButton->setMenu( dropdownMenu );
+			g_buildLaunchButton = toolButton;
+		}
+	}
+
 	toolbar_append_button( toolbar, "Launch game without building", "play-no-build.png", "LaunchGameOnly" );
+}
+
+void MainFrame_updateMapNameLabel( const char* mapName, bool modified ){
+	if ( g_buildLaunchButton != nullptr ) {
+		auto label = StringStream<64>( PathFilename( mapName ) );
+		if ( modified ) {
+			label << " *";
+		}
+		g_buildLaunchButton->setText( label.c_str() );
+	}
 }
 
 void UndoRedo_constructToolbar( QToolBar* toolbar ){

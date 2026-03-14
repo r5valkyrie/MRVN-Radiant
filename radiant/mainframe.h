@@ -139,6 +139,7 @@ public:
 extern MainFrame* g_pParentWnd;
 
 QWidget* MainFrame_getWindow();
+void MainFrame_updateMapNameLabel( const char* mapName, bool modified );
 
 
 template<typename Value>

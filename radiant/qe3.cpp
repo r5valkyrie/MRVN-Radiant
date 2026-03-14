@@ -340,6 +340,23 @@ void BuildAndLaunchGame(){
 	Build_runRecentExecutedBuild();
 }
 
+void RunBSPAndLaunch( size_t buildIdx ){
+	if ( Map_Unnamed( g_map ) ) {
+		globalErrorStream() << "build cancelled: the map is unnamed\n";
+		return;
+	}
+
+#if defined( WIN32 )
+	const int killed = terminate_processes_by_name( "r5apex.exe" );
+	if ( killed > 0 ) {
+		globalOutputStream() << "Closed r5apex.exe (" << killed << ")\n";
+	}
+#endif
+
+	BuildLaunch_Request();
+	RunBSP( buildIdx );
+}
+
 void LaunchGameOnly(){
 	if ( Map_Unnamed( g_map ) ) {
 		globalErrorStream() << "launch cancelled: the map is unnamed\n";
@@ -369,4 +386,5 @@ void Sys_SetTitle( const char *text, bool modified ){
 	}
 
 	MainFrame_getWindow()->setWindowTitle( title.c_str() );
+	MainFrame_updateMapNameLabel( text, modified );
 }

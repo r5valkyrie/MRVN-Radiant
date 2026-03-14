@@ -1029,6 +1029,23 @@ void Build_refreshMenu( QMenu* menu ){
 	Build_constructMenu( menu );
 }
 
+void Build_constructBuildLaunchMenu( QMenu* menu ){
+	menu->clear();
+	size_t buildIdx{};
+	for ( const auto& [ name, commands ] : g_build_project )
+	{
+		if ( is_separator( name, commands ) ) {
+			menu->addSeparator();
+		}
+		else
+		{
+			const size_t idx = buildIdx;
+			menu->addAction( name.c_str(), [idx]{ RunBSPAndLaunch( idx ); } );
+		}
+		++buildIdx;
+	}
+}
+
 
 namespace
 {

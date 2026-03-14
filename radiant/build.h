@@ -35,6 +35,7 @@ void BuildMenu_Construct();
 void BuildMenu_Destroy();
 
 void Build_constructMenu( class QMenu* menu );
+void Build_constructBuildLaunchMenu( class QMenu* menu );
 extern QMenu* g_bsp_menu;
 
 void Build_runRecentExecutedBuild();
