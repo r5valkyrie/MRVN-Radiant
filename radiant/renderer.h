@@ -200,8 +200,8 @@ inline void Scene_Render( Renderer& renderer, const VolumeTest& volume, float ma
 	bool hasOctree = SceneGraph_queryVisibleInstances( volume, visibleSet );
 	const auto* visPtr = hasOctree ? &visibleSet : nullptr;
 
-	if ( hasOctree && maxDistance > 0 && !visibleSet.empty() ) {
-		// Fast path for 3D camera view: iterate only visible instances from octree
+	if ( hasOctree && !visibleSet.empty() ) {
+		// Fast path: iterate only visible instances from octree
 		// Sort visible instances by path (gives parent-before-child ordering)
 		std::vector<scene::Instance*> sorted;
 		sorted.reserve( visibleSet.size() );
@@ -269,7 +269,7 @@ inline void Scene_Render( Renderer& renderer, const VolumeTest& volume, float ma
 		}
 	}
 	else {
-		// Fallback: full scene graph traversal (XY views or no octree)
+		// Fallback: full scene graph traversal (no octree available)
 		GlobalSceneGraph().traverse( ForEachVisible<RenderHighlighted>( volume, RenderHighlighted( renderer, volume ), maxDistance, visPtr ) );
 	}
 

@@ -3454,6 +3454,7 @@ class BrushInstance :
 	mutable AABB m_aabb_component;
 	mutable RenderablePointVector m_render_faces_wireframe;
 	mutable bool m_viewChanged;   // requires re-evaluation of view-dependent cached data
+	mutable bool m_allFacesVisible; // true when wireframe was last built with all faces visible
 
 	BrushClipPlane m_clipPlane;
 
@@ -3484,6 +3485,7 @@ public:
 		m_render_selected( GL_POINTS ),
 		m_render_faces_wireframe( GL_POINTS ),
 		m_viewChanged( false ),
+		m_allFacesVisible( false ),
 		m_transform( Brush::TransformChangedCaller( m_brush ), ApplyTransformCaller( *this ) ){
 		m_brush.instanceAttach( Instance::path() );
 		m_brush.attach( *this );
@@ -3578,6 +3580,7 @@ public:
 
 	void edge_clear(){
 		m_edgeInstances.clear();
+		m_allFacesVisible = false;
 	}
 	void edge_push_back( SelectableEdge& edge ){
 		m_edgeInstances.push_back( EdgeInstance( m_faceInstances, edge ) );
@@ -3652,9 +3655,14 @@ public:
 			bool faces_visible[c_brush_maxFaces];
 
 			if ( volume.TestAABB( m_brush.localAABB(), localToWorld ) == c_volumeInside ) {
+				if ( m_allFacesVisible ) {
+					return; // wireframe already has all edges, skip rebuild
+				}
+				m_allFacesVisible = true;
 				std::fill_n( faces_visible, m_faceInstances.size(), true );
 			}
 			else {
+				m_allFacesVisible = false;
 				bool* j = faces_visible;
 				for ( FaceInstances::const_iterator i = m_faceInstances.begin(); i != m_faceInstances.end(); ++i, ++j )
 				{
