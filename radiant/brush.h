@@ -1495,6 +1495,7 @@ public:
 
 bool brush_filtered( Brush& brush );
 void Brush_setBatchMode( bool batch );
+bool Brush_isBatchMode();
 void add_brush_filter( BrushFilter& filter, int mask, bool invert = false );
 
 
@@ -1664,6 +1665,7 @@ private:
 	mutable bool m_planeChanged;   // b-rep evaluation required
 	mutable bool m_transformChanged;   // transform evaluation required
 	bool m_BRep_evaluation = false; //mutex for invalidation
+	mutable bool m_selectionDirty = false; // selection topology rebuild required
 // ----
 
 public:
@@ -1857,6 +1859,13 @@ public:
 		}
 	}
 
+	void ensureSelectionData() const {
+		if ( m_selectionDirty ) {
+			m_selectionDirty = false;
+			const_cast<Brush*>( this )->buildSelectionData();
+		}
+	}
+
 	void transformChanged(){
 		planeChanged();
 		m_transformChanged = true;
@@ -1886,6 +1895,7 @@ public:
 	}
 
 	void renderComponents( SelectionSystem::EComponentMode mode, Renderer& renderer, const VolumeTest& volume, const Matrix4& localToWorld ) const {
+		ensureSelectionData();
 		switch ( mode )
 		{
 		case SelectionSystem::eVertex:
@@ -2588,6 +2598,8 @@ private:
 
 /// \brief Constructs the face windings and updates anything that depends on them.
 	void buildBRep();
+/// \brief Rebuilds selection-only topology (edge/vertex instances, selection points, face centroids).
+	void buildSelectionData();
 };
 
 
@@ -3785,6 +3797,7 @@ public:
 		}
 	}
 	void testSelectComponents( Selector& selector, SelectionTest& test, SelectionSystem::EComponentMode mode ){
+		m_brush.ensureSelectionData();
 		test.BeginMesh( localToWorld() );
 
 		switch ( mode )
@@ -3827,6 +3840,7 @@ public:
 		}
 	}
 	void gatherComponentsHighlight( std::vector<std::vector<Vector3>>& polygons, SelectionIntersection& intersection, SelectionTest& test, SelectionSystem::EComponentMode mode ) const {
+		m_brush.ensureSelectionData();
 		test.BeginMesh( localToWorld() );
 
 		switch ( mode )
@@ -3893,6 +3907,7 @@ public:
 	}
 
 	void invertComponentSelection( SelectionSystem::EComponentMode mode ){
+		m_brush.ensureSelectionData();
 		switch ( mode )
 		{
 		case SelectionSystem::eVertex:
@@ -4007,6 +4022,7 @@ public:
 	}
 
 	void selectVerticesOnPlane( const Plane3& plane ){
+		m_brush.ensureSelectionData();
 		for ( FaceInstance& fi : m_faceInstances )
 			if( plane3_equal( plane, fi.getFace().plane3() ) || plane3_equal( plane, plane3_flipped( fi.getFace().plane3() ) ) )
 				for ( VertexInstance& vi : m_vertexInstances )

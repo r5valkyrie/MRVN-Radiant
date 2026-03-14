@@ -979,6 +979,17 @@ void Map_LoadFile( const char *filename ){
 		g_map.m_resource = GlobalReferenceCache().capture( g_map.m_name.c_str() );
 		g_map.m_resource->attach( g_map );
 		SceneGraph_endBatchInsert();
+
+		{
+			ScopeTimer timer2( "brep evaluation" );
+			struct EvaluateBRep {
+				void operator()( BrushInstance& brushInstance ) const {
+					brushInstance.getBrush().evaluateBRep();
+				}
+			};
+			Scene_forEachBrush( GlobalSceneGraph(), EvaluateBRep() );
+		}
+
 		Brush_setBatchMode( false );
 		PerformFiltering();
 		Node_getTraversable( GlobalSceneGraph().root() )->traverse( entity_updateworldspawn() );

@@ -109,6 +109,7 @@ inline bool Brush_isBounded( const Brush& brush ){
 void Brush::buildBRep(){
 	m_BRep_evaluation = true;
 
+	const bool batchMode = Brush_isBatchMode();
 	bool degenerate = buildWindings();
 
 	std::size_t faces_size = 0;
@@ -124,8 +125,10 @@ void Brush::buildBRep(){
 	if ( degenerate || faces_size < 4 || faceVerticesCount != ( faceVerticesCount >> 1 ) << 1 ) { // sum of vertices for each face of a valid polyhedron is always even
 		m_uniqueVertexPoints.resize( 0 );
 
-		vertex_clear();
-		edge_clear();
+		if ( !batchMode ) {
+			vertex_clear();
+			edge_clear();
+		}
 
 		m_edge_indices.resize( 0 );
 		m_edge_faces.resize( 0 );
@@ -182,7 +185,7 @@ void Brush::buildBRep(){
 					}
 				}
 
-				{
+				if ( !batchMode ) {
 					edge_clear();
 					m_select_edges.reserve( uniqueEdges.size() );
 					for ( UniqueEdges::iterator i = uniqueEdges.begin(); i != uniqueEdges.end(); ++i )
@@ -200,7 +203,7 @@ void Brush::buildBRep(){
 					}
 				}
 
-				{
+				if ( !batchMode ) {
 					m_uniqueEdgePoints.resize( uniqueEdges.size() );
 					for ( std::size_t i = 0; i < uniqueEdges.size(); ++i )
 					{
@@ -241,7 +244,7 @@ void Brush::buildBRep(){
 					}
 				}
 
-				{
+				if ( !batchMode ) {
 					vertex_clear();
 					m_select_vertices.reserve( uniqueVertices.size() );
 					for ( UniqueVertices::iterator i = uniqueVertices.begin(); i != uniqueVertices.end(); ++i )
@@ -300,20 +303,25 @@ void Brush::buildBRep(){
 			}
 		}
 
-		{
+		if ( !batchMode ) {
 			m_faceCentroidPoints.resize( m_faces.size() );
 			for ( std::size_t i = 0; i < m_faces.size(); ++i )
 			{
 				m_faces[i]->construct_centroid();
 				m_faceCentroidPoints[i] = pointvertex_for_windingpoint( m_faces[i]->centroid(), colour_vertex );
 			}
-		}
 
-		if( m_vertexModeOn ){
-			for ( Observers::iterator o = m_observers.begin(); o != m_observers.end(); ++o )
-				( *o )->vertex_select();
+			if( m_vertexModeOn ){
+				for ( Observers::iterator o = m_observers.begin(); o != m_observers.end(); ++o )
+					( *o )->vertex_select();
+			}
 		}
 	}
+
+	if ( batchMode ) {
+		m_selectionDirty = true;
+	}
+
 	// Mark all face VBOs dirty since winding data has changed
 	for ( Faces::iterator i = m_faces.begin(); i != m_faces.end(); ++i )
 	{
@@ -321,6 +329,110 @@ void Brush::buildBRep(){
 	}
 
 	m_BRep_evaluation = false;
+}
+
+void Brush::buildSelectionData(){
+	// Rebuild selection-only data that was skipped during batch load.
+	// BRep geometry (windings, edge_indices, edge_faces, uniqueVertexPoints) is already valid.
+
+	std::size_t faceVerticesCount = 0;
+	for ( Faces::const_iterator i = m_faces.begin(); i != m_faces.end(); ++i )
+	{
+		faceVerticesCount += ( *i )->getWinding().numpoints;
+	}
+
+	if ( m_edge_indices.empty() ) {
+		// degenerate brush — nothing to build
+		vertex_clear();
+		edge_clear();
+		return;
+	}
+
+	{
+		typedef std::vector<FaceVertexId> FaceVertices;
+		FaceVertices faceVertices;
+		faceVertices.reserve( faceVerticesCount );
+		for ( std::size_t i = 0; i != m_faces.size(); ++i )
+		{
+			for ( std::size_t j = 0; j < m_faces[i]->getWinding().numpoints; ++j )
+			{
+				faceVertices.push_back( FaceVertexId( i, j ) );
+			}
+		}
+
+		// Rebuild edge selection data
+		{
+			ProximalVertexArray edgePairs;
+			edgePairs.resize( faceVertices.size() );
+			for ( std::size_t i = 0; i < faceVertices.size(); ++i )
+			{
+				edgePairs[i].m_next = edgePairs.data() + absoluteIndex( next_edge( m_faces, faceVertices[i] ) );
+			}
+
+			typedef VertexBuffer<ProximalVertex> UniqueEdges;
+			UniqueEdges uniqueEdges;
+			uniqueEdges.reserve( faceVertices.size() );
+			{
+				UniqueVertexBuffer<ProximalVertex> inserter( uniqueEdges );
+				for ( ProximalVertexArray::iterator i = edgePairs.begin(); i != edgePairs.end(); ++i )
+				{
+					inserter.insert( ProximalVertex( &( *i ) ) );
+				}
+			}
+
+			edge_clear();
+			m_select_edges.reserve( uniqueEdges.size() );
+			for ( UniqueEdges::iterator i = uniqueEdges.begin(); i != uniqueEdges.end(); ++i )
+			{
+				edge_push_back( faceVertices[ProximalVertexArray_index( edgePairs, *i )] );
+			}
+
+			m_uniqueEdgePoints.resize( uniqueEdges.size() );
+			for ( std::size_t i = 0; i < uniqueEdges.size(); ++i )
+			{
+				FaceVertexId faceVertex = faceVertices[ProximalVertexArray_index( edgePairs, uniqueEdges[i] )];
+				const Winding& w = m_faces[faceVertex.getFace()]->getWinding();
+				Vector3 edge = vector3_mid( w[faceVertex.getVertex()].vertex, w[Winding_next( w, faceVertex.getVertex() )].vertex );
+				m_uniqueEdgePoints[i] = pointvertex_for_windingpoint( edge, colour_vertex );
+			}
+		}
+
+		// Rebuild vertex selection data
+		{
+			ProximalVertexArray vertexRings;
+			vertexRings.resize( faceVertices.size() );
+			for ( std::size_t i = 0; i < faceVertices.size(); ++i )
+			{
+				vertexRings[i].m_next = vertexRings.data() + absoluteIndex( next_vertex( m_faces, faceVertices[i] ) );
+			}
+
+			typedef VertexBuffer<ProximalVertex> UniqueVertices;
+			UniqueVertices uniqueVertices;
+			uniqueVertices.reserve( faceVertices.size() );
+			{
+				UniqueVertexBuffer<ProximalVertex> inserter( uniqueVertices );
+				for ( ProximalVertexArray::iterator i = vertexRings.begin(); i != vertexRings.end(); ++i )
+				{
+					inserter.insert( ProximalVertex( &( *i ) ) );
+				}
+			}
+
+			vertex_clear();
+			m_select_vertices.reserve( uniqueVertices.size() );
+			for ( UniqueVertices::iterator i = uniqueVertices.begin(); i != uniqueVertices.end(); ++i )
+			{
+				vertex_push_back( faceVertices[ProximalVertexArray_index( vertexRings, *i )] );
+			}
+		}
+	}
+
+	// Rebuild face centroids
+	m_faceCentroidPoints.resize( m_faces.size() );
+	for ( std::size_t i = 0; i < m_faces.size(); ++i )
+	{
+		m_faces[i]->construct_centroid();
+		m_faceCentroidPoints[i] = pointvertex_for_windingpoint( m_faces[i]->centroid(), colour_vertex );
+	}
 }
 
 
@@ -353,6 +465,10 @@ static bool g_brush_batchMode = false;
 
 void Brush_setBatchMode( bool batch ){
 	g_brush_batchMode = batch;
+}
+
+bool Brush_isBatchMode(){
+	return g_brush_batchMode;
 }
 
 void add_face_filter( FaceFilter& filter, int mask, bool invert ){
