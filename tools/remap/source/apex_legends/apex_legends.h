@@ -282,6 +282,7 @@ namespace ApexLegends {
     // Light probe system - generates ambient lighting data for the map
     // Light probes store spherical harmonics for ambient + references to static lights
     void        EmitLightProbes();
+    void        EmitSingleLightProbe();
     void        EmitLightProbeTree();
     void        EmitRealTimeLightmaps();
     

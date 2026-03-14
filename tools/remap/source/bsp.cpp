@@ -817,6 +817,18 @@ int BSPMain( Args& args ){
 			Sys_Printf( "External models enabled\n" );
 			g_bExternalModels = true;
 		}
+		while ( args.takeArg( "-nolightmaps" ) ) {
+			Sys_Printf( "Lightmaps disabled\n" );
+			noLightmaps = true;
+		}
+		while ( args.takeArg( "-nolightprobes" ) ) {
+			Sys_Printf( "Light probes disabled (single stub probe only)\n" );
+			noLightProbes = true;
+		}
+		while ( args.takeArg( "-singlelightprobe" ) ) {
+			Sys_Printf( "Single light probe mode enabled\n" );
+			singleLightProbe = true;
+		}
 		// complain if there's args remaning
 		while( !args.empty() )
 		{

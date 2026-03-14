@@ -1728,6 +1728,8 @@ inline bool   noStyles;
 inline float  noVertexLighting;
 inline bool   noLightmaps;
 inline bool   noGridLighting;
+inline bool   noLightProbes;
+inline bool   singleLightProbe;
 
 inline bool  noTrace;
 inline bool  noSurfaces;

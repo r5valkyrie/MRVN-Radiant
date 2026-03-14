@@ -3527,6 +3527,96 @@ static void BuildLightProbeTree() {
 }
 
 
+/*
+    EmitSingleLightProbe
+    Creates a minimal single light probe at world center.
+    Used when -nolightprobes or -singlelightprobe is specified
+    to skip the expensive GPU ray tracing probe generation.
+*/
+void ApexLegends::EmitSingleLightProbe() {
+    Sys_FPrintf(SYS_VRB, "--- EmitSingleLightProbe ---\n");
+    
+    ApexLegends::Bsp::lightprobes.clear();
+    ApexLegends::Bsp::lightprobeReferences.clear();
+    ApexLegends::Bsp::lightprobeTree.clear();
+    ApexLegends::Bsp::lightprobeParentInfos.clear();
+    ApexLegends::Bsp::staticPropLightprobeIndices.clear();
+    
+    // Calculate world center from meshes
+    MinMax worldBounds;
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        worldBounds.extend(mesh.minmax.mins);
+        worldBounds.extend(mesh.minmax.maxs);
+    }
+    if (!worldBounds.valid()) {
+        worldBounds.extend(Vector3(-1024, -1024, -512));
+        worldBounds.extend(Vector3(1024, 1024, 512));
+    }
+    Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
+    
+    // Create a default probe with neutral ambient
+    LightProbe_t probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.staticLightIndexes[0] = 0xFFFF;
+    probe.staticLightIndexes[1] = 0xFFFF;
+    probe.staticLightIndexes[2] = 0xFFFF;
+    probe.staticLightIndexes[3] = 0xFFFF;
+    probe.staticLightFlags[0] = 0x00;
+    probe.staticLightFlags[1] = 0x00;
+    probe.staticLightFlags[2] = 0x00;
+    probe.staticLightFlags[3] = 0x00;
+    probe.lightingFlags = 0x0096;
+    probe.reserved = 0xFFFF;
+    probe.padding0 = 0xFFFFFFFF;
+    probe.padding1 = 0x00000000;
+    
+    // Set neutral ambient SH (DC term only, small positive value)
+    // SH coefficient [3] is the DC (average) term, scale is 8192
+    for (int ch = 0; ch < 3; ch++) {
+        probe.ambientSH[ch][0] = 0;  // X gradient
+        probe.ambientSH[ch][1] = 0;  // Y gradient
+        probe.ambientSH[ch][2] = 0;  // Z gradient
+        probe.ambientSH[ch][3] = 512; // DC (small neutral ambient)
+    }
+    
+    ApexLegends::Bsp::lightprobes.push_back(probe);
+    
+    // Create probe reference
+    LightProbeRef_t ref;
+    ref.origin = center;
+    ref.lightProbeIndex = 0;
+    ref.cubemapID = -1;
+    ref.padding = 0;
+    ApexLegends::Bsp::lightprobeReferences.push_back(ref);
+    
+    // Build minimal tree (single leaf)
+    LightProbeTree_t leaf;
+    leaf.tag = (0 << 2) | 3;  // index 0, type 3 = leaf
+    leaf.refCount = 1;
+    ApexLegends::Bsp::lightprobeTree.push_back(leaf);
+    
+    // Create parent info for worldspawn
+    LightProbeParentInfo_t info;
+    info.brushIdx = 0;
+    info.cubemapIdx = 0;
+    info.lightProbeCount = 1;
+    info.firstLightProbeRef = 0;
+    info.lightProbeTreeHead = 0;
+    info.lightProbeTreeNodeCount = 1;
+    info.lightProbeRefCount = 1;
+    ApexLegends::Bsp::lightprobeParentInfos.push_back(info);
+    
+    Sys_Printf("     %9d light probe (stub)\n", 1);
+    
+    // Populate static prop lightprobe indices (all point to single probe)
+    const uint32_t numStaticProps = ApexLegends::Bsp::gameLumpPropHeader.numStaticProps;
+    if (numStaticProps > 0) {
+        ApexLegends::Bsp::staticPropLightprobeIndices.resize(numStaticProps, 0);
+        Sys_FPrintf(SYS_VRB, "     %9u static prop lightprobe indices (all -> probe 0)\n", numStaticProps);
+    }
+}
+
+
 void ApexLegends::EmitLightProbes() {
     Sys_FPrintf(SYS_VRB, "--- EmitLightProbes ---\n");
     

@@ -266,7 +266,9 @@ void CompileR5BSPFile() {
                 Sys_Printf("\n--- Model %d: worldspawn ---\n", modelIndex);
                 ApexLegends::BeginModel(entity);
                 Shared::MakeMeshes(entity);
-                ApexLegends::SetupSurfaceLightmaps();
+                if (!noLightmaps) {
+                    ApexLegends::SetupSurfaceLightmaps();
+                }
                 ApexLegends::EmitMeshes(entity);
                 ApexLegends::EmitBVHNode();
                 ApexLegends::EndModel();
@@ -342,19 +344,32 @@ void CompileR5BSPFile() {
     /* ================================================================ */
     Sys_Printf("\n============ Phase 5: GPU Ray Tracing Init ============\n");
     /* ================================================================ */
-    if (HIPRTTrace::Init()) {
+    if (noLightmaps && (noLightProbes || singleLightProbe)) {
+        Sys_Printf("     Skipped (lightmaps and probes disabled)\n");
+    } else if (HIPRTTrace::Init()) {
         HIPRTTrace::BuildScene(true);
     }
 
     /* ================================================================ */
     Sys_Printf("\n============ Phase 6: Lightmaps ============\n");
     /* ================================================================ */
+    if (noLightmaps) {
+        Sys_Printf("     Lightmaps disabled by -nolightmaps\n");
+    }
+    // EmitLightmaps handles the empty-surfaces case and creates a minimal stub.
+    // When noLightmaps is set, SetupSurfaceLightmaps was skipped so surfaces are empty.
     ApexLegends::EmitLightmaps();
 
     /* ================================================================ */
     Sys_Printf("\n============ Phase 7: Light Probes ============\n");
     /* ================================================================ */
-    ApexLegends::EmitLightProbes();
+    if (noLightProbes || singleLightProbe) {
+        Sys_Printf("     Light probes %s, generating single stub probe\n",
+                   noLightProbes ? "disabled by -nolightprobes" : "limited by -singlelightprobe");
+        ApexLegends::EmitSingleLightProbe();
+    } else {
+        ApexLegends::EmitLightProbes();
+    }
 
     HIPRTTrace::Shutdown();
 
