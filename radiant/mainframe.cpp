@@ -1648,7 +1648,7 @@ void MainFrame::Create(){
 				Patch_constructToolbar( toolbar );
 			}
 		}
-		// --- View Toolbar: View settings, Texture lock, Panels ---
+		// --- View Toolbar: View settings, Texture lock, Refresh ---
 		{
 			QToolBar *toolbar = window->addToolBar( "View Toolbar" );
 			toolbar->setObjectName( "View Toolbar" );
@@ -1662,16 +1662,6 @@ void MainFrame::Create(){
 
 			toolbar_append_toggle_button( toolbar, "Texture Lock", "texture_lock.png", "TogTexLock" );
 			toolbar_append_toggle_button( toolbar, "Texture Vertex Lock", "texture_vertexlock.png", "TogTexVertexLock" );
-			toolbar->addSeparator();
-
-			toolbar_append_button( toolbar, "Entities", "entities.png", "ToggleEntityInspector" );
-			if ( CurrentStyle() != MainFrame::eRegular && CurrentStyle() != MainFrame::eRegularLeft ) {
-				toolbar_append_button( toolbar, "Console", "console.png", "ToggleConsole" );
-			}
-			if ( ( CurrentStyle() != MainFrame::eRegular && CurrentStyle() != MainFrame::eRegularLeft ) || g_Layout_builtInGroupDialog.m_value ) {
-				toolbar_append_button( toolbar, "Texture Browser", "texture_browser.png", "ToggleTextures" );
-			}
-			toolbar_append_button( toolbar, "Refresh Models", "refresh_models.png", "RefreshReferences" );
 		}
 		// --- Filter Toolbar ---
 		{
