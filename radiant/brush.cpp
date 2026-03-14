@@ -349,12 +349,21 @@ public:
 typedef std::list<FaceFilterWrapper> FaceFilters;
 FaceFilters g_faceFilters;
 
+static bool g_brush_batchMode = false;
+
+void Brush_setBatchMode( bool batch ){
+	g_brush_batchMode = batch;
+}
+
 void add_face_filter( FaceFilter& filter, int mask, bool invert ){
 	g_faceFilters.push_back( FaceFilterWrapper( filter, invert ) );
 	GlobalFilterSystem().addFilter( g_faceFilters.back(), mask );
 }
 
 bool face_filtered( Face& face ){
+	if ( g_brush_batchMode ){
+		return false;
+	}
 	for ( FaceFilters::iterator i = g_faceFilters.begin(); i != g_faceFilters.end(); ++i )
 	{
 		if ( ( *i ).active() && ( *i ).filter( face ) ) {
@@ -394,6 +403,9 @@ void add_brush_filter( BrushFilter& filter, int mask, bool invert ){
 }
 
 bool brush_filtered( Brush& brush ){
+	if ( g_brush_batchMode ){
+		return false;
+	}
 	for ( BrushFilters::iterator i = g_brushFilters.begin(); i != g_brushFilters.end(); ++i )
 	{
 		if ( ( *i ).active() && ( *i ).filter( brush ) ) {

@@ -77,6 +77,7 @@
 #include "brushmodule.h"
 #include "brush.h"
 #include "patch.h"
+#include "filters.h"
 #include "grid.h"
 #include "scenegraph.h"
 
@@ -973,10 +974,13 @@ void Map_LoadFile( const char *filename ){
 		ScopeTimer timer( "map load" );
 		g_map.m_name = filename;
 		Map_UpdateTitle( g_map );
+		Brush_setBatchMode( true );
 		SceneGraph_beginBatchInsert();
 		g_map.m_resource = GlobalReferenceCache().capture( g_map.m_name.c_str() );
 		g_map.m_resource->attach( g_map );
 		SceneGraph_endBatchInsert();
+		Brush_setBatchMode( false );
+		PerformFiltering();
 		Node_getTraversable( GlobalSceneGraph().root() )->traverse( entity_updateworldspawn() );
 	}
 

@@ -106,8 +106,9 @@ NodeSmartReference Entity_parseTokens( Tokeniser& tokeniser, EntityCreator& enti
 				Tokeniser_unexpectedError( tokeniser, token, "#epair-value" );
 				return g_nullNode;
 			}
-			keyValues.push_back( KeyValues::value_type( key, token ) );
-			if ( string_equal( key.c_str(), "classname" ) ) {
+			const bool isClassname = string_equal( key.c_str(), "classname" );
+			keyValues.emplace_back( std::move( key ), CopiedString( token ) );
+			if ( isClassname ) {
 				classname = keyValues.back().second.c_str();
 			}
 		}

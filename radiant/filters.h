@@ -22,3 +22,4 @@
 #pragma once
 
 void Filters_constructMenu( class QMenu* menu );
+void PerformFiltering();

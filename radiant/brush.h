@@ -1494,6 +1494,7 @@ public:
 };
 
 bool brush_filtered( Brush& brush );
+void Brush_setBatchMode( bool batch );
 void add_brush_filter( BrushFilter& filter, int mask, bool invert = false );
 
 
