@@ -41,7 +41,6 @@
 #include "transformlib.h"
 #include "traverselib.h"
 #include "render.h"
-#include "entitylib.h"
 
 class VectorLightList : public LightList
 {
@@ -440,8 +439,6 @@ class PicoModelInstance :
 
 	PicoModel& m_picomodel;
 
-	RenderableWireframeAABB m_aabb_wire;
-
 	const LightList* m_lightList;
 	typedef Array<VectorLightList> SurfaceLightLists;
 	SurfaceLightLists m_surfaceLightLists;
@@ -514,7 +511,6 @@ public:
 	PicoModelInstance( const scene::Path& path, scene::Instance* parent, PicoModel& picomodel ) :
 		Instance( path, parent, this, StaticTypeCasts::instance().get() ),
 		m_picomodel( picomodel ),
-		m_aabb_wire( picomodel.localAABB() ),
 		m_surfaceLightLists( m_picomodel.size() ),
 		m_skins( m_picomodel.size() ){
 		m_lightList = &GlobalShaderCache().attach( *this );
@@ -551,12 +547,11 @@ public:
 		render( renderer, volume, Instance::localToWorld() );
 	}
 	void renderWireframe( Renderer& renderer, const VolumeTest& volume ) const {
-		if ( !volume.fill() ) {
-			// 2D view: render just a bounding box instead of full mesh
-			renderer.addRenderable( m_aabb_wire, Instance::localToWorld() );
-			return;
-		}
 		renderSolid( renderer, volume );
+	}
+
+	void testSelect( Selector& selector, SelectionTest& test ){
+		m_picomodel.testSelect( selector, test, Instance::localToWorld() );
 	}
 
 	bool testLight( const RendererLight& light ) const {
@@ -877,9 +872,8 @@ private:
 class RemapWrapperInstance : public scene::Instance, public Renderable, public SelectionTestable
 {
 	RemapWrapper& m_remapwrapper;
-	RenderableWireframeAABB m_aabb_wire;
 public:
-	RemapWrapperInstance( const scene::Path& path, scene::Instance* parent, RemapWrapper& remapwrapper ) : Instance( path, parent ), m_remapwrapper( remapwrapper ), m_aabb_wire( remapwrapper.localAABB() ){
+	RemapWrapperInstance( const scene::Path& path, scene::Instance* parent, RemapWrapper& remapwrapper ) : Instance( path, parent ), m_remapwrapper( remapwrapper ){
 		scene::Instance::m_cullable = &m_remapwrapper;
 		scene::Instance::m_render = this;
 		scene::Instance::m_select = this;
@@ -889,10 +883,6 @@ public:
 		m_remapwrapper.render( renderer, volume, Instance::localToWorld() );
 	}
 	void renderWireframe( Renderer& renderer, const VolumeTest& volume ) const {
-		if ( !volume.fill() ) {
-			renderer.addRenderable( m_aabb_wire, Instance::localToWorld() );
-			return;
-		}
 		renderSolid( renderer, volume );
 	}
 

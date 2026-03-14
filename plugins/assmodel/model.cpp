@@ -39,7 +39,6 @@
 #include "transformlib.h"
 #include "traverselib.h"
 #include "render.h"
-#include "entitylib.h"
 
 #include "assimp/Importer.hpp"
 #include "assimp/postprocess.h"
@@ -489,8 +488,6 @@ class PicoModelInstance :
 
 	PicoModel& m_picomodel;
 
-	RenderableWireframeAABB m_aabb_wire;
-
 	const LightList* m_lightList;
 	typedef Array<VectorLightList> SurfaceLightLists;
 	SurfaceLightLists m_surfaceLightLists;
@@ -563,7 +560,6 @@ public:
 	PicoModelInstance( const scene::Path& path, scene::Instance* parent, PicoModel& picomodel ) :
 		Instance( path, parent, this, StaticTypeCasts::instance().get() ),
 		m_picomodel( picomodel ),
-		m_aabb_wire( picomodel.localAABB() ),
 		m_surfaceLightLists( m_picomodel.size() ),
 		m_skins( m_picomodel.size() ){
 		m_lightList = &GlobalShaderCache().attach( *this );
@@ -600,11 +596,6 @@ public:
 		render( renderer, volume, Instance::localToWorld() );
 	}
 	void renderWireframe( Renderer& renderer, const VolumeTest& volume ) const {
-		if ( !volume.fill() ) {
-			// 2D view: render just a bounding box instead of full mesh
-			renderer.addRenderable( m_aabb_wire, Instance::localToWorld() );
-			return;
-		}
 		renderSolid( renderer, volume );
 	}
 

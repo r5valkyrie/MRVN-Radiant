@@ -26,8 +26,6 @@
 #include "selectable.h"
 #include "modelskin.h"
 
-#include "entitylib.h"
-
 #include "math/frustum.h"
 #include "string/string.h"
 #include "generic/static.h"
@@ -316,8 +314,6 @@ class ModelInstance :
 
 	Model& m_model;
 
-	RenderableWireframeAABB m_aabb_wire;
-
 	const LightList* m_lightList;
 	typedef Array<VectorLightList> SurfaceLightLists;
 	SurfaceLightLists m_surfaceLightLists;
@@ -385,7 +381,6 @@ public:
 	ModelInstance( const scene::Path& path, scene::Instance* parent, Model& model ) :
 		Instance( path, parent, this, StaticTypeCasts::instance().get() ),
 		m_model( model ),
-		m_aabb_wire( model.localAABB() ),
 		m_surfaceLightLists( m_model.size() ),
 		m_skins( m_model.size() ){
 		m_lightList = &GlobalShaderCache().attach( *this );
@@ -422,12 +417,11 @@ public:
 		render( renderer, volume, Instance::localToWorld() );
 	}
 	void renderWireframe( Renderer& renderer, const VolumeTest& volume ) const {
-		if ( !volume.fill() ) {
-			// 2D view: render just a bounding box instead of full mesh
-			renderer.addRenderable( m_aabb_wire, Instance::localToWorld() );
-			return;
-		}
 		renderSolid( renderer, volume );
+	}
+
+	void testSelect( Selector& selector, SelectionTest& test ){
+		m_model.testSelect( selector, test, Instance::localToWorld() );
 	}
 
 	bool testLight( const RendererLight& light ) const {
