@@ -950,6 +950,9 @@ public:
 				}
 			}
 
+			// Workzone geometry uses stack/member arrays, so clear GL_ARRAY_BUFFER
+			// to keep these pointers in client memory and avoid VBO offset crashes
+			gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
 			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), verticesarr.data()->data() );
 			gl().glEdgeFlagPointer( sizeof( GLboolean ), edgearr.data() );
 			for( std::vector<Vector3>::const_iterator j = points.begin(); j != points.end(); ++++j ){
