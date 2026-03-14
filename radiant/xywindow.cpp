@@ -387,12 +387,17 @@ void XYWnd::overlayDraw(){
 		                              : m_viewType == YZ? g_xywindow_globals.AxisColorX
 		                              : m_viewType == XZ? g_xywindow_globals.AxisColorY
 		                              : g_xywindow_globals.AxisColorZ ) );
-		gl().glBegin( GL_LINE_LOOP );
-		gl().glVertex2f( 0.5, 0.5 );
-		gl().glVertex2f( m_nWidth - 0.5, 0.5 );
-		gl().glVertex2f( m_nWidth - 0.5, m_nHeight - 0.5 );
-		gl().glVertex2f( 0.5, m_nHeight - 0.5 );
-		gl().glEnd();
+		{
+			const float outline[] = {
+				0.5f, 0.5f,
+				m_nWidth - 0.5f, 0.5f,
+				m_nWidth - 0.5f, m_nHeight - 0.5f,
+				0.5f, m_nHeight - 0.5f,
+			};
+			vbo_upload( outline, sizeof( outline ) );
+			gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+			gl().glDrawArrays( GL_LINE_LOOP, 0, 4 );
+		}
 	}
 
 	{
@@ -418,15 +423,20 @@ void XYWnd::overlayDraw(){
 		NDIM1NDIM2( m_viewType )
 		Vector3 v( g_vector3_identity );
 		gl().glColor4f( 0.2f, 0.9f, 0.2f, 0.8f );
-		gl().glBegin( GL_LINES );
-		for( int i = 0, dim1 = nDim1, dim2 = nDim2; i < 2; ++i, std::swap( dim1, dim2 ) ){
-			v[dim1] = m_mousePosition[dim1];
-			v[dim2] = 2.0f * -GetMaxGridCoord();
-			gl().glVertex3fv( vector3_to_array( v ) );
-			v[dim2] = 2.0f * GetMaxGridCoord();
-			gl().glVertex3fv( vector3_to_array( v ) );
+		{
+			Vector3 v0, v1, v2, v3;
+			v0 = v1 = v2 = v3 = g_vector3_identity;
+			v0[nDim1] = v1[nDim1] = m_mousePosition[nDim1];
+			v0[nDim2] = 2.0f * -GetMaxGridCoord();
+			v1[nDim2] = 2.0f * GetMaxGridCoord();
+			v2[nDim2] = v3[nDim2] = m_mousePosition[nDim2];
+			v2[nDim1] = 2.0f * -GetMaxGridCoord();
+			v3[nDim1] = 2.0f * GetMaxGridCoord();
+			const Vector3 verts[] = { v0, v1, v2, v3 };
+			vbo_upload( verts, sizeof( verts ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+			gl().glDrawArrays( GL_LINES, 0, 4 );
 		}
-		gl().glEnd();
 	}
 
 	if ( Patch_TerrainTool_IsActive() ) {
@@ -441,14 +451,19 @@ void XYWnd::overlayDraw(){
 			NDIM1NDIM2( m_viewType )
 			Vector3 v( m_mousePosition );
 			gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.9f );
-			gl().glBegin( GL_LINE_LOOP );
-			for ( int i = 0; i < 32; ++i ){
-				const float a = c_pi / 16.f * i;
-				v[nDim1] = m_mousePosition[nDim1] + std::cos( a ) * radius;
-				v[nDim2] = m_mousePosition[nDim2] + std::sin( a ) * radius;
-				gl().glVertex3fv( vector3_to_array( v ) );
+			{
+				Vector3 circleVerts[32];
+				Vector3 v( m_mousePosition );
+				for ( int i = 0; i < 32; ++i ){
+					const float a = c_pi / 16.f * i;
+					v[nDim1] = m_mousePosition[nDim1] + std::cos( a ) * radius;
+					v[nDim2] = m_mousePosition[nDim2] + std::sin( a ) * radius;
+					circleVerts[i] = v;
+				}
+				vbo_upload( circleVerts, sizeof( circleVerts ) );
+				gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+				gl().glDrawArrays( GL_LINE_LOOP, 0, 32 );
 			}
-			gl().glEnd();
 		}
 	}
 
@@ -1176,22 +1191,20 @@ void BackgroundImage::render( const VIEWTYPE viewtype ){
 		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 
-		gl().glBegin( GL_QUADS );
-
+		struct TexVert { float s, t, x, y; };
+		const TexVert quadVerts[] = {
+			{ 0, 1, _xmin, _ymin },
+			{ 1, 1, _xmax, _ymin },
+			{ 1, 0, _xmax, _ymax },
+			{ 0, 0, _xmin, _ymax },
+		};
 		gl().glColor4f( 1, 1, 1, _alpha );
-		gl().glTexCoord2f( 0, 1 );
-		gl().glVertex2f( _xmin, _ymin );
-
-		gl().glTexCoord2f( 1, 1 );
-		gl().glVertex2f( _xmax, _ymin );
-
-		gl().glTexCoord2f( 1, 0 );
-		gl().glVertex2f( _xmax, _ymax );
-
-		gl().glTexCoord2f( 0, 0 );
-		gl().glVertex2f( _xmin, _ymax );
-
-		gl().glEnd();
+		vbo_upload( quadVerts, sizeof( quadVerts ) );
+		gl().glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+		gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( TexVert ), 0 );
+		gl().glVertexPointer( 2, GL_FLOAT, sizeof( TexVert ), reinterpret_cast<const void*>( offsetof( TexVert, x ) ) );
+		gl().glDrawArrays( GL_QUADS, 0, 4 );
+		gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
 		gl().glBindTexture( GL_TEXTURE_2D, 0 );
 
 //		gl().glPopAttrib();
@@ -1303,18 +1316,28 @@ void XYWnd::XY_DrawAxis(){
 	// draw two lines with corresponding axis colors to highlight current view
 	// horizontal line: nDim1 color
 	gl().glLineWidth( 2 );
-	gl().glBegin( GL_LINES );
-	gl().glColor3fv( vector3_to_array( colourX ) );
-	gl().glVertex2f( m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale );
-	gl().glVertex2f( m_vOrigin[nDim1] - w + 65 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale );
-	gl().glVertex2f( 0, 0 );
-	gl().glVertex2f( 32 / m_fScale, 0 );
-	gl().glColor3fv( vector3_to_array( colourY ) );
-	gl().glVertex2f( m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale );
-	gl().glVertex2f( m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 20 / m_fScale );
-	gl().glVertex2f( 0, 0 );
-	gl().glVertex2f( 0, 32 / m_fScale );
-	gl().glEnd();
+	{
+		const float xVerts[] = {
+			m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale,
+			m_vOrigin[nDim1] - w + 65 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale,
+			0, 0,
+			32 / m_fScale, 0,
+		};
+		vbo_upload( xVerts, sizeof( xVerts ) );
+		gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+		gl().glColor3fv( vector3_to_array( colourX ) );
+		gl().glDrawArrays( GL_LINES, 0, 4 );
+		const float yVerts[] = {
+			m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale,
+			m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 20 / m_fScale,
+			0, 0,
+			0, 32 / m_fScale,
+		};
+		vbo_upload( yVerts, sizeof( yVerts ) );
+		gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+		gl().glColor3fv( vector3_to_array( colourY ) );
+		gl().glDrawArrays( GL_LINES, 0, 4 );
+	}
 	gl().glLineWidth( 1 );
 	// now print axis symbols
 	const int fontHeight = GlobalOpenGL().m_font->getPixelHeight();
@@ -1389,38 +1412,46 @@ void XYWnd::XY_DrawGrid() {
 		if ( COLORS_DIFFER( g_xywindow_globals.color_gridminor, g_xywindow_globals.color_gridback ) ) {
 			gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridminor, a ) ) );
 
-			gl().glBegin( GL_LINES );
+			std::vector<float> gridVerts;
 			int i = 0;
 			for ( x = xb; x < xe; x += minor_step, ++i ) {
 				if ( ( i & mask ) != 0 ) {
-					gl().glVertex2f( x, yb );
-					gl().glVertex2f( x, ye );
+					gridVerts.push_back( x ); gridVerts.push_back( yb );
+					gridVerts.push_back( x ); gridVerts.push_back( ye );
 				}
 			}
 			i = 0;
 			for ( y = yb; y < ye; y += minor_step, ++i ) {
 				if ( ( i & mask ) != 0 ) {
-					gl().glVertex2f( xb, y );
-					gl().glVertex2f( xe, y );
+					gridVerts.push_back( xb ); gridVerts.push_back( y );
+					gridVerts.push_back( xe ); gridVerts.push_back( y );
 				}
 			}
-			gl().glEnd();
+			if ( !gridVerts.empty() ) {
+				vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
+				gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+				gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
+			}
 		}
 
 		// draw major blocks
 		if ( COLORS_DIFFER( g_xywindow_globals.color_gridmajor, g_xywindow_globals.color_gridminor ) ) {
 			gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridmajor, a ) ) );
 
-			gl().glBegin( GL_LINES );
+			std::vector<float> gridVerts;
 			for ( x = xb; x <= xe; x += step ) {
-				gl().glVertex2f( x, yb );
-				gl().glVertex2f( x, ye );
+				gridVerts.push_back( x ); gridVerts.push_back( yb );
+				gridVerts.push_back( x ); gridVerts.push_back( ye );
 			}
 			for ( y = yb; y <= ye; y += step ) {
-				gl().glVertex2f( xb, y );
-				gl().glVertex2f( xe, y );
+				gridVerts.push_back( xb ); gridVerts.push_back( y );
+				gridVerts.push_back( xe ); gridVerts.push_back( y );
 			}
-			gl().glEnd();
+			if ( !gridVerts.empty() ) {
+				vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
+				gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+				gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
+			}
 		}
 
 		if ( a < 1.0f ) {
@@ -1438,38 +1469,46 @@ void XYWnd::XY_DrawGrid() {
 			if ( COLORS_DIFFER( g_xywindow_globals.color_gridminor, g_xywindow_globals.color_gridback ) ) {
 				gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridminor, .5f ) ) );
 
-				gl().glBegin( GL_LINES );
+				std::vector<float> gridVerts;
 				int i = 0;
 				for ( x = xb_; x < xe_; x += minor_step, ++i ) {
 					if ( ( i & mask ) != 0 ) {
-						gl().glVertex2f( x, yb_ );
-						gl().glVertex2f( x, ye_ );
+						gridVerts.push_back( x ); gridVerts.push_back( yb_ );
+						gridVerts.push_back( x ); gridVerts.push_back( ye_ );
 					}
 				}
 				i = 0;
 				for ( y = yb_; y < ye_; y += minor_step, ++i ) {
 					if ( ( i & mask ) != 0 ) {
-						gl().glVertex2f( xb_, y );
-						gl().glVertex2f( xe_, y );
+						gridVerts.push_back( xb_ ); gridVerts.push_back( y );
+						gridVerts.push_back( xe_ ); gridVerts.push_back( y );
 					}
 				}
-				gl().glEnd();
+				if ( !gridVerts.empty() ) {
+					vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
+					gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+					gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
+				}
 			}
 
 			// draw major blocks
 			if ( COLORS_DIFFER( g_xywindow_globals.color_gridmajor, g_xywindow_globals.color_gridminor ) ) {
 				gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridmajor, .5f ) ) );
 
-				gl().glBegin( GL_LINES );
+				std::vector<float> gridVerts;
 				for ( x = xb_; x <= xe_; x += step ) {
-					gl().glVertex2f( x, yb_ );
-					gl().glVertex2f( x, ye_ );
+					gridVerts.push_back( x ); gridVerts.push_back( yb_ );
+					gridVerts.push_back( x ); gridVerts.push_back( ye_ );
 				}
 				for ( y = yb_; y <= ye_; y += step ) {
-					gl().glVertex2f( xb_, y );
-					gl().glVertex2f( xe_, y );
+					gridVerts.push_back( xb_ ); gridVerts.push_back( y );
+					gridVerts.push_back( xe_ ); gridVerts.push_back( y );
 				}
-				gl().glEnd();
+				if ( !gridVerts.empty() ) {
+					vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
+					gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+					gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
+				}
 			}
 			gl().glDisable( GL_BLEND );
 		}
@@ -1507,16 +1546,21 @@ void XYWnd::XY_DrawGrid() {
 	// the work zone is used to place dropped points and brushes
 	if ( g_xywindow_globals_private.show_workzone ) {
 		gl().glColor4f( 1.0f, 0.0f, 0.0f, 1.0f );
-		gl().glBegin( GL_LINES );
-		gl().glVertex2f( xb, Select_getWorkZone().d_work_min[nDim2] );
-		gl().glVertex2f( xe, Select_getWorkZone().d_work_min[nDim2] );
-		gl().glVertex2f( xb, Select_getWorkZone().d_work_max[nDim2] );
-		gl().glVertex2f( xe, Select_getWorkZone().d_work_max[nDim2] );
-		gl().glVertex2f( Select_getWorkZone().d_work_min[nDim1], yb );
-		gl().glVertex2f( Select_getWorkZone().d_work_min[nDim1], ye );
-		gl().glVertex2f( Select_getWorkZone().d_work_max[nDim1], yb );
-		gl().glVertex2f( Select_getWorkZone().d_work_max[nDim1], ye );
-		gl().glEnd();
+		{
+			const float wzVerts[] = {
+				xb, Select_getWorkZone().d_work_min[nDim2],
+				xe, Select_getWorkZone().d_work_min[nDim2],
+				xb, Select_getWorkZone().d_work_max[nDim2],
+				xe, Select_getWorkZone().d_work_max[nDim2],
+				Select_getWorkZone().d_work_min[nDim1], yb,
+				Select_getWorkZone().d_work_min[nDim1], ye,
+				Select_getWorkZone().d_work_max[nDim1], yb,
+				Select_getWorkZone().d_work_max[nDim1], ye,
+			};
+			vbo_upload( wzVerts, sizeof( wzVerts ) );
+			gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+			gl().glDrawArrays( GL_LINES, 0, 8 );
+		}
 	}
 }
 
@@ -1575,25 +1619,31 @@ void XYWnd::XY_DrawBlockGrid(){
 	gl().glColor3fv( vector3_to_array( g_xywindow_globals.color_gridblock ) );
 	gl().glLineWidth( 2 );
 
-	gl().glBegin( GL_LINES );
+	{
+		std::vector<float> blockVerts;
 
-	if( bs1 > 0 ) {
-		for ( float x = xb; x <= xe; x += bs1 )
-		{
-			gl().glVertex2f( x, yb );
-			gl().glVertex2f( x, ye );
+		if( bs1 > 0 ) {
+			for ( float x = xb; x <= xe; x += bs1 )
+			{
+				blockVerts.push_back( x ); blockVerts.push_back( yb );
+				blockVerts.push_back( x ); blockVerts.push_back( ye );
+			}
+		}
+
+		if ( bs2 > 0 ) {
+			for ( float y = yb; y <= ye; y += bs2 )
+			{
+				blockVerts.push_back( xb ); blockVerts.push_back( y );
+				blockVerts.push_back( xe ); blockVerts.push_back( y );
+			}
+		}
+
+		if ( !blockVerts.empty() ) {
+			vbo_upload( blockVerts.data(), blockVerts.size() * sizeof( float ) );
+			gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+			gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( blockVerts.size() / 2 ) );
 		}
 	}
-
-	if ( bs2 > 0 ) {
-		for ( float y = yb; y <= ye; y += bs2 )
-		{
-			gl().glVertex2f( xb, y );
-			gl().glVertex2f( xe, y );
-		}
-	}
-
-	gl().glEnd();
 	gl().glLineWidth( 1 );
 
 #if 0
@@ -1627,20 +1677,30 @@ void XYWnd::DrawCameraIcon( const Vector3& origin, const Vector3& angles ){
 	                 : degrees_to_radians( ( angles[CAMERA_YAW] < 270 && angles[CAMERA_YAW] > 90 ) ? ( 180.0f - angles[CAMERA_PITCH] ) : angles[CAMERA_PITCH] );
 
 	gl().glColor3f( 0.0, 0.0, 1.0 );
-	gl().glBegin( GL_LINE_STRIP );
-	gl().glVertex3f( x - box,y,0 );
-	gl().glVertex3f( x,y + ( box / 2 ),0 );
-	gl().glVertex3f( x + box,y,0 );
-	gl().glVertex3f( x,y - ( box / 2 ),0 );
-	gl().glVertex3f( x - box,y,0 );
-	gl().glVertex3f( x + box,y,0 );
-	gl().glEnd();
+	{
+		const float diamondVerts[] = {
+			x - box, y, 0,
+			x, y + ( box / 2 ), 0,
+			x + box, y, 0,
+			x, y - ( box / 2 ), 0,
+			x - box, y, 0,
+			x + box, y, 0,
+		};
+		vbo_upload( diamondVerts, sizeof( diamondVerts ) );
+		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
+		gl().glDrawArrays( GL_LINE_STRIP, 0, 6 );
+	}
 
-	gl().glBegin( GL_LINE_STRIP );
-	gl().glVertex3f( x + static_cast<float>( fov * cos( a + c_pi / 4 ) ), y + static_cast<float>( fov * sin( a + c_pi / 4 ) ), 0 );
-	gl().glVertex3f( x, y, 0 );
-	gl().glVertex3f( x + static_cast<float>( fov * cos( a - c_pi / 4 ) ), y + static_cast<float>( fov * sin( a - c_pi / 4 ) ), 0 );
-	gl().glEnd();
+	{
+		const float fovVerts[] = {
+			x + static_cast<float>( fov * cos( a + c_pi / 4 ) ), y + static_cast<float>( fov * sin( a + c_pi / 4 ) ), 0,
+			x, y, 0,
+			x + static_cast<float>( fov * cos( a - c_pi / 4 ) ), y + static_cast<float>( fov * sin( a - c_pi / 4 ) ), 0,
+		};
+		vbo_upload( fovVerts, sizeof( fovVerts ) );
+		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
+		gl().glDrawArrays( GL_LINE_STRIP, 0, 3 );
+	}
 
 }
 
@@ -1662,48 +1722,47 @@ void XYWnd::PaintSizeInfo( const int nDim1, const int nDim2 ){
 
 	StringOutputStream dimensions( 16 );
 
-	Vector3 v( g_vector3_identity );
+	{
+		Vector3 v( g_vector3_identity );
 
-	gl().glBegin( GL_LINE_STRIP );
-	v[nDim1] = min[nDim1];
-	v[nDim2] = min[nDim2] - 6.f / m_fScale;
-	gl().glVertex3fv( vector3_to_array( v ) );
-	v[nDim2] = min[nDim2] - 10.f / m_fScale;
-	gl().glVertex3fv( vector3_to_array( v ) );
-	v[nDim1] = max[nDim1];
-	gl().glVertex3fv( vector3_to_array( v ) );
-	v[nDim2] = min[nDim2] - 6.f / m_fScale;
-	gl().glVertex3fv( vector3_to_array( v ) );
-	gl().glEnd();
+		// bottom bracket
+		Vector3 bv[4];
+		v[nDim1] = min[nDim1]; v[nDim2] = min[nDim2] - 6.f / m_fScale; bv[0] = v;
+		v[nDim2] = min[nDim2] - 10.f / m_fScale; bv[1] = v;
+		v[nDim1] = max[nDim1]; bv[2] = v;
+		v[nDim2] = min[nDim2] - 6.f / m_fScale; bv[3] = v;
+		vbo_upload( bv, sizeof( bv ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+		gl().glDrawArrays( GL_LINE_STRIP, 0, 4 );
 
-	gl().glBegin( GL_LINE_STRIP );
-	v[nDim2] = max[nDim2];
-	v[nDim1] = max[nDim1] + 6.f / m_fScale;
-	gl().glVertex3fv( vector3_to_array( v ) );
-	v[nDim1] = max[nDim1] + 10.f / m_fScale;
-	gl().glVertex3fv( vector3_to_array( v ) );
-	v[nDim2] = min[nDim2];
-	gl().glVertex3fv( vector3_to_array( v ) );
-	v[nDim1] = max[nDim1] + 6.f / m_fScale;
-	gl().glVertex3fv( vector3_to_array( v ) );
-	gl().glEnd();
+		// right bracket
+		Vector3 rv[4];
+		v[nDim2] = max[nDim2]; v[nDim1] = max[nDim1] + 6.f / m_fScale; rv[0] = v;
+		v[nDim1] = max[nDim1] + 10.f / m_fScale; rv[1] = v;
+		v[nDim2] = min[nDim2]; rv[2] = v;
+		v[nDim1] = max[nDim1] + 6.f / m_fScale; rv[3] = v;
+		vbo_upload( rv, sizeof( rv ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+		gl().glDrawArrays( GL_LINE_STRIP, 0, 4 );
 
-	const int fontHeight = GlobalOpenGL().m_font->getPixelHeight();
+		v = g_vector3_identity;
+		const int fontHeight = GlobalOpenGL().m_font->getPixelHeight();
 
-	v[nDim1] = mid[nDim1];
-	v[nDim2] = min[nDim2] - ( 10 + 2 + fontHeight ) / m_fScale;
-	gl().glRasterPos3fv( vector3_to_array( v ) );
-	GlobalOpenGL().drawString( dimensions( dimStrings[nDim1], size[nDim1] ) );
+		v[nDim1] = mid[nDim1];
+		v[nDim2] = min[nDim2] - ( 10 + 2 + fontHeight ) / m_fScale;
+		gl().glRasterPos3fv( vector3_to_array( v ) );
+		GlobalOpenGL().drawString( dimensions( dimStrings[nDim1], size[nDim1] ) );
 
-	v[nDim1] = max[nDim1] + 16.f / m_fScale;
-	v[nDim2] = mid[nDim2] - fontHeight / m_fScale / 2;
-	gl().glRasterPos3fv( vector3_to_array( v ) );
-	GlobalOpenGL().drawString( dimensions( dimStrings[nDim2], size[nDim2] ) );
+		v[nDim1] = max[nDim1] + 16.f / m_fScale;
+		v[nDim2] = mid[nDim2] - fontHeight / m_fScale / 2;
+		gl().glRasterPos3fv( vector3_to_array( v ) );
+		GlobalOpenGL().drawString( dimensions( dimStrings[nDim2], size[nDim2] ) );
 
-	v[nDim1] = min[nDim1] + 4.f / m_fScale;
-	v[nDim2] = max[nDim2] + 5.f / m_fScale;
-	gl().glRasterPos3fv( vector3_to_array( v ) );
-	GlobalOpenGL().drawString( dimensions( '(', dimStrings[nDim1], min[nDim1], "  ", dimStrings[nDim2], max[nDim2], ')' ) );
+		v[nDim1] = min[nDim1] + 4.f / m_fScale;
+		v[nDim2] = max[nDim2] + 5.f / m_fScale;
+		gl().glRasterPos3fv( vector3_to_array( v ) );
+		GlobalOpenGL().drawString( dimensions( '(', dimStrings[nDim1], min[nDim1], "  ", dimStrings[nDim2], max[nDim2], ')' ) );
+	}
 }
 
 class XYRenderer : public Renderer

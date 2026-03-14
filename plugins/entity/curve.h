@@ -39,7 +39,7 @@ class RenderableCurve : public OpenGLRenderable
 public:
 	std::vector<PointVertex> m_vertices;
 	void render( RenderStateFlags state ) const {
-		pointvertex_gl_array( &m_vertices.front() );
+		pointvertex_gl_array( m_vertices.data(), GLsizei( m_vertices.size() ) );
 		gl().glDrawArrays( GL_LINE_STRIP, 0, GLsizei( m_vertices.size() ) );
 	}
 };

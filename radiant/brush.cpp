@@ -314,6 +314,12 @@ void Brush::buildBRep(){
 				( *o )->vertex_select();
 		}
 	}
+	// Mark all face VBOs dirty since winding data has changed
+	for ( Faces::iterator i = m_faces.begin(); i != m_faces.end(); ++i )
+	{
+		( *i )->markVBODirty();
+	}
+
 	m_BRep_evaluation = false;
 }
 

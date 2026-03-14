@@ -21,5 +21,15 @@
 
 #pragma once
 
+#include <unordered_set>
+
+namespace scene { class Instance; }
+class VolumeTest;
+
 void SceneGraph_beginBatchInsert();
 void SceneGraph_endBatchInsert();
+
+/// Query the scene octree for instances visible in the given volume.
+/// Returns true if an octree query was performed (result is populated).
+/// Returns false if the octree is not available (caller should fall back to normal culling).
+bool SceneGraph_queryVisibleInstances( const VolumeTest& volume, std::unordered_set<scene::Instance*>& result );

@@ -27,6 +27,7 @@
 #include "ientity.h"
 #include "irender.h"
 #include "igl.h"
+#include "render.h"
 #include "selectable.h"
 
 #include "generic/callback.h"
@@ -50,36 +51,20 @@ inline void arrow_draw( const Vector3& origin, const Vector3& direction_forward,
 	Vector3 tip3( vector3_added( vector3_added( endpoint, vector3_scaled( direction_forward, -8.0 ) ), vector3_scaled( direction_left, -4.0 ) ) );
 	Vector3 tip4( vector3_added( tip3, vector3_scaled( direction_left, 8.0 ) ) );
 
-	gl().glBegin( GL_LINES );
-
-	gl().glVertex3fv( vector3_to_array( origin ) );
-	gl().glVertex3fv( vector3_to_array( endpoint ) );
-
-	gl().glVertex3fv( vector3_to_array( endpoint ) );
-	gl().glVertex3fv( vector3_to_array( tip1 ) );
-
-	gl().glVertex3fv( vector3_to_array( endpoint ) );
-	gl().glVertex3fv( vector3_to_array( tip2 ) );
-
-	gl().glVertex3fv( vector3_to_array( endpoint ) );
-	gl().glVertex3fv( vector3_to_array( tip3 ) );
-
-	gl().glVertex3fv( vector3_to_array( endpoint ) );
-	gl().glVertex3fv( vector3_to_array( tip4 ) );
-
-	gl().glVertex3fv( vector3_to_array( tip1 ) );
-	gl().glVertex3fv( vector3_to_array( tip3 ) );
-
-	gl().glVertex3fv( vector3_to_array( tip3 ) );
-	gl().glVertex3fv( vector3_to_array( tip2 ) );
-
-	gl().glVertex3fv( vector3_to_array( tip2 ) );
-	gl().glVertex3fv( vector3_to_array( tip4 ) );
-
-	gl().glVertex3fv( vector3_to_array( tip4 ) );
-	gl().glVertex3fv( vector3_to_array( tip1 ) );
-
-	gl().glEnd();
+	const Vector3 verts[18] = {
+		origin, endpoint,
+		endpoint, tip1,
+		endpoint, tip2,
+		endpoint, tip3,
+		endpoint, tip4,
+		tip1, tip3,
+		tip3, tip2,
+		tip2, tip4,
+		tip4, tip1,
+	};
+	vbo_upload( verts, sizeof( verts ) );
+	gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+	gl().glDrawArrays( GL_LINES, 0, 18 );
 }
 
 class RenderableArrow : public OpenGLRenderable
@@ -125,8 +110,10 @@ inline void aabb_draw_wire( const Vector3 points[8] ){
 		1, 7 // diagonal line (connect mins to maxs corner)
 	};
 #if 1
-	gl().glVertexPointer( 3, GL_FLOAT, 0, points );
-	gl().glDrawElements( GL_LINES, sizeof( indices ) / sizeof( indices[0] ), GL_UNSIGNED_INT, indices );
+	vbo_upload( points, 8 * sizeof( Vector3 ) );
+	gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
+	ibo_upload( indices, sizeof( indices ) );
+	gl().glDrawElements( GL_LINES, sizeof( indices ) / sizeof( indices[0] ), GL_UNSIGNED_INT, 0 );
 #else
 	gl().glBegin( GL_LINES );
 	for ( std::size_t i = 0; i < sizeof( indices ) / sizeof( indices[0] ); ++i )
@@ -138,45 +125,19 @@ inline void aabb_draw_wire( const Vector3 points[8] ){
 }
 
 inline void aabb_draw_flatshade( const Vector3 points[8] ){
-	gl().glBegin( GL_QUADS );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[0] ) );
-	gl().glVertex3fv( vector3_to_array( points[2] ) );
-	gl().glVertex3fv( vector3_to_array( points[1] ) );
-	gl().glVertex3fv( vector3_to_array( points[5] ) );
-	gl().glVertex3fv( vector3_to_array( points[6] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[1] ) );
-	gl().glVertex3fv( vector3_to_array( points[1] ) );
-	gl().glVertex3fv( vector3_to_array( points[0] ) );
-	gl().glVertex3fv( vector3_to_array( points[4] ) );
-	gl().glVertex3fv( vector3_to_array( points[5] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[2] ) );
-	gl().glVertex3fv( vector3_to_array( points[0] ) );
-	gl().glVertex3fv( vector3_to_array( points[1] ) );
-	gl().glVertex3fv( vector3_to_array( points[2] ) );
-	gl().glVertex3fv( vector3_to_array( points[3] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[3] ) );
-	gl().glVertex3fv( vector3_to_array( points[0] ) );
-	gl().glVertex3fv( vector3_to_array( points[3] ) );
-	gl().glVertex3fv( vector3_to_array( points[7] ) );
-	gl().glVertex3fv( vector3_to_array( points[4] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[4] ) );
-	gl().glVertex3fv( vector3_to_array( points[3] ) );
-	gl().glVertex3fv( vector3_to_array( points[2] ) );
-	gl().glVertex3fv( vector3_to_array( points[6] ) );
-	gl().glVertex3fv( vector3_to_array( points[7] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[5] ) );
-	gl().glVertex3fv( vector3_to_array( points[7] ) );
-	gl().glVertex3fv( vector3_to_array( points[6] ) );
-	gl().glVertex3fv( vector3_to_array( points[5] ) );
-	gl().glVertex3fv( vector3_to_array( points[4] ) );
-
-	gl().glEnd();
+	struct NV { Vector3 n; Vector3 v; };
+	const NV quads[24] = {
+		{ aabb_normals[0], points[2] }, { aabb_normals[0], points[1] }, { aabb_normals[0], points[5] }, { aabb_normals[0], points[6] },
+		{ aabb_normals[1], points[1] }, { aabb_normals[1], points[0] }, { aabb_normals[1], points[4] }, { aabb_normals[1], points[5] },
+		{ aabb_normals[2], points[0] }, { aabb_normals[2], points[1] }, { aabb_normals[2], points[2] }, { aabb_normals[2], points[3] },
+		{ aabb_normals[3], points[0] }, { aabb_normals[3], points[3] }, { aabb_normals[3], points[7] }, { aabb_normals[3], points[4] },
+		{ aabb_normals[4], points[3] }, { aabb_normals[4], points[2] }, { aabb_normals[4], points[6] }, { aabb_normals[4], points[7] },
+		{ aabb_normals[5], points[7] }, { aabb_normals[5], points[6] }, { aabb_normals[5], points[5] }, { aabb_normals[5], points[4] },
+	};
+	vbo_upload( quads, sizeof( quads ) );
+	gl().glNormalPointer( GL_FLOAT, sizeof( NV ), reinterpret_cast<const void*>( offsetof( NV, n ) ) );
+	gl().glVertexPointer( 3, GL_FLOAT, sizeof( NV ), reinterpret_cast<const void*>( offsetof( NV, v ) ) );
+	gl().glDrawArrays( GL_QUADS, 0, 24 );
 }
 
 inline void aabb_draw_wire( const AABB& aabb ){
@@ -195,69 +156,38 @@ inline void aabb_draw_textured( const AABB& aabb ){
 	Vector3 points[8];
 	aabb_corners( aabb, points );
 
-	gl().glBegin( GL_QUADS );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[0] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topleft );
-	gl().glVertex3fv( vector3_to_array( points[2] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topright );
-	gl().glVertex3fv( vector3_to_array( points[1] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botright );
-	gl().glVertex3fv( vector3_to_array( points[5] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botleft );
-	gl().glVertex3fv( vector3_to_array( points[6] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[1] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topleft );
-	gl().glVertex3fv( vector3_to_array( points[1] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topright );
-	gl().glVertex3fv( vector3_to_array( points[0] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botright );
-	gl().glVertex3fv( vector3_to_array( points[4] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botleft );
-	gl().glVertex3fv( vector3_to_array( points[5] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[2] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topleft );
-	gl().glVertex3fv( vector3_to_array( points[0] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topright );
-	gl().glVertex3fv( vector3_to_array( points[1] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botright );
-	gl().glVertex3fv( vector3_to_array( points[2] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botleft );
-	gl().glVertex3fv( vector3_to_array( points[3] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[3] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topleft );
-	gl().glVertex3fv( vector3_to_array( points[0] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topright );
-	gl().glVertex3fv( vector3_to_array( points[3] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botright );
-	gl().glVertex3fv( vector3_to_array( points[7] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botleft );
-	gl().glVertex3fv( vector3_to_array( points[4] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[4] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topleft );
-	gl().glVertex3fv( vector3_to_array( points[3] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topright );
-	gl().glVertex3fv( vector3_to_array( points[2] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botright );
-	gl().glVertex3fv( vector3_to_array( points[6] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botleft );
-	gl().glVertex3fv( vector3_to_array( points[7] ) );
-
-	gl().glNormal3fv( vector3_to_array( aabb_normals[5] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topleft );
-	gl().glVertex3fv( vector3_to_array( points[7] ) );
-	gl().glTexCoord2fv( aabb_texcoord_topright );
-	gl().glVertex3fv( vector3_to_array( points[6] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botright );
-	gl().glVertex3fv( vector3_to_array( points[5] ) );
-	gl().glTexCoord2fv( aabb_texcoord_botleft );
-	gl().glVertex3fv( vector3_to_array( points[4] ) );
-
-	gl().glEnd();
+	struct NTV { Vector3 n; float s, t; Vector3 v; };
+	const NTV quads[24] = {
+		{ aabb_normals[0], aabb_texcoord_topleft[0], aabb_texcoord_topleft[1], points[2] },
+		{ aabb_normals[0], aabb_texcoord_topright[0], aabb_texcoord_topright[1], points[1] },
+		{ aabb_normals[0], aabb_texcoord_botright[0], aabb_texcoord_botright[1], points[5] },
+		{ aabb_normals[0], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[6] },
+		{ aabb_normals[1], aabb_texcoord_topleft[0], aabb_texcoord_topleft[1], points[1] },
+		{ aabb_normals[1], aabb_texcoord_topright[0], aabb_texcoord_topright[1], points[0] },
+		{ aabb_normals[1], aabb_texcoord_botright[0], aabb_texcoord_botright[1], points[4] },
+		{ aabb_normals[1], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[5] },
+		{ aabb_normals[2], aabb_texcoord_topleft[0], aabb_texcoord_topleft[1], points[0] },
+		{ aabb_normals[2], aabb_texcoord_topright[0], aabb_texcoord_topright[1], points[1] },
+		{ aabb_normals[2], aabb_texcoord_botright[0], aabb_texcoord_botright[1], points[2] },
+		{ aabb_normals[2], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[3] },
+		{ aabb_normals[3], aabb_texcoord_topleft[0], aabb_texcoord_topleft[1], points[0] },
+		{ aabb_normals[3], aabb_texcoord_topright[0], aabb_texcoord_topright[1], points[3] },
+		{ aabb_normals[3], aabb_texcoord_botright[0], aabb_texcoord_botright[1], points[7] },
+		{ aabb_normals[3], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[4] },
+		{ aabb_normals[4], aabb_texcoord_topleft[0], aabb_texcoord_topleft[1], points[3] },
+		{ aabb_normals[4], aabb_texcoord_topright[0], aabb_texcoord_topright[1], points[2] },
+		{ aabb_normals[4], aabb_texcoord_botright[0], aabb_texcoord_botright[1], points[6] },
+		{ aabb_normals[4], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[7] },
+		{ aabb_normals[5], aabb_texcoord_topleft[0], aabb_texcoord_topleft[1], points[7] },
+		{ aabb_normals[5], aabb_texcoord_topright[0], aabb_texcoord_topright[1], points[6] },
+		{ aabb_normals[5], aabb_texcoord_botright[0], aabb_texcoord_botright[1], points[5] },
+		{ aabb_normals[5], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[4] },
+	};
+	vbo_upload( quads, sizeof( quads ) );
+	gl().glNormalPointer( GL_FLOAT, sizeof( NTV ), reinterpret_cast<const void*>( offsetof( NTV, n ) ) );
+	gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( NTV ), reinterpret_cast<const void*>( offsetof( NTV, s ) ) );
+	gl().glVertexPointer( 3, GL_FLOAT, sizeof( NTV ), reinterpret_cast<const void*>( offsetof( NTV, v ) ) );
+	gl().glDrawArrays( GL_QUADS, 0, 24 );
 }
 
 inline void aabb_draw_solid( const AABB& aabb, RenderStateFlags state ){

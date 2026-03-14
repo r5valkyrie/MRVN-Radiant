@@ -195,6 +195,8 @@ public:
 	std::size_t m_numStrips;
 	std::size_t m_lenStrips;
 
+	mutable StaticVBO m_staticVBO;
+
 	Array<std::size_t> m_arrayWidth;
 	std::size_t m_nArrayWidth;
 	Array<std::size_t> m_arrayHeight;
@@ -217,29 +219,35 @@ class RenderablePatchWireframe : public OpenGLRenderable
 			return;
 		}
 		gl().glLineWidth( 0.5f );
-		gl().glBegin( GL_LINES );
+		std::vector<Vertex3f> lineVerts;
+		lineVerts.reserve( ( height - 1 ) * ( width - 1 ) * 2 );
 		for ( std::size_t y = 0; y + 1 < height; ++y )
 		{
 			for ( std::size_t x = 0; x + 1 < width; ++x )
 			{
-				const auto& a = ( m_tess.m_vertices.data() + ( y * width + x ) )->vertex;
-				const auto& b = ( m_tess.m_vertices.data() + ( ( y + 1 ) * width + ( x + 1 ) ) )->vertex;
-				gl().glVertex3fv( vertex3f_to_array( a ) );
-				gl().glVertex3fv( vertex3f_to_array( b ) );
+				lineVerts.push_back( ( m_tess.m_vertices.data() + ( y * width + x ) )->vertex );
+				lineVerts.push_back( ( m_tess.m_vertices.data() + ( ( y + 1 ) * width + ( x + 1 ) ) )->vertex );
 			}
 		}
-		gl().glEnd();
+		if ( !lineVerts.empty() ) {
+			vbo_upload( lineVerts.data(), lineVerts.size() * sizeof( Vertex3f ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
+			gl().glDrawArrays( GL_LINES, 0, GLsizei( lineVerts.size() ) );
+		}
 		gl().glLineWidth( 1.0f );
 	}
 public:
 	RenderablePatchWireframe( PatchTesselation& tess ) : m_tess( tess ){
 	}
 	void render( RenderStateFlags state ) const {
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->vertex );
-		const RenderIndex* strip_indices = m_tess.m_indices.data();
-		for ( std::size_t i = 0; i < m_tess.m_numStrips; i++, strip_indices += m_tess.m_lenStrips )
+		m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
+		                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
+		m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
+		for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
 		{
-			gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID, strip_indices );
+			gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID,
+			                     reinterpret_cast<const void*>( i * m_tess.m_lenStrips * sizeof( RenderIndex ) ) );
 		}
 		renderTriSplitLines();
 	}
@@ -258,29 +266,35 @@ class RenderablePatchFixedWireframe : public OpenGLRenderable
 			return;
 		}
 		gl().glLineWidth( 0.5f );
-		gl().glBegin( GL_LINES );
+		std::vector<Vertex3f> lineVerts;
+		lineVerts.reserve( ( height - 1 ) * ( width - 1 ) * 2 );
 		for ( std::size_t y = 0; y + 1 < height; ++y )
 		{
 			for ( std::size_t x = 0; x + 1 < width; ++x )
 			{
-				const auto& a = ( m_tess.m_vertices.data() + ( y * width + x ) )->vertex;
-				const auto& b = ( m_tess.m_vertices.data() + ( ( y + 1 ) * width + ( x + 1 ) ) )->vertex;
-				gl().glVertex3fv( vertex3f_to_array( a ) );
-				gl().glVertex3fv( vertex3f_to_array( b ) );
+				lineVerts.push_back( ( m_tess.m_vertices.data() + ( y * width + x ) )->vertex );
+				lineVerts.push_back( ( m_tess.m_vertices.data() + ( ( y + 1 ) * width + ( x + 1 ) ) )->vertex );
 			}
 		}
-		gl().glEnd();
+		if ( !lineVerts.empty() ) {
+			vbo_upload( lineVerts.data(), lineVerts.size() * sizeof( Vertex3f ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
+			gl().glDrawArrays( GL_LINES, 0, GLsizei( lineVerts.size() ) );
+		}
 		gl().glLineWidth( 1.0f );
 	}
 public:
 	RenderablePatchFixedWireframe( PatchTesselation& tess ) : m_tess( tess ){
 	}
 	void render( RenderStateFlags state ) const {
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->vertex );
-		const RenderIndex* strip_indices = m_tess.m_indices.data();
-		for ( std::size_t i = 0; i < m_tess.m_numStrips; i++, strip_indices += m_tess.m_lenStrips )
+		m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
+		                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
+		m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
+		for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
 		{
-			gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID, strip_indices );
+			gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID,
+			                     reinterpret_cast<const void*>( i * m_tess.m_lenStrips * sizeof( RenderIndex ) ) );
 		}
 		renderTriSplitLines();
 	}
@@ -298,18 +312,21 @@ class RenderablePatchSolid : public OpenGLRenderable
 		if ( width < 2 || height < 2 ) {
 			return;
 		}
-		gl().glBegin( GL_LINES );
+		std::vector<Vertex3f> lineVerts;
+		lineVerts.reserve( ( height - 1 ) * ( width - 1 ) * 2 );
 		for ( std::size_t y = 0; y + 1 < height; ++y )
 		{
 			for ( std::size_t x = 0; x + 1 < width; ++x )
 			{
-				const auto& a = ( m_tess.m_vertices.data() + ( y * width + x ) )->vertex;
-				const auto& b = ( m_tess.m_vertices.data() + ( ( y + 1 ) * width + ( x + 1 ) ) )->vertex;
-				gl().glVertex3fv( vertex3f_to_array( a ) );
-				gl().glVertex3fv( vertex3f_to_array( b ) );
+				lineVerts.push_back( ( m_tess.m_vertices.data() + ( y * width + x ) )->vertex );
+				lineVerts.push_back( ( m_tess.m_vertices.data() + ( ( y + 1 ) * width + ( x + 1 ) ) )->vertex );
 			}
 		}
-		gl().glEnd();
+		if ( !lineVerts.empty() ) {
+			vbo_upload( lineVerts.data(), lineVerts.size() * sizeof( Vertex3f ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
+			gl().glDrawArrays( GL_LINES, 0, GLsizei( lineVerts.size() ) );
+		}
 	}
 public:
 	RenderablePatchSolid( PatchTesselation& tess ) : m_tess( tess ){
@@ -323,22 +340,31 @@ public:
 		else
 #endif
 		{
+			m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
 			if ( ( state & RENDER_BUMP ) != 0 ) {
-				gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->normal );
-				gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->texcoord );
-				gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->tangent );
-				gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->bitangent );
+				gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ),
+				                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
+				gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ),
+				                            reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
+				gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ),
+				                            reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, tangent ) ) );
+				gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ),
+				                            reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, bitangent ) ) );
 			}
 			else
 			{
-				gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->normal );
-				gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->texcoord );
+				gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ),
+				                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
+				gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
+				                        reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
 			}
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_tess.m_vertices.data()->vertex );
-			const RenderIndex* strip_indices = m_tess.m_indices.data();
-			for ( std::size_t i = 0; i < m_tess.m_numStrips; i++, strip_indices += m_tess.m_lenStrips )
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
+			                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
+			m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
+			for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
 			{
-				gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID, strip_indices );
+				gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID,
+				                     reinterpret_cast<const void*>( i * m_tess.m_lenStrips * sizeof( RenderIndex ) ) );
 			}
 			renderTriSplitLines();
 		}

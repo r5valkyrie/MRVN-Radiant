@@ -24,6 +24,7 @@
 #include "DVisDrawer.h"
 
 #include "iglrender.h"
+#include "render.h"
 #include "math/matrix.h"
 
 #include <list>
@@ -89,8 +90,10 @@ void DVisDrawer::render( RenderStateFlags state ) const {
 	for( const auto surf : *m_list ){
 		const DMetaSurf& s = *surf;
 		gl().glColor4f( s.colour[0], s.colour[1], s.colour[2], 0.5f );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( vec3_t ), s.verts );
-		gl().glDrawElements( GL_TRIANGLES, GLsizei( s.indicesN ), GL_UNSIGNED_INT, s.indices );
+		vbo_upload( s.verts, s.vertsN * sizeof( vec3_t ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( vec3_t ), 0 );
+		ibo_upload( s.indices, s.indicesN * sizeof( unsigned int ) );
+		gl().glDrawElements( GL_TRIANGLES, GLsizei( s.indicesN ), GL_UNSIGNED_INT, 0 );
 	}
 	gl().glDisable( GL_POLYGON_OFFSET_FILL );
 	gl().glColor4f( 1, 1, 1, 1 );

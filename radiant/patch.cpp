@@ -287,6 +287,8 @@ void Patch::UpdateCachedData(){
 	}
 #endif
 
+	m_tess.m_staticVBO.markDirty();
+
 	if( !m_transformChanged ) //experimental! fixing extra sceneChangeNotify call during scene rendering
 		SceneChangeNotify();
 }

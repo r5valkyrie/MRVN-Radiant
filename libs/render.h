@@ -36,6 +36,116 @@
 typedef unsigned int RenderIndex;
 const GLenum RenderIndexTypeID = GL_UNSIGNED_INT;
 
+/// \brief Upload vertex data to the streaming VBO using buffer orphaning (GL_STREAM_DRAW).
+/// After this call, GL_ARRAY_BUFFER is bound to the streaming VBO.
+/// Vertex attribute pointers should use byte offsets (not CPU pointers).
+inline void vbo_upload( const void* data, GLsizeiptr sizeBytes ){
+	gl().glBindBuffer( GL_ARRAY_BUFFER, GlobalOpenGL().m_streamVBO );
+	gl().glBufferData( GL_ARRAY_BUFFER, sizeBytes, data, GL_STREAM_DRAW );
+}
+
+/// \brief Upload index data to the streaming IBO using buffer orphaning.
+/// After this call, GL_ELEMENT_ARRAY_BUFFER is bound to the streaming IBO.
+/// glDrawElements index pointer should be a byte offset (typically 0).
+inline void ibo_upload( const void* data, GLsizeiptr sizeBytes ){
+	gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, GlobalOpenGL().m_streamIBO );
+	gl().glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeBytes, data, GL_STREAM_DRAW );
+}
+
+/// \brief Unbind streaming VBO and IBO, restoring client-side vertex array mode.
+inline void vbo_unbind(){
+	gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
+	gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, 0 );
+}
+
+/// \brief RAII wrapper for a static GPU buffer (GL_STATIC_DRAW).
+/// Upload once when data changes, then just bind on subsequent frames.
+class StaticVBO
+{
+	GLuint m_vbo = 0;
+	GLuint m_ibo = 0;
+	bool m_vboDirty = true;
+	bool m_iboDirty = true;
+public:
+	StaticVBO() = default;
+	~StaticVBO(){
+		destroy();
+	}
+	StaticVBO( const StaticVBO& ) = delete;
+	StaticVBO& operator=( const StaticVBO& ) = delete;
+	StaticVBO( StaticVBO&& other ) noexcept
+		: m_vbo( other.m_vbo ), m_ibo( other.m_ibo ), m_vboDirty( other.m_vboDirty ), m_iboDirty( other.m_iboDirty ){
+		other.m_vbo = 0;
+		other.m_ibo = 0;
+	}
+	StaticVBO& operator=( StaticVBO&& other ) noexcept {
+		destroy();
+		m_vbo = other.m_vbo; m_ibo = other.m_ibo; m_vboDirty = other.m_vboDirty; m_iboDirty = other.m_iboDirty;
+		other.m_vbo = 0; other.m_ibo = 0;
+		return *this;
+	}
+
+	void markDirty(){
+		m_vboDirty = true;
+		m_iboDirty = true;
+	}
+
+	/// Upload vertex data and bind. Skips upload if not dirty.
+	void uploadVertices( const void* data, GLsizeiptr sizeBytes ){
+		if ( m_vbo == 0 ){
+			gl().glGenBuffers( 1, &m_vbo );
+		}
+		gl().glBindBuffer( GL_ARRAY_BUFFER, m_vbo );
+		if ( m_vboDirty ){
+			gl().glBufferData( GL_ARRAY_BUFFER, sizeBytes, data, GL_STATIC_DRAW );
+			m_vboDirty = false;
+		}
+	}
+
+	/// Upload index data and bind. Skips upload if not dirty.
+	void uploadIndices( const void* data, GLsizeiptr sizeBytes ){
+		if ( m_ibo == 0 ){
+			gl().glGenBuffers( 1, &m_ibo );
+		}
+		gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, m_ibo );
+		if ( m_iboDirty ){
+			gl().glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeBytes, data, GL_STATIC_DRAW );
+			m_iboDirty = false;
+		}
+	}
+
+	/// Bind VBO without uploading.
+	void bindVBO() const {
+		gl().glBindBuffer( GL_ARRAY_BUFFER, m_vbo );
+	}
+
+	/// Bind IBO without uploading.
+	void bindIBO() const {
+		gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, m_ibo );
+	}
+
+	bool isDirty() const {
+		return m_vboDirty || m_iboDirty;
+	}
+
+	void destroy(){
+		if ( m_vbo != 0 ){
+			if ( GlobalOpenGL().contextValid ){
+				gl().glDeleteBuffers( 1, &m_vbo );
+			}
+			m_vbo = 0;
+		}
+		if ( m_ibo != 0 ){
+			if ( GlobalOpenGL().contextValid ){
+				gl().glDeleteBuffers( 1, &m_ibo );
+			}
+			m_ibo = 0;
+		}
+		m_vboDirty = true;
+		m_iboDirty = true;
+	}
+};
+
 /// \brief A resizable buffer of indices.
 class IndexBuffer
 {
@@ -840,11 +950,14 @@ inline ArbitraryMeshVertex arbitrarymeshvertex_quantised( const ArbitraryMeshVer
 }
 
 
-/// \brief Sets up the OpenGL colour and vertex arrays for \p array.
+/// \brief Uploads \p array to the streaming VBO and sets up the OpenGL colour and vertex arrays for PointVertex data.
 template<typename PointVertex_t>
-inline void pointvertex_gl_array( const PointVertex_t* array ){
-	gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex_t ), &array->colour );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex_t ), &array->vertex );
+inline void pointvertex_gl_array( const PointVertex_t* array, GLsizei count ){
+	vbo_upload( array, count * sizeof( PointVertex_t ) );
+	gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex_t ),
+	                     reinterpret_cast<const void*>( offsetof( PointVertex_t, colour ) ) );
+	gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex_t ),
+	                      reinterpret_cast<const void*>( offsetof( PointVertex_t, vertex ) ) );
 }
 
 template<typename PointVertex_t>
@@ -863,7 +976,7 @@ public:
 		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
 		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, 0 );
 #endif
-		pointvertex_gl_array( m_array.data() );
+		pointvertex_gl_array( m_array.data(), GLsizei( m_array.size() ) );
 		gl().glDrawArrays( m_mode, 0, GLsizei( m_array.size() ) );
 	}
 };
@@ -878,7 +991,7 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
-		pointvertex_gl_array( &m_vector.front() );
+		pointvertex_gl_array( &m_vector.front(), GLsizei( m_vector.size() ) );
 		gl().glDrawArrays( m_mode, 0, GLsizei( m_vector.size() ) );
 	}
 
@@ -910,7 +1023,7 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
-		pointvertex_gl_array( m_vertices.data() );
+		pointvertex_gl_array( m_vertices.data(), m_vertices.size() );
 		gl().glDrawArrays( m_mode, 0, m_vertices.size() );
 	}
 };
@@ -927,8 +1040,9 @@ public:
 
 	void render( RenderStateFlags state ) const {
 #if 1
-		pointvertex_gl_array( m_vertices.data() );
-		gl().glDrawElements( m_mode, GLsizei( m_indices.size() ), RenderIndexTypeID, m_indices.data() );
+		pointvertex_gl_array( m_vertices.data(), GLsizei( m_vertices.size() ) );
+		ibo_upload( m_indices.data(), m_indices.size() * sizeof( RenderIndex ) );
+		gl().glDrawElements( m_mode, GLsizei( m_indices.size() ), RenderIndexTypeID, 0 );
 #else
 		gl().glBegin( m_mode );
 		if ( state & RENDER_COLOURARRAY != 0 ) {
@@ -970,7 +1084,7 @@ public:
 					p.colour = colour_vertex;
 				}
 			}
-			pointvertex_gl_array( m_array.data() );
+			pointvertex_gl_array( m_array.data(), GLsizei( m_array.size() ) );
 			gl().glDrawArrays( m_mode, 0, GLsizei( m_array.size() ) );
 		}
 		else{ // test visibility
@@ -978,7 +1092,8 @@ public:
 				if( p.query == 0 )
 					gl().glGenQueries( 1, &p.query );
 				gl().glBeginQuery( GL_SAMPLES_PASSED, p.query );
-				gl().glVertexPointer( 3, GL_FLOAT, 0, &p.vertex );
+				vbo_upload( &p.vertex, sizeof( p.vertex ) );
+				gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
 				gl().glDrawArrays( m_mode, 0, 1 );
 				gl().glEndQuery( GL_SAMPLES_PASSED );
 			}
@@ -1283,12 +1398,6 @@ public:
 	void render( RenderStateFlags state ) const {
 		if( tex > 0 ){
 			gl().glBindTexture( GL_TEXTURE_2D, tex );
-			//Here we draw the texturemaped quads.
-			//The bitmap that we got from FreeType was not
-			//oriented quite like we would like it to be,
-			//so we need to link the texture to the quad
-			//so that the result will be properly aligned.
-#if 0
 			const float verts[4][2] = { { screenPos.x(), screenPos.y() },
 			                            { screenPos.x(), screenPos.y() + height + .01f },
 			                            { screenPos.x() + width + .01f, screenPos.y() + height + .01f },
@@ -1297,21 +1406,18 @@ public:
 			                             { subTex / 3.f, 0 },
 			                             { ( subTex + 1 ) / 3.f, 0 },
 			                             { ( subTex + 1 ) / 3.f, 1 } };
-			gl().glVertexPointer( 2, GL_FLOAT, 0, verts );
-			gl().glTexCoordPointer( 2, GL_FLOAT, 0, coords );
+			// Interleaved pos+texcoord for VBO upload
+			struct TextVert { float x, y, s, t; };
+			const TextVert textVerts[4] = {
+				{ verts[0][0], verts[0][1], coords[0][0], coords[0][1] },
+				{ verts[1][0], verts[1][1], coords[1][0], coords[1][1] },
+				{ verts[2][0], verts[2][1], coords[2][0], coords[2][1] },
+				{ verts[3][0], verts[3][1], coords[3][0], coords[3][1] },
+			};
+			vbo_upload( textVerts, sizeof( textVerts ) );
+			gl().glVertexPointer( 2, GL_FLOAT, sizeof( TextVert ), 0 );
+			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( TextVert ), reinterpret_cast<const void*>( 2 * sizeof( float ) ) );
 			gl().glDrawArrays( GL_QUADS, 0, 4 );
-#else // this is faster :0
-			gl().glBegin( GL_QUADS );
-			gl().glTexCoord2f( subTex / 3.f, 1 );
-			gl().glVertex2f( screenPos.x(), screenPos.y() );
-			gl().glTexCoord2f( subTex / 3.f, 0 );
-			gl().glVertex2f( screenPos.x(), screenPos.y() + height + .01f );
-			gl().glTexCoord2f( ( subTex + 1 ) / 3.f, 0 );
-			gl().glVertex2f( screenPos.x() + width + .01f, screenPos.y() + height + .01f );
-			gl().glTexCoord2f( ( subTex + 1 ) / 3.f, 1 );
-			gl().glVertex2f( screenPos.x() + width + .01f, screenPos.y() );
-			gl().glEnd();
-#endif
 		}
 	}
 };

@@ -35,6 +35,7 @@ public:
 	DMetaSurf( int numverts, int numindices ){
 		verts = new vec3_t[numverts];
 		indices = new unsigned int[numindices];
+		vertsN = numverts;
 		indicesN = numindices;
 	}
 	~DMetaSurf(){
@@ -43,6 +44,7 @@ public:
 	}
 	vec3_t* verts;
 	unsigned int* indices;
+	int vertsN;
 	int indicesN;
 	vec3_t colour;
 };

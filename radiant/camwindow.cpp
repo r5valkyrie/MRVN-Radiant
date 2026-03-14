@@ -45,6 +45,8 @@
 #include "commandlib.h"
 #include "math/frustum.h"
 
+#include <array>
+
 #include "gtkutil/widget.h"
 #include "gtkutil/toolbar.h"
 #include "gtkutil/glwidget.h"
@@ -1292,17 +1294,19 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 	gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.95f );
 	gl().glLineWidth( 1.5f );
 
-	constexpr int steps = 32;
 	auto drawCircle = [&]( int a, int b ){
-		gl().glBegin( GL_LINE_LOOP );
+		constexpr int steps = 32;
+		std::array<Vector3, 32> circleVerts;
 		for ( int i = 0; i < steps; ++i ){
 			const float ang = static_cast<float>( ( 2.0 * c_pi * i ) / steps );
 			Vector3 v( p );
 			v[a] += std::cos( ang ) * r;
 			v[b] += std::sin( ang ) * r;
-			gl().glVertex3fv( vector3_to_array( v ) );
+			circleVerts[i] = v;
 		}
-		gl().glEnd();
+		vbo_upload( circleVerts.data(), sizeof( circleVerts ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+		gl().glDrawArrays( GL_LINE_LOOP, 0, steps );
 	};
 	drawCircle( 0, 1 );
 	drawCircle( 0, 2 );
@@ -2483,16 +2487,17 @@ void CamWnd::Cam_Draw(){
 
 	// draw the crosshair
 	if ( m_bFreeMove ) {
-		gl().glBegin( GL_LINES );
-		gl().glVertex2f( (float)m_Camera.width / 2.f, (float)m_Camera.height / 2.f + 6 );
-		gl().glVertex2f( (float)m_Camera.width / 2.f, (float)m_Camera.height / 2.f + 2 );
-		gl().glVertex2f( (float)m_Camera.width / 2.f, (float)m_Camera.height / 2.f - 6 );
-		gl().glVertex2f( (float)m_Camera.width / 2.f, (float)m_Camera.height / 2.f - 2 );
-		gl().glVertex2f( (float)m_Camera.width / 2.f + 6, (float)m_Camera.height / 2.f );
-		gl().glVertex2f( (float)m_Camera.width / 2.f + 2, (float)m_Camera.height / 2.f );
-		gl().glVertex2f( (float)m_Camera.width / 2.f - 6, (float)m_Camera.height / 2.f );
-		gl().glVertex2f( (float)m_Camera.width / 2.f - 2, (float)m_Camera.height / 2.f );
-		gl().glEnd();
+		const float cx = (float)m_Camera.width / 2.f;
+		const float cy = (float)m_Camera.height / 2.f;
+		const float crosshair[] = {
+			cx, cy + 6, cx, cy + 2,
+			cx, cy - 6, cx, cy - 2,
+			cx + 6, cy, cx + 2, cy,
+			cx - 6, cy, cx - 2, cy,
+		};
+		vbo_upload( crosshair, sizeof( crosshair ) );
+		gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
+		gl().glDrawArrays( GL_LINES, 0, 8 );
 	}
 
 	if ( g_camwindow_globals.m_showStats ) {

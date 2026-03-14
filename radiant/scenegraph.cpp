@@ -32,6 +32,7 @@
 #include "scenelib.h"
 #include "instancelib.h"
 #include "treemodel.h"
+#include "octree.h"
 
 template<std::size_t SIZE>
 class TypeIdMap
@@ -63,6 +64,7 @@ class CompiledGraph final : public scene::Graph, public scene::Instantiable::Obs
 	Signal0 m_boundsChanged;
 	scene::Path m_rootpath;
 	Signal0 m_sceneChangedCallbacks;
+	SceneOctree m_octree;
 
 	TypeIdMap<NODETYPEID_MAX> m_nodeTypeIds;
 	TypeIdMap<INSTANCETYPEID_MAX> m_instanceTypeIds;
@@ -109,6 +111,7 @@ public:
 		root.DecRef();
 	}
 	void boundsChanged(){
+		m_octree.markDirty();
 		m_boundsChanged();
 	}
 
@@ -132,13 +135,13 @@ public:
 
 	void insert( scene::Instance* instance ){
 		m_instances.insert( InstanceMap::value_type( PathConstReference( instance->path() ), instance ) );
-
+		m_octree.markDirty();
 		m_observer->insert( instance );
 	}
 	void erase( scene::Instance* instance ){
 		m_observer->erase( instance );
-
 		m_instances.erase( PathConstReference( instance->path() ) );
+		m_octree.markDirty();
 	}
 
 	SignalHandlerId addBoundsChangedCallback( const SignalHandler& boundsChanged ){
@@ -154,6 +157,15 @@ public:
 
 	TypeId getInstanceTypeId( const char* name ){
 		return m_instanceTypeIds.getTypeId( name );
+	}
+
+	bool queryVisibleInstances( const VolumeTest& volume, std::unordered_set<scene::Instance*>& result ){
+		if ( m_octree.isDirty() ) {
+			m_octree.build( m_instances.begin(), m_instances.end() );
+		}
+		m_octree.queryVisible( volume, result );
+		SceneOctree::addAncestors( result );
+		return true;
 	}
 
 private:
@@ -252,6 +264,11 @@ void SceneGraph_Destroy(){
 	delete g_sceneGraph;
 
 	graph_tree_model_delete( g_tree_model );
+}
+
+bool SceneGraph_queryVisibleInstances( const VolumeTest& volume, std::unordered_set<scene::Instance*>& result ){
+	if ( g_sceneGraph == nullptr ) return false;
+	return g_sceneGraph->queryVisibleInstances( volume, result );
 }
 
 

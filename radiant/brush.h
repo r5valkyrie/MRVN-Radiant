@@ -81,13 +81,17 @@ inline bool texdef_sane( const texdef_t& texdef ){
 	    && fabs( texdef.shift[1] ) < ( 1 << 16 );
 }
 
-inline void Winding_DrawWireframe( const Winding& winding ){
-	gl().glVertexPointer( 3, GL_DOUBLE, sizeof( WindingVertex ), &winding.points.data()->vertex );
+inline void Winding_DrawWireframe( const Winding& winding, StaticVBO& staticVBO ){
+	staticVBO.uploadVertices( winding.points.data(), winding.numpoints * sizeof( WindingVertex ) );
+	gl().glVertexPointer( 3, GL_DOUBLE, sizeof( WindingVertex ),
+	                      reinterpret_cast<const void*>( offsetof( WindingVertex, vertex ) ) );
 	gl().glDrawArrays( GL_LINE_LOOP, 0, GLsizei( winding.numpoints ) );
 }
 
-inline void Winding_Draw( const Winding& winding, const Vector3& normal, RenderStateFlags state ){
-	gl().glVertexPointer( 3, GL_DOUBLE, sizeof( WindingVertex ), &winding.points.data()->vertex );
+inline void Winding_Draw( const Winding& winding, const Vector3& normal, RenderStateFlags state, StaticVBO& staticVBO ){
+	staticVBO.uploadVertices( winding.points.data(), winding.numpoints * sizeof( WindingVertex ) );
+	gl().glVertexPointer( 3, GL_DOUBLE, sizeof( WindingVertex ),
+	                      reinterpret_cast<const void*>( offsetof( WindingVertex, vertex ) ) );
 
 	if ( ( state & RENDER_BUMP ) != 0 ) {
 		Vector3 normals[64]; // faces rarely exceed 64 vertices
@@ -96,10 +100,15 @@ inline void Winding_Draw( const Winding& winding, const Vector3& normal, RenderS
 		{
 			normals[i] = normal;
 		}
+		gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
 		gl().glNormalPointer( GL_FLOAT, sizeof( Vector3 ), normals );
-		gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( WindingVertex ), &winding.points.data()->texcoord );
-		gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( WindingVertex ), &winding.points.data()->tangent );
-		gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( WindingVertex ), &winding.points.data()->bitangent );
+		staticVBO.bindVBO();
+		gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( WindingVertex ),
+		                            reinterpret_cast<const void*>( offsetof( WindingVertex, texcoord ) ) );
+		gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( WindingVertex ),
+		                            reinterpret_cast<const void*>( offsetof( WindingVertex, tangent ) ) );
+		gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( WindingVertex ),
+		                            reinterpret_cast<const void*>( offsetof( WindingVertex, bitangent ) ) );
 		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, GLsizei( n ) );
 	}
 	else if ( state & RENDER_LIGHTING ) {
@@ -109,16 +118,20 @@ inline void Winding_Draw( const Winding& winding, const Vector3& normal, RenderS
 		{
 			normals[i] = normal;
 		}
+		gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
 		gl().glNormalPointer( GL_FLOAT, sizeof( Vector3 ), normals );
+		staticVBO.bindVBO();
 
 		if ( state & RENDER_TEXTURE ) {
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( WindingVertex ), &winding.points.data()->texcoord );
+			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( WindingVertex ),
+			                        reinterpret_cast<const void*>( offsetof( WindingVertex, texcoord ) ) );
 		}
 		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, GLsizei( winding.numpoints ) );
 	}
 	else {
 		if ( state & RENDER_TEXTURE ) {
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( WindingVertex ), &winding.points.data()->texcoord );
+			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( WindingVertex ),
+			                        reinterpret_cast<const void*>( offsetof( WindingVertex, texcoord ) ) );
 		}
 		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, GLsizei( winding.numpoints ) );
 	}
@@ -949,6 +962,8 @@ private:
 	UndoObserver* m_undoable_observer;
 	MapFile* m_map;
 
+	mutable StaticVBO m_staticVBO;
+
 public:
 
 // assignment not supported
@@ -1045,7 +1060,11 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
-		Winding_Draw( m_winding, m_planeTransformed.plane3().normal(), state );
+		Winding_Draw( m_winding, m_planeTransformed.plane3().normal(), state, m_staticVBO );
+	}
+
+	void markVBODirty(){
+		m_staticVBO.markDirty();
 	}
 
 	void updateFiltered(){
@@ -1442,8 +1461,11 @@ class RenderableWireframe : public OpenGLRenderable
 public:
 	void render( RenderStateFlags state ) const {
 #if 1
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( DepthTestedPointVertex ), &m_vertices->vertex );
-		gl().glDrawElements( GL_LINES, GLsizei( m_size << 1 ), RenderIndexTypeID, m_faceVertex.data() );
+		m_staticVBO.uploadVertices( m_vertices, m_vertexCount * sizeof( DepthTestedPointVertex ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( DepthTestedPointVertex ),
+		                      reinterpret_cast<const void*>( offsetof( DepthTestedPointVertex, vertex ) ) );
+		m_staticVBO.uploadIndices( m_faceVertex.data(), ( m_size << 1 ) * sizeof( RenderIndex ) );
+		gl().glDrawElements( GL_LINES, GLsizei( m_size << 1 ), RenderIndexTypeID, 0 );
 #else
 		gl().glBegin( GL_LINES );
 		for ( std::size_t i = 0; i < m_size; ++i )
@@ -1457,7 +1479,9 @@ public:
 
 	Array<EdgeRenderIndices> m_faceVertex;
 	std::size_t m_size;
+	std::size_t m_vertexCount;
 	const DepthTestedPointVertex* m_vertices;
+	mutable StaticVBO m_staticVBO;
 };
 
 class Brush;
@@ -2235,6 +2259,7 @@ public:
 	void update_wireframe( RenderableWireframe& wire, const bool* faces_visible ) const {
 		wire.m_faceVertex.resize( m_edge_indices.size() );
 		wire.m_vertices = m_uniqueVertexPoints.data();
+		wire.m_vertexCount = m_uniqueVertexPoints.size();
 		wire.m_size = 0;
 		for ( std::size_t i = 0; i < m_edge_faces.size(); ++i )
 		{
@@ -2243,6 +2268,7 @@ public:
 				wire.m_faceVertex[wire.m_size++] = m_edge_indices[i];
 			}
 		}
+		wire.m_staticVBO.markDirty();
 	}
 
 
@@ -3109,6 +3135,7 @@ class BrushClipPlane : public OpenGLRenderable
 	Plane3 m_plane;
 	Winding m_winding;
 	static Shader* m_state;
+	mutable StaticVBO m_staticVBO;
 public:
 	static void constructStatic(){
 		m_state = GlobalShaderCache().capture( "$CLIPPER_OVERLAY" );
@@ -3126,22 +3153,24 @@ public:
 		{
 			m_winding.resize( 0 );
 		}
+		m_staticVBO.markDirty();
 	}
 
 	void render( RenderStateFlags state ) const {
 		if ( ( state & RENDER_FILL ) != 0 ) {
-			Winding_Draw( m_winding, m_plane.normal(), state );
+			Winding_Draw( m_winding, m_plane.normal(), state, m_staticVBO );
 		}
 		else
 		{
-			Winding_DrawWireframe( m_winding );
+			Winding_DrawWireframe( m_winding, m_staticVBO );
 
 			// also draw a line indicating the direction of the cut
 			Vector3 lineverts[2];
 			Winding_Centroid( m_winding, m_plane, lineverts[0] );
 			lineverts[1] = vector3_added( lineverts[0], vector3_scaled( m_plane.normal(), Brush::m_maxWorldCoord * 4 ) );
 
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), &lineverts[0] );
+			vbo_upload( lineverts, sizeof( lineverts ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
 			gl().glDrawArrays( GL_LINES, 0, GLsizei( 2 ) );
 		}
 	}

@@ -31,10 +31,13 @@
 #include "renderable.h"
 #include "qerplugin.h"
 
+#include "render.h"
+
 #include <set>
 #include <vector>
 #include <list>
 #include <map>
+#include <algorithm>
 
 #include "math/matrix.h"
 #include "math/aabb.h"
@@ -987,6 +990,9 @@ public:
 		}
 		debug_string( "end rendering" );
 
+		// Unbind streaming VBOs to restore client-side vertex array mode
+		vbo_unbind();
+
 		OpenGLState reset = current; /* reset some states */
 		reset.m_state = current.m_state & ~RENDER_TEXT; /* popmatrix after RENDER_TEXT */
 		reset.m_program = nullptr; /* disable shader */
@@ -1559,6 +1565,13 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState& current, unsigned int globalstate, const Vector3& viewer, const Matrix4& viewMatrix ){
 	const Matrix4* transform = 0;
 
+	// Sort by transform pointer to group renderables with the same transform,
+	// reducing the number of glLoadMatrixf calls.
+	std::sort( renderables.begin(), renderables.end(),
+		[]( const OpenGLStateBucket::RenderTransform& a, const OpenGLStateBucket::RenderTransform& b ){
+			return a.m_transform < b.m_transform;
+		} );
+
 	if ( current.m_program != 0 && current.m_textureSkyBox != 0 && globalstate & RENDER_PROGRAM ) {
 		current.m_program->setParameters( viewer, g_matrix4_identity, g_vector3_identity, g_vector3_identity, g_matrix4_identity );
 	}
@@ -1642,12 +1655,15 @@ void OpenGLStateBucket::render( OpenGLState& current, unsigned int globalstate, 
 		gl().glPushMatrix();
 		gl().glLoadMatrixf( reinterpret_cast<const float*>( &g_matrix4_identity ) );
 
-		gl().glBegin( GL_QUADS );
-		gl().glVertex3f( -1, -1, 0 );
-		gl().glVertex3f( 1, -1, 0 );
-		gl().glVertex3f( 1, 1, 0 );
-		gl().glVertex3f( -1, 1, 0 );
-		gl().glEnd();
+		const Vertex3f screenQuad[4] = {
+			Vertex3f( -1, -1, 0 ),
+			Vertex3f( 1, -1, 0 ),
+			Vertex3f( 1, 1, 0 ),
+			Vertex3f( -1, 1, 0 ),
+		};
+		vbo_upload( screenQuad, sizeof( screenQuad ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
+		gl().glDrawArrays( GL_QUADS, 0, 4 );
 
 		gl().glMatrixMode( GL_PROJECTION );
 		gl().glPopMatrix();

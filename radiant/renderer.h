@@ -27,8 +27,10 @@
 #include "cullable.h"
 #include "scenelib.h"
 #include "math/frustum.h"
+#include "scenegraph.h"
 #include <vector>
 #include <cmath>
+#include <unordered_set>
 
 inline Cullable* Instance_getCullable( scene::Instance& instance ){
 	return InstanceTypeCast<Cullable>::cast( instance );
@@ -77,16 +79,24 @@ class ForEachVisible : public scene::Graph::Walker
 	mutable std::vector<VolumeIntersectionValue> m_state;
 	Vector3 m_viewer;
 	float m_distanceCullSq; // squared max distance for early cull; 0 = disabled
+	const std::unordered_set<scene::Instance*>* m_visibleSet; // octree pre-filter; null = no filter
 public:
-	ForEachVisible( const VolumeTest& volume, const Walker_& walker, float maxDistance = 0 )
+	ForEachVisible( const VolumeTest& volume, const Walker_& walker, float maxDistance = 0,
+	                const std::unordered_set<scene::Instance*>* visibleSet = nullptr )
 		: m_volume( volume ), m_walker( walker ), m_viewer( volume.getViewer() ),
-		  m_distanceCullSq( maxDistance > 0 ? maxDistance * maxDistance : 0 ){
+		  m_distanceCullSq( maxDistance > 0 ? maxDistance * maxDistance : 0 ),
+		  m_visibleSet( visibleSet ){
 		m_state.push_back( c_volumePartial );
 	}
 	bool pre( const scene::Path& path, scene::Instance& instance ) const {
 		VolumeIntersectionValue visible = ( path.top().get().visible() ) ? m_state.back() : c_volumeOutside;
 
 		if ( visible == c_volumePartial ) {
+			// Octree pre-filter: if the instance is not in the visible set, skip it
+			if ( m_visibleSet != nullptr && m_visibleSet->find( &instance ) == m_visibleSet->end() ) {
+				m_state.push_back( c_volumeOutside );
+				return false;
+			}
 			// Quick distance-based pre-cull: reject instances whose nearest AABB point is beyond max distance
 			if ( m_distanceCullSq > 0 ) {
 				const AABB& aabb = instance.worldAABB();
@@ -185,6 +195,9 @@ public:
 };
 
 inline void Scene_Render( Renderer& renderer, const VolumeTest& volume, float maxDistance = 0 ){
-	GlobalSceneGraph().traverse( ForEachVisible<RenderHighlighted>( volume, RenderHighlighted( renderer, volume ), maxDistance ) );
+	std::unordered_set<scene::Instance*> visibleSet;
+	bool hasOctree = SceneGraph_queryVisibleInstances( volume, visibleSet );
+	const auto* visPtr = hasOctree ? &visibleSet : nullptr;
+	GlobalSceneGraph().traverse( ForEachVisible<RenderHighlighted>( volume, RenderHighlighted( renderer, volume ), maxDistance, visPtr ) );
 	GlobalShaderCache().forEachRenderable( RenderHighlighted::RenderCaller( RenderHighlighted( renderer, volume ) ) );
 }

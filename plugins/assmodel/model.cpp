@@ -86,6 +86,7 @@ class PicoSurface final :
 
 	Array<ArbitraryMeshVertex> m_vertices;
 	Array<RenderIndex> m_indices;
+	mutable StaticVBO m_staticVBO;
 
 public:
 
@@ -102,19 +103,21 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
+		m_staticVBO.uploadVertices( m_vertices.data(), m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
 		if ( ( state & RENDER_BUMP ) != 0 ) {
-			gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->normal );
-			gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->texcoord );
-			gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->tangent );
-			gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->bitangent );
+			gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
+			gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
+			gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, tangent ) ) );
+			gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, bitangent ) ) );
 		}
 		else
 		{
-			gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->normal );
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->texcoord );
+			gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
+			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
 		}
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), &m_vertices.data()->vertex );
-		gl().glDrawElements( GL_TRIANGLES, GLsizei( m_indices.size() ), RenderIndexTypeID, m_indices.data() );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
+		m_staticVBO.uploadIndices( m_indices.data(), m_indices.size() * sizeof( RenderIndex ) );
+		gl().glDrawElements( GL_TRIANGLES, GLsizei( m_indices.size() ), RenderIndexTypeID, 0 );
 
 #if defined( _DEBUG ) && !defined( _DEBUG_QUICKER )
 		GLfloat modelview[16];
@@ -127,17 +130,23 @@ public:
 		matrix4_full_invert( modelview_inv );
 		Matrix4 modelview_inv_transposed = matrix4_transposed( modelview_inv );
 
-		gl().glBegin( GL_LINES );
-
+		vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
+		std::vector<Vector3> debugLines;
+		debugLines.reserve( m_vertices.size() * 2 );
 		for ( Array<ArbitraryMeshVertex>::const_iterator i = m_vertices.begin(); i != m_vertices.end(); ++i )
 		{
 			Vector3 normal = normal3f_to_vector3( ( *i ).normal );
 			normal = matrix4_transformed_direction( modelview_inv, vector3_normalised( matrix4_transformed_direction( modelview_inv_transposed, normal ) ) ); // do some magic
 			Vector3 normalTransformed = vector3_added( vertex3f_to_vector3( ( *i ).vertex ), vector3_scaled( normal, 8 ) );
-			gl().glVertex3fv( vertex3f_to_array( ( *i ).vertex ) );
-			gl().glVertex3fv( vector3_to_array( normalTransformed ) );
+			debugLines.push_back( vertex3f_to_vector3( ( *i ).vertex ) );
+			debugLines.push_back( normalTransformed );
 		}
-		gl().glEnd();
+		if ( !debugLines.empty() ){
+			vbo_upload( debugLines.data(), debugLines.size() * sizeof( Vector3 ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+			gl().glDrawArrays( GL_LINES, 0, GLsizei( debugLines.size() ) );
+		}
 #endif
 	}
 

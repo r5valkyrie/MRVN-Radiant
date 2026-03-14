@@ -137,9 +137,16 @@ void QGL_sharedContextCreated( OpenGLBinding& table ){
 
 	table.support_ARB_texture_compression = QOpenGLContext::currentContext()->hasExtension( "GL_ARB_texture_compression" );
 	table.support_EXT_texture_compression_s3tc = QOpenGLContext::currentContext()->hasExtension( "GL_EXT_texture_compression_s3tc" );
+
+	// Create streaming VBOs for efficient per-frame vertex/index upload
+	gl().glGenBuffers( 1, &table.m_streamVBO );
+	gl().glGenBuffers( 1, &table.m_streamIBO );
 }
 
 void QGL_sharedContextDestroyed( OpenGLBinding& table ){
+	// Reset streaming VBO handles (actual GL resources freed by context destruction)
+	table.m_streamVBO = 0;
+	table.m_streamIBO = 0;
 	QGL_clear( table );
 }
 

@@ -1119,8 +1119,9 @@ public:
 	void render( RenderStateFlags state ) const {
 		for ( std::size_t i = 0; i < m_primitives.size(); ++i )
 		{
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_primitives[i].m_points[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_primitives[i].m_points[0].vertex );
+			vbo_upload( m_primitives[i].m_points, m_primitives[i].m_count * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			switch ( m_primitives[i].m_count )
 			{
 			case 1: break;
@@ -1546,8 +1547,9 @@ class RotateManipulator : public Manipulator
 		RenderableCircle( std::size_t size ) : m_vertices( size ){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_vertices.data()->colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_vertices.data()->vertex );
+			vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINE_LOOP, 0, GLsizei( m_vertices.size() ) );
 		}
 		void setColour( const Colour4b& colour ){
@@ -1565,8 +1567,9 @@ class RotateManipulator : public Manipulator
 		RenderableSemiCircle( std::size_t size ) : m_vertices( size ){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_vertices.data()->colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_vertices.data()->vertex );
+			vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINE_STRIP, 0, GLsizei( m_vertices.size() ) );
 		}
 		void setColour( const Colour4b& colour ){
@@ -1959,8 +1962,9 @@ class TranslateManipulator : public Manipulator, public ManipulatorSelectionChan
 		RenderableArrowLine(){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_line[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_line[0].vertex );
+			vbo_upload( m_line, 2 * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINES, 0, 2 );
 		}
 		void setColour( const Colour4b& colour ){
@@ -1976,9 +1980,10 @@ class TranslateManipulator : public Manipulator, public ManipulatorSelectionChan
 			: m_vertices( size ){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( FlatShadedVertex ), &m_vertices.data()->colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( FlatShadedVertex ), &m_vertices.data()->vertex );
-			gl().glNormalPointer( GL_FLOAT, sizeof( FlatShadedVertex ), &m_vertices.data()->normal );
+			vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( FlatShadedVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( FlatShadedVertex ), reinterpret_cast<const void*>( offsetof( FlatShadedVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( FlatShadedVertex ), reinterpret_cast<const void*>( offsetof( FlatShadedVertex, vertex ) ) );
+			gl().glNormalPointer( GL_FLOAT, sizeof( FlatShadedVertex ), reinterpret_cast<const void*>( offsetof( FlatShadedVertex, normal ) ) );
 			gl().glDrawArrays( GL_TRIANGLES, 0, GLsizei( m_vertices.size() ) );
 		}
 		void setColour( const Colour4b& colour ){
@@ -1992,8 +1997,9 @@ class TranslateManipulator : public Manipulator, public ManipulatorSelectionChan
 	{
 		PointVertex m_quad[4];
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_quad[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_quad[0].vertex );
+			vbo_upload( m_quad, 4 * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINE_LOOP, 0, 4 );
 		}
 		void setColour( const Colour4b& colour ){
@@ -2197,8 +2203,9 @@ class ScaleManipulator : public Manipulator, public ManipulatorSelectionChangeab
 		PointVertex m_line[2];
 
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_line[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_line[0].vertex );
+			vbo_upload( m_line, 2 * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINES, 0, 2 );
 		}
 		void setColour( const Colour4b& colour ){
@@ -2210,8 +2217,9 @@ class ScaleManipulator : public Manipulator, public ManipulatorSelectionChangeab
 	{
 		PointVertex m_quad[4];
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_quad[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_quad[0].vertex );
+			vbo_upload( m_quad, 4 * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_QUADS, 0, 4 );
 		}
 		void setColour( const Colour4b& colour ){
@@ -2349,8 +2357,9 @@ class SkewManipulator : public Manipulator
 		RenderableLine() {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_line[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_line[0].vertex );
+			vbo_upload( m_line, 2 * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINES, 0, 2 );
 		}
 		void setColour( const Colour4b& colour ) {
@@ -2366,9 +2375,10 @@ class SkewManipulator : public Manipulator
 			: m_vertices( size ) {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( FlatShadedVertex ), &m_vertices.data()->colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( FlatShadedVertex ), &m_vertices.data()->vertex );
-			gl().glNormalPointer( GL_FLOAT, sizeof( FlatShadedVertex ), &m_vertices.data()->normal );
+			vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( FlatShadedVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( FlatShadedVertex ), reinterpret_cast<const void*>( offsetof( FlatShadedVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( FlatShadedVertex ), reinterpret_cast<const void*>( offsetof( FlatShadedVertex, vertex ) ) );
+			gl().glNormalPointer( GL_FLOAT, sizeof( FlatShadedVertex ), reinterpret_cast<const void*>( offsetof( FlatShadedVertex, normal ) ) );
 			gl().glDrawArrays( GL_TRIANGLES, 0, GLsizei( m_vertices.size() ) );
 		}
 		void setColour( const Colour4b & colour ) {
@@ -2384,8 +2394,9 @@ class SkewManipulator : public Manipulator
 			m_point( vertex3f_identity ) {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_point.colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_point.vertex );
+			vbo_upload( &m_point, sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_POINTS, 0, 1 );
 		}
 		void setColour( const Colour4b & colour ) {
@@ -4471,7 +4482,8 @@ private:
 		void render( RenderStateFlags state ) const {
 			gl().glPolygonOffset( -2, -2 );
 			for( const auto& poly : m_polygons ){
-				gl().glVertexPointer( 3, GL_FLOAT, sizeof( m_polygons[0][0] ), poly[0].data() );
+				vbo_upload( poly.data(), poly.size() * sizeof( Vector3 ) );
+				gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
 				gl().glDrawArrays( GL_POLYGON, 0, GLsizei( poly.size() ) );
 			}
 			gl().glPolygonOffset( -1, 1 ); // restore default
@@ -4486,7 +4498,8 @@ private:
 		RenderableCircle( std::size_t size ) : m_vertices( size ){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_vertices.data()->vertex );
+			vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( PointVertex ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINE_LOOP, 0, GLsizei( m_vertices.size() ) );
 		}
 	};
@@ -4507,8 +4520,9 @@ class ClipManipulator : public Manipulator, public ManipulatorSelectionChangeabl
 			m_p( vertex3f_identity ), m_set( false ) {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_p.colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_p.vertex );
+			vbo_upload( &m_p, sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_POINTS, 0, 1 );
 
 			gl().glColor4ub( m_p.colour.r, m_p.colour.g, m_p.colour.b, m_p.colour.a ); ///?
@@ -4778,8 +4792,9 @@ class BuildManipulator : public Manipulator, public Manipulatable
 		RenderableLine() {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_line[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_line[0].vertex );
+			vbo_upload( m_line, 2 * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINES, 0, 2 );
 		}
 		void setColour( const Colour4b& colour ) {
@@ -4794,8 +4809,9 @@ class BuildManipulator : public Manipulator, public Manipulatable
 			m_point( vertex3f_identity ) {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_point.colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_point.vertex );
+			vbo_upload( &m_point, sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_POINTS, 0, 1 );
 		}
 		void setColour( const Colour4b & colour ) {
@@ -4871,8 +4887,9 @@ class UVManipulator : public Manipulator, public Manipulatable
 			m_point( vertex3f_identity ) {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_point.colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_point.vertex );
+			vbo_upload( &m_point, sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_POINTS, 0, 1 );
 		}
 		void setColour( const Colour4b & colour ) {
@@ -4885,8 +4902,9 @@ class UVManipulator : public Manipulator, public Manipulatable
 		RenderablePoints(){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_points[0].colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_points[0].vertex );
+			vbo_upload( m_points.data(), m_points.size() * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_POINTS, 0, m_points.size() );
 		}
 	};
@@ -4897,8 +4915,9 @@ class UVManipulator : public Manipulator, public Manipulatable
 		}
 		void render( RenderStateFlags state ) const {
 			if( m_lines.size() != 0 ){
-				gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_lines[0].colour );
-				gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_lines[0].vertex );
+				vbo_upload( m_lines.data(), m_lines.size() * sizeof( PointVertex ) );
+				gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+				gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 				gl().glDrawArrays( GL_LINES, 0, m_lines.size() );
 			}
 		}
@@ -4910,8 +4929,9 @@ class UVManipulator : public Manipulator, public Manipulatable
 		RenderableCircle( std::size_t size ) : m_vertices( size ){
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_vertices.data()->colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_vertices.data()->vertex );
+			vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_LINE_LOOP, 0, GLsizei( m_vertices.size() ) );
 		}
 		void setColour( const Colour4b& colour ){
@@ -4931,10 +4951,14 @@ class UVManipulator : public Manipulator, public Manipulatable
 		void render( RenderStateFlags state ) const {
 			if( state & RENDER_FILL ){
 				const std::vector<Vector3> normals( m_patchControlArray->size(), g_vector3_axis_z );
+				vbo_upload( m_patchControlArray->data(), m_patchControlArray->size() * sizeof( PatchControl ) );
+				gl().glVertexPointer( 2, GL_FLOAT, sizeof( PatchControl ), reinterpret_cast<const void*>( offsetof( PatchControl, m_texcoord ) ) );
+				gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( PatchControl ), reinterpret_cast<const void*>( offsetof( PatchControl, m_texcoord ) ) );
+				gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
 				gl().glNormalPointer( GL_FLOAT, sizeof( Vector3 ), normals.data() );
-				gl().glVertexPointer( 2, GL_FLOAT, sizeof( PatchControl ), &m_patchControlArray->data()->m_texcoord );
-				gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( PatchControl ), &m_patchControlArray->data()->m_texcoord );
-				gl().glDrawElements( GL_TRIANGLES, GLsizei( m_trianglesIndices.size() ), RenderIndexTypeID, m_trianglesIndices.data() );
+				gl().glBindBuffer( GL_ARRAY_BUFFER, GlobalOpenGL().m_streamVBO );
+				ibo_upload( m_trianglesIndices.data(), m_trianglesIndices.size() * sizeof( RenderIndex ) );
+				gl().glDrawElements( GL_TRIANGLES, GLsizei( m_trianglesIndices.size() ), RenderIndexTypeID, 0 );
 			}
 		}
 	};
@@ -6608,8 +6632,9 @@ class TransformOriginManipulator : public Manipulator, public ManipulatorSelecti
 			m_point( vertex3f_identity ) {
 		}
 		void render( RenderStateFlags state ) const {
-			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_point.colour );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_point.vertex );
+			vbo_upload( &m_point, sizeof( PointVertex ) );
+			gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
 			gl().glDrawArrays( GL_POINTS, 0, 1 );
 		}
 		void setColour( const Colour4b & colour ) {

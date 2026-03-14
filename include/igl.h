@@ -43,7 +43,12 @@ struct OpenGLBinding
 
 	QOpenGLFunctions_2_0 *funcs;
 
-	OpenGLBinding() : contextValid( false ), funcs( nullptr ){
+	/// \brief Streaming VBO for per-frame vertex data upload (buffer orphaning).
+	GLuint m_streamVBO;
+	/// \brief Streaming IBO for per-frame index data upload (buffer orphaning).
+	GLuint m_streamIBO;
+
+	OpenGLBinding() : contextValid( false ), funcs( nullptr ), m_streamVBO( 0 ), m_streamIBO( 0 ){
 	}
 
 	/// \brief Asserts that there no OpenGL errors have occurred since the last call to glGetError.

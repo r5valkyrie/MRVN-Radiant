@@ -259,8 +259,9 @@ public:
 		if ( m_vertices.data() == 0 ) {
 			return;
 		}
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), &m_vertices.data()->vertex );
-		gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), &m_vertices.data()->colour );
+		vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( PointVertex ) );
+		gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
+		gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
 		gl().glDrawArrays( GL_LINES, 0, m_vertices.size() );
 	}
 
