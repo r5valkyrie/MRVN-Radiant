@@ -1290,12 +1290,24 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 		return;
 	}
 
+	// Reset shader / client state left over from 3D scene rendering
+	gl().glActiveTexture( GL_TEXTURE0 );
+	gl().glClientActiveTexture( GL_TEXTURE0 );
+	gl().glUseProgram( 0 );
+	gl().glDisableClientState( GL_COLOR_ARRAY );
+	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	gl().glDisableClientState( GL_NORMAL_ARRAY );
+	gl().glDisable( GL_TEXTURE_2D );
+	gl().glDisable( GL_TEXTURE_1D );
+	gl().glDisable( GL_TEXTURE_CUBE_MAP );
+	gl().glDisable( GL_LIGHTING );
+	gl().glDisable( GL_COLOR_MATERIAL );
+	gl().glDisable( GL_DEPTH_TEST );
+
 	gl().glMatrixMode( GL_PROJECTION );
 	gl().glLoadMatrixf( reinterpret_cast<const float*>( &camwnd.getCamera().projection ) );
 	gl().glMatrixMode( GL_MODELVIEW );
 	gl().glLoadMatrixf( reinterpret_cast<const float*>( &camwnd.getCamera().modelview ) );
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_LIGHTING );
 	gl().glEnable( GL_BLEND );
 	gl().glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 	gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.95f );
@@ -1807,12 +1819,16 @@ protected:
 		const auto e = scaledEvent( event );
 		if( !m_camwnd.m_bFreeMove && Patch_TerrainTool_IsActive() ){
 			const Vector3 rayDir = camera_ray_direction( m_camwnd, e.x(), e.y() );
-			Patch_TerrainTool_CamHover( Camera_getOrigin( m_camwnd ), rayDir );
-		}
-		if( !m_camwnd.m_bFreeMove && Patch_TerrainTool_IsActive() && e.buttons().testFlag( Qt::MouseButton::LeftButton ) ){
-			const Vector3 rayDir = camera_ray_direction( m_camwnd, e.x(), e.y() );
-			if( Patch_TerrainTool_CamMouseMove( Camera_getOrigin( m_camwnd ), rayDir, true ) ){
-				m_camwnd.queue_draw();
+			if( e.buttons().testFlag( Qt::MouseButton::LeftButton ) ){
+				Patch_TerrainTool_CamHover( Camera_getOrigin( m_camwnd ), rayDir );
+				if( Patch_TerrainTool_CamMouseMove( Camera_getOrigin( m_camwnd ), rayDir, true ) ){
+					m_camwnd.queue_draw();
+					return;
+				}
+			}
+			else{
+				Patch_TerrainTool_CamHover( Camera_getOrigin( m_camwnd ), rayDir );
+				m_camwnd.getCamera().m_idleDraw.queueDraw( Callback(), true );
 				return;
 			}
 		}

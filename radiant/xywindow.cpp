@@ -1103,6 +1103,7 @@ void XYWnd::XY_MouseMoved( int x, int y, unsigned int buttons ){
 			queueDraw();
 			return;
 		}
+		queueDraw();
 	}
 
 	// rbutton = drag xy origin

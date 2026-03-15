@@ -46,6 +46,7 @@
 #include "grid.h"
 #include "patchdialog.h"
 #include "iundo.h"
+#include "tools.h"
 
 PatchCreator* g_patchCreator = 0;
 
@@ -1025,6 +1026,10 @@ static void TerrainToolChanged(){
 	g_terrainPaintHeight_button.update();
 }
 
+void Patch_TerrainTool_UpdateButtons(){
+	TerrainToolChanged();
+}
+
 static int terrain_clampOddPatchSize( int v ){
 	if ( v < 3 ) {
 		v = 3;
@@ -1733,6 +1738,13 @@ static void terrain_setBrushMode( ETerrainBrushMode mode ){
 	g_terrainBrushHasLastPoint = false;
 	g_terrainBrushPreviewValid = false;
 	TerrainToolChanged();
+
+	if ( g_terrainBrushMode != ETerrainBrushMode::None ) {
+		Tools_enterTerrainMode();
+	}
+	else {
+		Tools_leaveTerrainMode();
+	}
 }
 
 static void Patch_TerrainSettings(){
@@ -1786,6 +1798,7 @@ static void Patch_TerrainToolOff(){
 	g_terrainBrushHasLastPoint = false;
 	g_terrainBrushPreviewValid = false;
 	TerrainToolChanged();
+	Tools_leaveTerrainMode();
 }
 
 static void Patch_TerrainBrushSizeIncrease(){
@@ -1817,7 +1830,14 @@ float Patch_TerrainTool_GetBrushInnerRadius(){
 }
 
 void Patch_TerrainTool_Disable(){
-	Patch_TerrainToolOff();
+	if ( g_terrainBrushMode == ETerrainBrushMode::None ) {
+		return;
+	}
+	g_terrainBrushMode = ETerrainBrushMode::None;
+	g_terrainBrushHasLastPoint = false;
+	g_terrainBrushPreviewValid = false;
+	TerrainToolChanged();
+	Tools_notifyTerrainDisabled();
 }
 
 bool Patch_TerrainTool_GetPreviewPoint( Vector3& point ){

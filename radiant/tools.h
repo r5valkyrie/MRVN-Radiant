@@ -26,3 +26,9 @@ void Tools_registerCommands();
 
 void SelectionSystem_DefaultMode();
 void ComponentModeChanged();
+void ToolChanged();
+
+// Terrain tool integration: enters a mode where manipulators are suppressed
+void Tools_enterTerrainMode();
+void Tools_leaveTerrainMode();
+void Tools_notifyTerrainDisabled();

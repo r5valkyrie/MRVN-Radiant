@@ -193,7 +193,7 @@ void SkewToolExport( const BoolImportCallback& importCallback ){
 }
 
 void DragToolExport( const BoolImportCallback& importCallback ){
-	importCallback( GlobalSelectionSystem().ManipulatorMode() == SelectionSystem::eDrag );
+	importCallback( !Patch_TerrainTool_IsActive() && GlobalSelectionSystem().ManipulatorMode() == SelectionSystem::eDrag );
 }
 
 void ClipperToolExport( const BoolImportCallback& importCallback ){
@@ -249,6 +249,7 @@ void ToolChanged(){
 	g_clipper_button.update();
 	g_build_button.update();
 	g_uv_button.update();
+	Patch_TerrainTool_UpdateButtons();
 }
 
 constexpr char c_ResizeMode_status[] = "QE4 Drag Tool: move and resize objects";
@@ -423,6 +424,48 @@ void ToggleRotateScaleModes(){
 
 void ToggleDragSkewModes(){
 	return g_currentToolMode == DragMode? SkewMode() : DragMode();
+}
+
+
+static ToolMode g_terrainPreviousToolMode = 0;
+static bool g_terrainModeActive = false;
+
+static void TerrainToolMode(){
+	// dummy function pointer used as g_currentToolMode sentinel
+}
+
+void Tools_enterTerrainMode(){
+	if ( g_terrainModeActive ) {
+		return;
+	}
+	g_terrainPreviousToolMode = g_currentToolMode;
+	g_terrainModeActive = true;
+	g_currentToolMode = TerrainToolMode;
+	g_currentToolModeSupportsComponentEditing = false;
+
+	Sys_Status( "Terrain Sculpt Tool: paint on selected terrain patches" );
+	GlobalSelectionSystem().SetManipulatorMode( SelectionSystem::eDrag );
+	ToolChanged();
+	ModeChangeNotify();
+}
+
+void Tools_notifyTerrainDisabled(){
+	g_terrainModeActive = false;
+}
+
+void Tools_leaveTerrainMode(){
+	if ( !g_terrainModeActive ) {
+		return;
+	}
+	g_terrainModeActive = false;
+
+	// Restore previous tool mode
+	if ( g_terrainPreviousToolMode != 0 && g_terrainPreviousToolMode != TerrainToolMode ) {
+		g_terrainPreviousToolMode();
+	}
+	else {
+		g_defaultToolMode();
+	}
 }
 
 
