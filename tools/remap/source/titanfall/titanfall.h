@@ -413,5 +413,14 @@ namespace Titanfall {
         inline std::vector<uint8_t>  csmAABBNodes_stub;
         inline std::vector<uint8_t>  cellBSPNodes_stub;
         inline std::vector<uint8_t>  cells_stub;
+        inline std::vector<uint8_t>  portals_stub;
+        inline std::vector<uint8_t>  portalVertices_stub;
+        inline std::vector<uint8_t>  portalEdges_stub;
+        inline std::vector<uint8_t>  portalVertexEdges_stub;
+        inline std::vector<uint8_t>  portalVertexReferences_stub;
+        inline std::vector<uint8_t>  portalEdgeReferences_stub;
+        inline std::vector<uint8_t>  portalEdgeIntersectEdge_stub;
+        inline std::vector<uint8_t>  portalEdgeIntersectAtVertex_stub;
+        inline std::vector<uint8_t>  portalEdgeIntersectHeader_stub;
     }
 }
