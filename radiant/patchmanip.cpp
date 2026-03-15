@@ -695,14 +695,23 @@ static void Patch_TerrainRaise();
 static void Patch_TerrainLower();
 static void Patch_TerrainFlatten();
 static void Patch_TerrainSmooth();
+static void Patch_TerrainNoise();
+static void Patch_TerrainErode();
+static void Patch_TerrainPaintHeight();
 static void Patch_TerrainFillSelection();
+static void Patch_TerrainStitch();
 static void Patch_TerrainToolOff();
 static void Patch_TerrainBrushSizeIncrease();
 static void Patch_TerrainBrushSizeDecrease();
+static void Patch_TerrainBrushStrengthIncrease();
+static void Patch_TerrainBrushStrengthDecrease();
 extern ToggleItem g_terrainRaise_button;
 extern ToggleItem g_terrainLower_button;
 extern ToggleItem g_terrainFlatten_button;
 extern ToggleItem g_terrainSmooth_button;
+extern ToggleItem g_terrainNoise_button;
+extern ToggleItem g_terrainErode_button;
+extern ToggleItem g_terrainPaintHeight_button;
 
 void Patch_registerCommands(){
 	GlobalCommands_insert( "InvertCurveTextureX", FreeCaller<Patch_FlipTextureX>(), QKeySequence( "Ctrl+Shift+I" ) );
@@ -749,24 +758,34 @@ void Patch_registerCommands(){
 	GlobalToggles_insert( "TerrainLower", FreeCaller<Patch_TerrainLower>(), ToggleItem::AddCallbackCaller( g_terrainLower_button ) );
 	GlobalToggles_insert( "TerrainFlatten", FreeCaller<Patch_TerrainFlatten>(), ToggleItem::AddCallbackCaller( g_terrainFlatten_button ) );
 	GlobalToggles_insert( "TerrainSmooth", FreeCaller<Patch_TerrainSmooth>(), ToggleItem::AddCallbackCaller( g_terrainSmooth_button ) );
+	GlobalToggles_insert( "TerrainNoise", FreeCaller<Patch_TerrainNoise>(), ToggleItem::AddCallbackCaller( g_terrainNoise_button ) );
+	GlobalToggles_insert( "TerrainErode", FreeCaller<Patch_TerrainErode>(), ToggleItem::AddCallbackCaller( g_terrainErode_button ) );
+	GlobalToggles_insert( "TerrainPaintHeight", FreeCaller<Patch_TerrainPaintHeight>(), ToggleItem::AddCallbackCaller( g_terrainPaintHeight_button ) );
 	GlobalCommands_insert( "TerrainFillSelection", FreeCaller<Patch_TerrainFillSelection>() );
+	GlobalCommands_insert( "TerrainStitch", FreeCaller<Patch_TerrainStitch>() );
 	GlobalCommands_insert( "TerrainToolOff", FreeCaller<Patch_TerrainToolOff>() );
 	GlobalCommands_insert( "TerrainBrushSizeIncrease", FreeCaller<Patch_TerrainBrushSizeIncrease>(), QKeySequence( "]" ) );
 	GlobalCommands_insert( "TerrainBrushSizeDecrease", FreeCaller<Patch_TerrainBrushSizeDecrease>(), QKeySequence( "[" ) );
+	GlobalCommands_insert( "TerrainBrushStrengthIncrease", FreeCaller<Patch_TerrainBrushStrengthIncrease>(), QKeySequence( "Shift+]" ) );
+	GlobalCommands_insert( "TerrainBrushStrengthDecrease", FreeCaller<Patch_TerrainBrushStrengthDecrease>(), QKeySequence( "Shift+[" ) );
 }
 
 void Patch_constructToolbar( QToolBar* toolbar ){
 	toolbar_append_button( toolbar, "Put caps on the current patch", "curve_cap.png", "CapCurrentCurve" );
 	toolbar_append_button( toolbar, "Create terrain patch", "patch_wireframe.png", "TerrainPatchCreate" );
-	toolbar_append_toggle_button( toolbar, "Terrain raise tool", "ellipsis.png", "TerrainRaise" );
-	toolbar_append_toggle_button( toolbar, "Terrain lower tool", "ellipsis.png", "TerrainLower" );
-	toolbar_append_toggle_button( toolbar, "Terrain flatten tool", "ellipsis.png", "TerrainFlatten" );
-	toolbar_append_toggle_button( toolbar, "Terrain smooth tool", "ellipsis.png", "TerrainSmooth" );
-	toolbar_append_button( toolbar, "Fill terrain between selected verts", "ellipsis.png", "TerrainFillSelection" );
-	toolbar_append_button( toolbar, "Disable terrain tool", "ellipsis.png", "TerrainToolOff" );
-	toolbar_append_button( toolbar, "Terrain brush size -", "ellipsis.png", "TerrainBrushSizeDecrease" );
-	toolbar_append_button( toolbar, "Terrain brush size +", "ellipsis.png", "TerrainBrushSizeIncrease" );
-	toolbar_append_button( toolbar, "Terrain tool settings", "ellipsis.png", "TerrainToolSettings" );
+	toolbar_append_toggle_button( toolbar, "Terrain raise tool", "terrain_raise.png", "TerrainRaise" );
+	toolbar_append_toggle_button( toolbar, "Terrain lower tool", "terrain_lower.png", "TerrainLower" );
+	toolbar_append_toggle_button( toolbar, "Terrain flatten tool", "terrain_flatten.png", "TerrainFlatten" );
+	toolbar_append_toggle_button( toolbar, "Terrain smooth tool", "terrain_smooth.png", "TerrainSmooth" );
+	toolbar_append_toggle_button( toolbar, "Terrain noise tool", "terrain_noise.png", "TerrainNoise" );
+	toolbar_append_toggle_button( toolbar, "Terrain erode tool", "terrain_erode.png", "TerrainErode" );
+	toolbar_append_toggle_button( toolbar, "Terrain paint height tool", "terrain_paintheight.png", "TerrainPaintHeight" );
+	toolbar_append_button( toolbar, "Fill terrain between selected verts", "terrain_fill.png", "TerrainFillSelection" );
+	toolbar_append_button( toolbar, "Stitch adjacent terrain patches", "terrain_stitch.png", "TerrainStitch" );
+	toolbar_append_button( toolbar, "Disable terrain tool", "terrain_off.png", "TerrainToolOff" );
+	toolbar_append_button( toolbar, "Terrain brush size -", "terrain_brush_smaller.png", "TerrainBrushSizeDecrease" );
+	toolbar_append_button( toolbar, "Terrain brush size +", "terrain_brush_larger.png", "TerrainBrushSizeIncrease" );
+	toolbar_append_button( toolbar, "Terrain tool settings", "terrain_settings.png", "TerrainToolSettings" );
 }
 
 void Patch_constructMenu( QMenu* menu ){
@@ -780,11 +799,17 @@ void Patch_constructMenu( QMenu* menu ){
 		create_check_menu_item_with_mnemonic( submenu, "Lower Tool", "TerrainLower" );
 		create_check_menu_item_with_mnemonic( submenu, "Flatten Tool", "TerrainFlatten" );
 		create_check_menu_item_with_mnemonic( submenu, "Smooth Tool", "TerrainSmooth" );
+		create_check_menu_item_with_mnemonic( submenu, "Noise Tool", "TerrainNoise" );
+		create_check_menu_item_with_mnemonic( submenu, "Erode Tool", "TerrainErode" );
+		create_check_menu_item_with_mnemonic( submenu, "Paint Height Tool", "TerrainPaintHeight" );
 		create_menu_item_with_mnemonic( submenu, "Fill Selection", "TerrainFillSelection" );
+		create_menu_item_with_mnemonic( submenu, "Stitch Patches", "TerrainStitch" );
 		create_menu_item_with_mnemonic( submenu, "Tool Off", "TerrainToolOff" );
 		submenu->addSeparator();
 		create_menu_item_with_mnemonic( submenu, "Brush Size +", "TerrainBrushSizeIncrease" );
 		create_menu_item_with_mnemonic( submenu, "Brush Size -", "TerrainBrushSizeDecrease" );
+		create_menu_item_with_mnemonic( submenu, "Strength +", "TerrainBrushStrengthIncrease" );
+		create_menu_item_with_mnemonic( submenu, "Strength -", "TerrainBrushStrengthDecrease" );
 		submenu->addSeparator();
 		create_menu_item_with_mnemonic( submenu, "Tool Settings...", "TerrainToolSettings" );
 	}
@@ -889,6 +914,7 @@ void Patch_constructMenu( QMenu* menu ){
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <random>
 
 struct TerrainToolSettings
 {
@@ -904,9 +930,24 @@ struct TerrainToolSettings
 	float smoothFactor = 0.5f;
 	bool flattenUseAverage = true;
 	int flattenHeight = 0;
+	float brushHardness = 0.5f;           // 0.0 = very soft, 1.0 = hard edge
+	int brushFalloff = 0;                 // 0=Smooth(Cubic), 1=Linear, 2=Quadratic(legacy), 3=Gaussian, 4=Flat/Constant
+	int smoothKernelRadius = 1;           // 1 = 3x3, 2 = 5x5, 3 = 7x7
+	float noiseAmplitude = 8.0f;          // amplitude for noise tool
+	float erodeStrength = 0.3f;           // erosion talus angle factor
+	float paintHeight = 0.0f;             // target height for paint height tool
 };
 
 static TerrainToolSettings g_terrainToolSettings;
+
+enum class ETerrainBrushFalloff
+{
+	Smooth,     // Cubic Hermite: 3t^2 - 2t^3 (smoothstep)
+	Linear,     // 1 - dist/radius
+	Quadratic,  // (1 - dist/radius)^2 (legacy)
+	Gaussian,   // exp(-3 * (dist/radius)^2)
+	Flat,       // Constant 1.0 within radius
+};
 
 enum class ETerrainBrushMode
 {
@@ -915,6 +956,9 @@ enum class ETerrainBrushMode
 	Lower,
 	Flatten,
 	Smooth,
+	Noise,
+	Erode,
+	PaintHeight,
 };
 
 static ETerrainBrushMode g_terrainBrushMode = ETerrainBrushMode::None;
@@ -928,6 +972,9 @@ static bool TerrainRaiseModeActive(){ return g_terrainBrushMode == ETerrainBrush
 static bool TerrainLowerModeActive(){ return g_terrainBrushMode == ETerrainBrushMode::Lower; }
 static bool TerrainFlattenModeActive(){ return g_terrainBrushMode == ETerrainBrushMode::Flatten; }
 static bool TerrainSmoothModeActive(){ return g_terrainBrushMode == ETerrainBrushMode::Smooth; }
+static bool TerrainNoiseModeActive(){ return g_terrainBrushMode == ETerrainBrushMode::Noise; }
+static bool TerrainErodeModeActive(){ return g_terrainBrushMode == ETerrainBrushMode::Erode; }
+static bool TerrainPaintHeightModeActive(){ return g_terrainBrushMode == ETerrainBrushMode::PaintHeight; }
 
 template<bool( *BoolFunction )()>
 class TerrainBoolFunctionExport
@@ -942,25 +989,40 @@ typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<Terrai
 typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<TerrainLowerModeActive>::apply> TerrainLowerModeApplyCaller;
 typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<TerrainFlattenModeActive>::apply> TerrainFlattenModeApplyCaller;
 typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<TerrainSmoothModeActive>::apply> TerrainSmoothModeApplyCaller;
+typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<TerrainNoiseModeActive>::apply> TerrainNoiseModeApplyCaller;
+typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<TerrainErodeModeActive>::apply> TerrainErodeModeApplyCaller;
+typedef FreeCaller1<const BoolImportCallback&, &TerrainBoolFunctionExport<TerrainPaintHeightModeActive>::apply> TerrainPaintHeightModeApplyCaller;
 
 static TerrainRaiseModeApplyCaller g_terrainRaise_button_caller;
 static TerrainLowerModeApplyCaller g_terrainLower_button_caller;
 static TerrainFlattenModeApplyCaller g_terrainFlatten_button_caller;
 static TerrainSmoothModeApplyCaller g_terrainSmooth_button_caller;
+static TerrainNoiseModeApplyCaller g_terrainNoise_button_caller;
+static TerrainErodeModeApplyCaller g_terrainErode_button_caller;
+static TerrainPaintHeightModeApplyCaller g_terrainPaintHeight_button_caller;
 static BoolExportCallback g_terrainRaise_button_callback( g_terrainRaise_button_caller );
 static BoolExportCallback g_terrainLower_button_callback( g_terrainLower_button_caller );
 static BoolExportCallback g_terrainFlatten_button_callback( g_terrainFlatten_button_caller );
 static BoolExportCallback g_terrainSmooth_button_callback( g_terrainSmooth_button_caller );
+static BoolExportCallback g_terrainNoise_button_callback( g_terrainNoise_button_caller );
+static BoolExportCallback g_terrainErode_button_callback( g_terrainErode_button_caller );
+static BoolExportCallback g_terrainPaintHeight_button_callback( g_terrainPaintHeight_button_caller );
 ToggleItem g_terrainRaise_button( g_terrainRaise_button_callback );
 ToggleItem g_terrainLower_button( g_terrainLower_button_callback );
 ToggleItem g_terrainFlatten_button( g_terrainFlatten_button_callback );
 ToggleItem g_terrainSmooth_button( g_terrainSmooth_button_callback );
+ToggleItem g_terrainNoise_button( g_terrainNoise_button_callback );
+ToggleItem g_terrainErode_button( g_terrainErode_button_callback );
+ToggleItem g_terrainPaintHeight_button( g_terrainPaintHeight_button_callback );
 
 static void TerrainToolChanged(){
 	g_terrainRaise_button.update();
 	g_terrainLower_button.update();
 	g_terrainFlatten_button.update();
 	g_terrainSmooth_button.update();
+	g_terrainNoise_button.update();
+	g_terrainErode_button.update();
+	g_terrainPaintHeight_button.update();
 }
 
 static int terrain_clampOddPatchSize( int v ){
@@ -976,6 +1038,45 @@ static int terrain_clampOddPatchSize( int v ){
 	return v;
 }
 
+// Apply the selected falloff curve based on settings
+static float terrain_applyFalloff( float dist, float radius ){
+	// Inner radius based on hardness: hardness=1 means full effect everywhere, hardness=0 means gradual from center
+	const float hardness = std::min( 1.f, std::max( 0.f, g_terrainToolSettings.brushHardness ) );
+	const float innerRadius = radius * hardness;
+
+	if ( dist <= innerRadius ) {
+		return 1.f;
+	}
+
+	// Remap distance to [0,1] in the falloff zone (innerRadius to radius)
+	const float range = radius - innerRadius;
+	if ( range <= 0.f ) {
+		return 1.f;
+	}
+	const float t = ( dist - innerRadius ) / range;  // 0 at inner edge, 1 at outer edge
+
+	switch ( static_cast<ETerrainBrushFalloff>( g_terrainToolSettings.brushFalloff ) )
+	{
+	case ETerrainBrushFalloff::Smooth:     // Smoothstep (Cubic Hermite)
+	{
+		const float s = 1.f - t;
+		return s * s * ( 3.f - 2.f * s );  // smoothstep inverse: smooth at edges
+	}
+	case ETerrainBrushFalloff::Linear:
+		return 1.f - t;
+	case ETerrainBrushFalloff::Quadratic:
+	{
+		const float s = 1.f - t;
+		return s * s;
+	}
+	case ETerrainBrushFalloff::Gaussian:
+		return std::exp( -3.f * t * t );
+	case ETerrainBrushFalloff::Flat:
+		return 1.f;
+	}
+	return ( 1.f - t ) * ( 1.f - t );  // fallback: quadratic
+}
+
 static float terrain_brushWeight( const Vector3& center, const Vector3& point, float radius ){
 	if ( radius <= 0.f ) {
 		return 0.f;
@@ -986,8 +1087,7 @@ static float terrain_brushWeight( const Vector3& center, const Vector3& point, f
 	if ( dist >= radius ) {
 		return 0.f;
 	}
-	const float t = 1.f - dist / radius;
-	return t * t;
+	return terrain_applyFalloff( dist, radius );
 }
 
 static Vector3 terrain_patchCenterXY( const Patch& patch ){
@@ -1011,6 +1111,9 @@ enum class ETerrainSculptOp
 	Lower,
 	Flatten,
 	Smooth,
+	Noise,
+	Erode,
+	PaintHeight,
 };
 
 static ETerrainSculptOp terrain_modeToOp( ETerrainBrushMode mode ){
@@ -1020,6 +1123,9 @@ static ETerrainSculptOp terrain_modeToOp( ETerrainBrushMode mode ){
 	case ETerrainBrushMode::Lower: return ETerrainSculptOp::Lower;
 	case ETerrainBrushMode::Flatten: return ETerrainSculptOp::Flatten;
 	case ETerrainBrushMode::Smooth: return ETerrainSculptOp::Smooth;
+	case ETerrainBrushMode::Noise: return ETerrainSculptOp::Noise;
+	case ETerrainBrushMode::Erode: return ETerrainSculptOp::Erode;
+	case ETerrainBrushMode::PaintHeight: return ETerrainSculptOp::PaintHeight;
 	case ETerrainBrushMode::None: break;
 	}
 	return ETerrainSculptOp::Raise;
@@ -1045,9 +1151,10 @@ static float terrain_brushWeightProjected( const Vector3& center, const Vector3&
 	if ( dist >= radius ) {
 		return 0.f;
 	}
-	const float t = 1.f - dist / radius;
-	return t * t;
+	return terrain_applyFalloff( dist, radius );
 }
+
+static std::mt19937 g_terrainNoiseRng( 42 );
 
 static bool Patch_terrainSculptAt( Patch& patch, ETerrainSculptOp op, const Vector3& center, int viewType ){
 	if ( patch.getWidth() < 2 || patch.getHeight() < 2 ) {
@@ -1062,6 +1169,7 @@ static bool Patch_terrainSculptAt( Patch& patch, ETerrainSculptOp op, const Vect
 	const float radius = std::max( 1, g_terrainToolSettings.brushRadius );
 	const float strength = static_cast<float>( g_terrainToolSettings.brushStrength );
 	const float smoothFactor = std::min( 1.f, std::max( 0.f, g_terrainToolSettings.smoothFactor ) );
+	const int smoothKernel = std::max( 1, std::min( 5, g_terrainToolSettings.smoothKernelRadius ) );
 
 	std::vector<float> originalZ;
 	originalZ.reserve( patch.getControlPoints().size() );
@@ -1086,6 +1194,16 @@ static bool Patch_terrainSculptAt( Patch& patch, ETerrainSculptOp op, const Vect
 			flattenTarget = sum / static_cast<float>( count );
 		}
 	}
+
+	// For noise tool: generate a distribution
+	std::uniform_real_distribution<float> noiseDist( -1.f, 1.f );
+	const float noiseAmplitude = g_terrainToolSettings.noiseAmplitude;
+
+	// For erode tool: pre-compute neighbor height differences
+	const float erodeStrength = std::min( 1.f, std::max( 0.f, g_terrainToolSettings.erodeStrength ) );
+
+	// For paint height tool
+	const float paintTarget = g_terrainToolSettings.paintHeight;
 
 	bool changed = false;
 	patch.undoSave();
@@ -1112,22 +1230,70 @@ static bool Patch_terrainSculptAt( Patch& patch, ETerrainSculptOp op, const Vect
 				break;
 			case ETerrainSculptOp::Smooth:
 			{
-				float sum = 0.f;
-				int count = 0;
+				// Enhanced Gaussian-weighted smooth with configurable kernel radius
+				float weightedSum = 0.f;
+				float totalKernelWeight = 0.f;
+				const int kr = smoothKernel;
+				const int r0 = std::max( 0, static_cast<int>( row ) - kr );
+				const int r1 = std::min( static_cast<int>( patch.getHeight() ) - 1, static_cast<int>( row ) + kr );
+				const int c0 = std::max( 0, static_cast<int>( col ) - kr );
+				const int c1 = std::min( static_cast<int>( patch.getWidth() ) - 1, static_cast<int>( col ) + kr );
+				for ( int rr = r0; rr <= r1; ++rr ){
+					for ( int cc = c0; cc <= c1; ++cc ){
+						const float dr = static_cast<float>( rr - static_cast<int>( row ) );
+						const float dc = static_cast<float>( cc - static_cast<int>( col ) );
+						const float distSq = dr * dr + dc * dc;
+						// Gaussian kernel weight: sigma = kernelRadius * 0.5
+						const float sigma = kr * 0.5f;
+						const float kw = std::exp( -distSq / ( 2.f * sigma * sigma ) );
+						weightedSum += originalZ[rr * patch.getWidth() + cc] * kw;
+						totalKernelWeight += kw;
+					}
+				}
+				if ( totalKernelWeight > 0.f ) {
+					const float avg = weightedSum / totalKernelWeight;
+					ctrl.m_vertex[deformDim] += ( avg - ctrl.m_vertex[deformDim] ) * ( smoothFactor * w );
+				}
+				break;
+			}
+			case ETerrainSculptOp::Noise:
+			{
+				const float noise = noiseDist( g_terrainNoiseRng );
+				ctrl.m_vertex[deformDim] += noise * noiseAmplitude * w;
+				break;
+			}
+			case ETerrainSculptOp::Erode:
+			{
+				// Simple thermal erosion: move height toward lowest neighbor
+				const std::size_t idx = row * patch.getWidth() + col;
+				const float currentH = originalZ[idx];
+				float lowestNeighborH = currentH;
 				const int r0 = std::max( 0, static_cast<int>( row ) - 1 );
 				const int r1 = std::min( static_cast<int>( patch.getHeight() ) - 1, static_cast<int>( row ) + 1 );
 				const int c0 = std::max( 0, static_cast<int>( col ) - 1 );
 				const int c1 = std::min( static_cast<int>( patch.getWidth() ) - 1, static_cast<int>( col ) + 1 );
 				for ( int rr = r0; rr <= r1; ++rr ){
 					for ( int cc = c0; cc <= c1; ++cc ){
-						sum += originalZ[rr * patch.getWidth() + cc];
-						++count;
+						if ( rr == static_cast<int>( row ) && cc == static_cast<int>( col ) ) {
+							continue;
+						}
+						const float nh = originalZ[rr * patch.getWidth() + cc];
+						if ( nh < lowestNeighborH ) {
+							lowestNeighborH = nh;
+						}
 					}
 				}
-				if ( count > 0 ) {
-					const float avg = sum / static_cast<float>( count );
-					ctrl.m_vertex[deformDim] += ( avg - ctrl.m_vertex[deformDim] ) * ( smoothFactor * w );
+				// Only erode if we're higher than our lowest neighbor
+				const float diff = currentH - lowestNeighborH;
+				if ( diff > 0.f ) {
+					ctrl.m_vertex[deformDim] -= diff * erodeStrength * w;
 				}
+				break;
+			}
+			case ETerrainSculptOp::PaintHeight:
+			{
+				// Paint exact height, blended by brush weight
+				ctrl.m_vertex[deformDim] += ( paintTarget - ctrl.m_vertex[deformDim] ) * w;
 				break;
 			}
 			}
@@ -1381,22 +1547,77 @@ static void DoTerrainToolSettingsDlg(){
 	QDialog dialog( MainFrame_getWindow(), Qt::Dialog | Qt::WindowCloseButtonHint );
 	dialog.setWindowTitle( "Terrain Tool Settings" );
 
+	// Brush shape
 	auto radius = new SpinBox( 1, 8192, g_terrainToolSettings.brushRadius );
 	auto strength = new SpinBox( 1, 4096, g_terrainToolSettings.brushStrength );
+
+	auto hardness = new DoubleSpinBox( 0.0, 1.0, 0, 2 );
+	hardness->setSingleStep( 0.05 );
+	hardness->setValue( g_terrainToolSettings.brushHardness );
+	hardness->setToolTip( "0.0 = soft falloff from center, 1.0 = hard edge (no falloff)" );
+
+	auto falloff = new ComboBox;
+	falloff->addItem( "Smooth (Cubic)" );
+	falloff->addItem( "Linear" );
+	falloff->addItem( "Quadratic (Legacy)" );
+	falloff->addItem( "Gaussian" );
+	falloff->addItem( "Flat (Constant)" );
+	falloff->setCurrentIndex( std::min( 4, std::max( 0, g_terrainToolSettings.brushFalloff ) ) );
+
+	// Smooth settings
 	auto smooth = new DoubleSpinBox( 0.0, 1.0, 0, 2 );
 	smooth->setSingleStep( 0.05 );
 	smooth->setValue( g_terrainToolSettings.smoothFactor );
+
+	auto smoothKernel = new SpinBox( 1, 5, g_terrainToolSettings.smoothKernelRadius );
+	smoothKernel->setToolTip( "Kernel radius: 1 = 3x3, 2 = 5x5, 3 = 7x7, etc." );
+
+	// Flatten settings
 	auto flattenAverage = new QCheckBox( "Flatten to average height in brush" );
 	flattenAverage->setChecked( g_terrainToolSettings.flattenUseAverage );
 	auto flattenHeight = new SpinBox( -65536, 65536, g_terrainToolSettings.flattenHeight );
 
+	// Noise settings
+	auto noiseAmp = new DoubleSpinBox( 0.1, 1024.0, 0, 1 );
+	noiseAmp->setSingleStep( 1.0 );
+	noiseAmp->setValue( g_terrainToolSettings.noiseAmplitude );
+
+	// Erode settings
+	auto erodeStr = new DoubleSpinBox( 0.0, 1.0, 0, 2 );
+	erodeStr->setSingleStep( 0.05 );
+	erodeStr->setValue( g_terrainToolSettings.erodeStrength );
+	erodeStr->setToolTip( "How aggressively vertices move toward their lowest neighbor" );
+
+	// Paint height settings
+	auto paintH = new DoubleSpinBox( -65536.0, 65536.0, 0, 1 );
+	paintH->setSingleStep( 1.0 );
+	paintH->setValue( g_terrainToolSettings.paintHeight );
+
 	auto form = new QFormLayout( &dialog );
 	form->setSizeConstraint( QLayout::SizeConstraint::SetFixedSize );
+
+	// Brush Shape section
 	form->addRow( "Brush radius:", radius );
 	form->addRow( "Raise/lower strength:", strength );
+	form->addRow( "Brush hardness:", hardness );
+	form->addRow( "Falloff curve:", falloff );
+
+	// Smooth section
 	form->addRow( "Smooth factor:", smooth );
+	form->addRow( "Smooth kernel radius:", smoothKernel );
+
+	// Flatten section
 	form->addRow( "", flattenAverage );
 	form->addRow( "Flatten target Z:", flattenHeight );
+
+	// Noise section
+	form->addRow( "Noise amplitude:", noiseAmp );
+
+	// Erode section
+	form->addRow( "Erosion strength:", erodeStr );
+
+	// Paint height section
+	form->addRow( "Paint target Z:", paintH );
 
 	auto buttons = new QDialogButtonBox( QDialogButtonBox::StandardButton::Ok | QDialogButtonBox::StandardButton::Cancel );
 	form->addWidget( buttons );
@@ -1406,9 +1627,15 @@ static void DoTerrainToolSettingsDlg(){
 	if ( dialog.exec() ) {
 		g_terrainToolSettings.brushRadius = radius->value();
 		g_terrainToolSettings.brushStrength = strength->value();
+		g_terrainToolSettings.brushHardness = static_cast<float>( hardness->value() );
+		g_terrainToolSettings.brushFalloff = falloff->currentIndex();
 		g_terrainToolSettings.smoothFactor = static_cast<float>( smooth->value() );
+		g_terrainToolSettings.smoothKernelRadius = smoothKernel->value();
 		g_terrainToolSettings.flattenUseAverage = flattenAverage->isChecked();
 		g_terrainToolSettings.flattenHeight = flattenHeight->value();
+		g_terrainToolSettings.noiseAmplitude = static_cast<float>( noiseAmp->value() );
+		g_terrainToolSettings.erodeStrength = static_cast<float>( erodeStr->value() );
+		g_terrainToolSettings.paintHeight = static_cast<float>( paintH->value() );
 	}
 }
 
@@ -1493,6 +1720,9 @@ static const char* terrain_modeName( ETerrainBrushMode mode ){
 	case ETerrainBrushMode::Lower: return "Lower";
 	case ETerrainBrushMode::Flatten: return "Flatten";
 	case ETerrainBrushMode::Smooth: return "Smooth";
+	case ETerrainBrushMode::Noise: return "Noise";
+	case ETerrainBrushMode::Erode: return "Erode";
+	case ETerrainBrushMode::PaintHeight: return "Paint Height";
 	case ETerrainBrushMode::None: return "Off";
 	}
 	return "Off";
@@ -1525,9 +1755,30 @@ static void Patch_TerrainSmooth(){
 	terrain_setBrushMode( ETerrainBrushMode::Smooth );
 }
 
+static void Patch_TerrainNoise(){
+	terrain_setBrushMode( ETerrainBrushMode::Noise );
+}
+
+static void Patch_TerrainErode(){
+	terrain_setBrushMode( ETerrainBrushMode::Erode );
+}
+
+static void Patch_TerrainPaintHeight(){
+	terrain_setBrushMode( ETerrainBrushMode::PaintHeight );
+}
+
 static void Patch_TerrainFillSelection(){
 	UndoableCommand undo( "terrainFillSelection" );
 	Scene_PatchTerrainFillFromSelectedVerts( GlobalSceneGraph() );
+}
+
+static void Patch_TerrainStitch(){
+	UndoableCommand undo( "terrainStitch" );
+	Scene_PatchTerrainStitch_Selected( GlobalSceneGraph(), GlobalXYWnd_getCurrentViewType() );
+	Scene_forEachVisibleSelectedPatch( []( Patch& patch ){
+		patch.controlPointsChanged();
+	} );
+	SceneChangeNotify();
 }
 
 static void Patch_TerrainToolOff(){
@@ -1545,12 +1796,24 @@ static void Patch_TerrainBrushSizeDecrease(){
 	g_terrainToolSettings.brushRadius = std::max( 1, g_terrainToolSettings.brushRadius - std::max( 1, g_terrainToolSettings.brushRadius / 4 ) );
 }
 
+static void Patch_TerrainBrushStrengthIncrease(){
+	g_terrainToolSettings.brushStrength = std::min( 4096, g_terrainToolSettings.brushStrength + std::max( 1, g_terrainToolSettings.brushStrength / 4 ) );
+}
+
+static void Patch_TerrainBrushStrengthDecrease(){
+	g_terrainToolSettings.brushStrength = std::max( 1, g_terrainToolSettings.brushStrength - std::max( 1, g_terrainToolSettings.brushStrength / 4 ) );
+}
+
 bool Patch_TerrainTool_IsActive(){
 	return g_terrainBrushMode != ETerrainBrushMode::None;
 }
 
 int Patch_TerrainTool_GetBrushRadius(){
 	return g_terrainToolSettings.brushRadius;
+}
+
+float Patch_TerrainTool_GetBrushInnerRadius(){
+	return g_terrainToolSettings.brushRadius * g_terrainToolSettings.brushHardness;
 }
 
 void Patch_TerrainTool_Disable(){

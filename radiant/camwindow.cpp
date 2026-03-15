@@ -1318,6 +1318,29 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 	drawCircle( 0, 1 );
 	drawCircle( 0, 2 );
 	drawCircle( 1, 2 );
+
+	// Draw inner radius circles (hardness boundary)
+	const float ir = Patch_TerrainTool_GetBrushInnerRadius();
+	if ( ir > 0.f && ir < r ) {
+		gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.4f );
+		auto drawInnerCircle = [&]( int a, int b ){
+			constexpr int steps = 32;
+			std::array<Vector3, 32> circleVerts;
+			for ( int i = 0; i < steps; ++i ){
+				const float ang = static_cast<float>( ( 2.0 * c_pi * i ) / steps );
+				Vector3 v( p );
+				v[a] += std::cos( ang ) * ir;
+				v[b] += std::sin( ang ) * ir;
+				circleVerts[i] = v;
+			}
+			vbo_upload( circleVerts.data(), sizeof( circleVerts ) );
+			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+			gl().glDrawArrays( GL_LINE_LOOP, 0, steps );
+		};
+		drawInnerCircle( 0, 1 );
+		drawInnerCircle( 0, 2 );
+		drawInnerCircle( 1, 2 );
+	}
 }
 
 static void selection_button_release( const QMouseEvent& event, WindowObserver* observer ){

@@ -68,6 +68,7 @@ extern class PatchCreator* g_patchCreator;
 
 bool Patch_TerrainTool_IsActive();
 int Patch_TerrainTool_GetBrushRadius();
+float Patch_TerrainTool_GetBrushInnerRadius();
 void Patch_TerrainTool_Disable();
 bool Patch_TerrainTool_XYMouseDown( int viewType, const Vector3& point );
 bool Patch_TerrainTool_XYMouseMove( int viewType, const Vector3& point, bool leftButtonDown );

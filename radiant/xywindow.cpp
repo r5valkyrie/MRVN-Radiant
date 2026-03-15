@@ -464,6 +464,22 @@ void XYWnd::overlayDraw(){
 				gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
 				gl().glDrawArrays( GL_LINE_LOOP, 0, 32 );
 			}
+			// Draw inner radius circle (hardness boundary)
+			const float innerRadius = Patch_TerrainTool_GetBrushInnerRadius();
+			if ( innerRadius > 0.f && innerRadius < radius ) {
+				gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.4f );
+				Vector3 innerVerts[32];
+				Vector3 iv( m_mousePosition );
+				for ( int i = 0; i < 32; ++i ){
+					const float a = c_pi / 16.f * i;
+					iv[nDim1] = m_mousePosition[nDim1] + std::cos( a ) * innerRadius;
+					iv[nDim2] = m_mousePosition[nDim2] + std::sin( a ) * innerRadius;
+					innerVerts[i] = iv;
+				}
+				vbo_upload( innerVerts, sizeof( innerVerts ) );
+				gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
+				gl().glDrawArrays( GL_LINE_LOOP, 0, 32 );
+			}
 		}
 	}
 
