@@ -506,10 +506,15 @@ void Titanfall::EmitStubs() {
 
         // Per-portal data for edge intersection computation
         struct PortalEdgeInfo {
+            uint16_t globalVertStart;
             uint16_t globalEdgeStart;
             uint16_t numEdges;
-            // Each edge: two endpoint Vector3s
-            std::vector<std::pair<Vector3, Vector3>> edgeEndpoints;
+            // Each edge: two endpoint positions and their global vertex indices
+            struct EdgeData {
+                Vector3 posA, posB;
+                uint16_t vertA, vertB;
+            };
+            std::vector<EdgeData> edges;
         };
         std::vector<PortalEdgeInfo> portalEdgeInfos;
 
@@ -549,6 +554,7 @@ void Titanfall::EmitStubs() {
             // means the face normal points outward; from inside, vertices appear CW
             // so we reverse the winding)
             PortalEdgeInfo edgeInfo;
+            edgeInfo.globalVertStart = portalVertStart;
             edgeInfo.globalEdgeStart = globalEdgeIdx;
             edgeInfo.numEdges = nv;
             for (uint16_t ei = 0; ei < nv; ei++) {
@@ -556,9 +562,10 @@ void Titanfall::EmitStubs() {
                 uint16_t v1 = portalVertStart + ((nv - 1) - ((ei + 1) % nv));
                 writeU16(pedges, v0);
                 writeU16(pedges, v1);
-                edgeInfo.edgeEndpoints.push_back({
+                edgeInfo.edges.push_back({
                     face.verts[(nv - 1) - ei],
-                    face.verts[(nv - 1) - ((ei + 1) % nv)]
+                    face.verts[(nv - 1) - ((ei + 1) % nv)],
+                    v0, v1
                 });
             }
             portalEdgeInfos.push_back(edgeInfo);
@@ -609,7 +616,7 @@ void Titanfall::EmitStubs() {
         for (uint16_t pi = 0; pi < numPortals; pi++) {
             const PortalEdgeInfo& info = portalEdgeInfos[pi];
             for (uint16_t ei = 0; ei < info.numEdges; ei++) {
-                const auto& [eA, eB] = info.edgeEndpoints[ei];
+                const auto& curEdge = info.edges[ei];
 
                 // Collect intersecting edges from other portals
                 std::vector<uint16_t> isectEdges;
@@ -619,16 +626,16 @@ void Titanfall::EmitStubs() {
                     if (oj == pi) continue;
                     const PortalEdgeInfo& other = portalEdgeInfos[oj];
                     for (uint16_t oe = 0; oe < other.numEdges; oe++) {
-                        const auto& [oA, oB] = other.edgeEndpoints[oe];
+                        const auto& otherEdge = other.edges[oe];
                         // Check if edges share a vertex
-                        if (vecClose(eA, oA) || vecClose(eA, oB) ||
-                            vecClose(eB, oA) || vecClose(eB, oB)) {
+                        if (vecClose(curEdge.posA, otherEdge.posA) || vecClose(curEdge.posA, otherEdge.posB) ||
+                            vecClose(curEdge.posB, otherEdge.posA) || vecClose(curEdge.posB, otherEdge.posB)) {
                             isectEdges.push_back(other.globalEdgeStart + oe);
-                            // atVertex: which vertex of THIS edge is at the intersection
-                            if (vecClose(eA, oA) || vecClose(eA, oB))
-                                isectAtVertex.push_back(info.globalEdgeStart + ei);  // v0 side
+                            // atVertex: global vertex index of the shared point on THIS edge
+                            if (vecClose(curEdge.posA, otherEdge.posA) || vecClose(curEdge.posA, otherEdge.posB))
+                                isectAtVertex.push_back(curEdge.vertA);
                             else
-                                isectAtVertex.push_back(info.globalEdgeStart + ei);  // v1 side
+                                isectAtVertex.push_back(curEdge.vertB);
                         }
                     }
                 }
