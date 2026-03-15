@@ -110,7 +110,7 @@ void ApexLegends::EmitCubemaps() {
         // Default to 1.0 (full ambient)
         ApexLegends::Bsp::cubemapsAmbientRcp.push_back(1.0f);
     }
-    
+
     Sys_Printf("     %9zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
 }
 
@@ -370,7 +370,7 @@ void ApexLegends::EmitWorldLights() {
     // Generate tweak lights list - indices of all lights with WORLDLIGHT_FLAG_TWEAK set
     ApexLegends::Bsp::tweakLights.clear();
     for (uint32_t i = 0; i < ApexLegends::Bsp::worldLights.size(); i++) {
-        if (ApexLegends::Bsp::worldLights[i].flags & WORLDLIGHT_FLAG_TWEAK) {
+        if (ApexLegends::Bsp::worldLights[i].flags/* & WORLDLIGHT_FLAG_TWEAK*/) {
             ApexLegends::Bsp::tweakLights.push_back(i);
         }
     }
@@ -435,6 +435,13 @@ void ApexLegends::EmitShadowMeshes() {
         
         // Skip meshes with no triangles
         if (mesh.triCount == 0) {
+            continue;
+        }
+        
+        // Skip sky meshes
+        int sharedIdx = meshIdx - worldModel.meshIndex;
+        if (sharedIdx >= 0 && sharedIdx < static_cast<int>(Shared::meshes.size())
+            && (Shared::meshes[sharedIdx].shaderInfo->compileFlags & C_SKY)) {
             continue;
         }
         

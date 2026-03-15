@@ -428,61 +428,9 @@ void Titanfall::EmitStubs() {
         };
         Titanfall::Bsp::cellBSPNodes_stub = { data.begin(), data.end() };
     }
-    {  // Cells: 1 cell with 6 sky portals, skyFlags=1
-        // struct mcell_t { uint16 numPortals, firstPortal, skyFlags, unk; }
-        constexpr std::array<uint8_t, 8> data = {
-            0x06, 0x00,  // numPortals = 6
-            0x00, 0x00,  // firstPortal = 0
-            0x01, 0x00,  // skyFlags = 1
-            0xFF, 0xFF   // unk (always 0xFFFF)
-        };
-        Titanfall::Bsp::cells_stub = { data.begin(), data.end() };
-    }
-    {  // Sky portal stubs: 6 portals forming a complete sky box (N/S/E/W/top/bottom walls)
-        // numCells=1, so sky virtual cell = numCells+1 = 2
-        // struct mportal_t { u8 isReversed, portalType, numEdges, pad; u16 firstRef, cellTo; u32 planeNum; }
-        // Portal vertices: 8 vertices forming a huge box from (-32768,-32768,-16384) to (32768,32768,16384)
-        //   v0=(-32768,-32768,-16384)  v1=(32768,-32768,-16384)  v2=(32768,32768,-16384)  v3=(-32768,32768,-16384)
-        //   v4=(-32768,-32768, 16384)  v5=(32768,-32768, 16384)  v6=(32768,32768, 16384)  v7=(-32768,32768, 16384)
-
-        // Add 6 planes to the planes vector (one per portal)
-        // pvs->planes = s_pMap->planes, so portal planeNum indexes into Titanfall::Bsp::planes
-        uint32_t basePlaneIdx = (uint32_t)Titanfall::Bsp::planes.size();
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0, -1,  0, -32768));  // Portal 0 (North wall, normal -Y inward)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  1,  0, -32768));  // Portal 1 (South wall, normal +Y inward)
-        Titanfall::Bsp::planes.emplace_back(Plane3f(-1,  0,  0, -32768));  // Portal 2 (East wall, normal -X inward)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 1,  0,  0, -32768));  // Portal 3 (West wall, normal +X inward)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  0, -1, -16384));  // Portal 4 (Top wall, normal -Z inward)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  0,  1, -16384));  // Portal 5 (Bottom wall, normal +Z inward)
-
-        // 6 portals (12 bytes each = 72 bytes total)
-        // Portal 0: North wall  (y=+32768)  verts: v6,v2,v3,v7  (CCW from inward normal -Y)
-        // Portal 1: South wall  (y=-32768)  verts: v1,v5,v4,v0  (CCW from inward normal +Y)
-        // Portal 2: East wall   (x=+32768)  verts: v5,v1,v2,v6  (CCW from inward normal -X)
-        // Portal 3: West wall   (x=-32768)  verts: v7,v3,v0,v4  (CCW from inward normal +X)
-        // Portal 4: Top/ceiling (z=+16384)  verts: v5,v6,v7,v4  (CCW from inward normal -Z)
-        // Portal 5: Bottom/floor(z=-16384)  verts: v0,v3,v2,v1  (CW from +Z = correct for inward +Z)
-        auto& portals = Titanfall::Bsp::portals_stub;
-        portals.clear();
-        for (uint32_t i = 0; i < 6; i++) {
-            portals.push_back(0);              // isReversed = 0
-            portals.push_back(1);              // portalType = 1 (ortho PVS skips, preserves shadows)
-            portals.push_back(4);              // numEdges = 4
-            portals.push_back(0);              // pad
-            uint16_t firstRef = (uint16_t)(i * 4);
-            portals.push_back(firstRef & 0xFF);
-            portals.push_back((firstRef >> 8) & 0xFF);
-            uint16_t cellTo = 2;               // sky virtual cell (numCells + 1)
-            portals.push_back(cellTo & 0xFF);
-            portals.push_back((cellTo >> 8) & 0xFF);
-            uint32_t planeNum = basePlaneIdx + i;
-            portals.push_back(planeNum & 0xFF);
-            portals.push_back((planeNum >> 8) & 0xFF);
-            portals.push_back((planeNum >> 16) & 0xFF);
-            portals.push_back((planeNum >> 24) & 0xFF);
-        }
-
-        // 8 portal vertices (12 bytes each = 96 bytes total) - Vector3 floats
+    // Generate sky portals from actual sky-textured brush faces
+    {
+        // Helper lambdas for writing binary data
         auto writeFloat = [](std::vector<uint8_t>& vec, float f) {
             uint8_t* p = reinterpret_cast<uint8_t*>(&f);
             vec.insert(vec.end(), p, p + 4);
@@ -501,134 +449,225 @@ void Titanfall::EmitStubs() {
             vec.insert(vec.end(), p, p + 4);
         };
 
-        const float lo = -32768.0f;
-        const float hi =  32768.0f;
-        const float zlo = -16384.0f;
-        const float zhi =  16384.0f;
-
-        // Portal vertices (8 verts)
-        auto& pverts = Titanfall::Bsp::portalVertices_stub;
-        pverts.clear();
-        writeVec3(pverts, lo, lo, zlo);  // v0
-        writeVec3(pverts, hi, lo, zlo);  // v1
-        writeVec3(pverts, hi, hi, zlo);  // v2
-        writeVec3(pverts, lo, hi, zlo);  // v3
-        writeVec3(pverts, lo, lo, zhi);  // v4
-        writeVec3(pverts, hi, lo, zhi);  // v5
-        writeVec3(pverts, hi, hi, zhi);  // v6
-        writeVec3(pverts, lo, hi, zhi);  // v7
-
-        // Portal edges: 24 edges (4 bytes each = 96 bytes)
-        // Each quad portal has 4 edges, 6 portals = 24 edges total.
-        auto& pedges = Titanfall::Bsp::portalEdges_stub;
-        pedges.clear();
-        // North wall edges (portal 0): e0-e3  (reversed winding: v6→v2→v3→v7)
-        writeU16(pedges, 6); writeU16(pedges, 2);  // e0
-        writeU16(pedges, 2); writeU16(pedges, 3);  // e1
-        writeU16(pedges, 3); writeU16(pedges, 7);  // e2
-        writeU16(pedges, 7); writeU16(pedges, 6);  // e3
-        // South wall edges (portal 1): e4-e7  (reversed winding: v1→v5→v4→v0)
-        writeU16(pedges, 1); writeU16(pedges, 5);  // e4
-        writeU16(pedges, 5); writeU16(pedges, 4);  // e5
-        writeU16(pedges, 4); writeU16(pedges, 0);  // e6
-        writeU16(pedges, 0); writeU16(pedges, 1);  // e7
-        // East wall edges (portal 2): e8-e11  (reversed winding: v5→v1→v2→v6)
-        writeU16(pedges, 5); writeU16(pedges, 1);  // e8
-        writeU16(pedges, 1); writeU16(pedges, 2);  // e9
-        writeU16(pedges, 2); writeU16(pedges, 6);  // e10
-        writeU16(pedges, 6); writeU16(pedges, 5);  // e11
-        // West wall edges (portal 3): e12-e15  (reversed winding: v7→v3→v0→v4)
-        writeU16(pedges, 7); writeU16(pedges, 3);  // e12
-        writeU16(pedges, 3); writeU16(pedges, 0);  // e13
-        writeU16(pedges, 0); writeU16(pedges, 4);  // e14
-        writeU16(pedges, 4); writeU16(pedges, 7);  // e15
-        // Top wall edges (portal 4): e16-e19  (reversed winding: v5→v6→v7→v4)
-        writeU16(pedges, 5); writeU16(pedges, 6);  // e16
-        writeU16(pedges, 6); writeU16(pedges, 7);  // e17
-        writeU16(pedges, 7); writeU16(pedges, 4);  // e18
-        writeU16(pedges, 4); writeU16(pedges, 5);  // e19
-        // Bottom wall edges (portal 5): e20-e23  (winding: v0→v3→v2→v1)
-        writeU16(pedges, 0); writeU16(pedges, 3);  // e20
-        writeU16(pedges, 3); writeU16(pedges, 2);  // e21
-        writeU16(pedges, 2); writeU16(pedges, 1);  // e22
-        writeU16(pedges, 1); writeU16(pedges, 0);  // e23
-
-        // Portal vertex edges: 1 per vertex (16 bytes each = 128 bytes)
-        // Lists all edges incident to each vertex (up to 8 as uint16, padded with 0xFFFF)
-        auto& pve = Titanfall::Bsp::portalVertexEdges_stub;
-        pve.clear();
-        auto writeVE = [&writeU16](std::vector<uint8_t>& vec, std::initializer_list<uint16_t> edges) {
-            int count = 0;
-            for (uint16_t e : edges) { writeU16(vec, e); count++; }
-            for (int i = count; i < 8; i++) { writeU16(vec, 0xFFFF); }
+        // Collect sky faces from worldspawn brushes
+        struct SkyFace {
+            std::vector<Vector3> verts;  // winding vertices
+            Plane3 plane;                // face plane (outward normal)
         };
-        writeVE(pve, {6, 7, 13, 14, 20, 23});  // v0: edges touching vertex 0
-        writeVE(pve, {4, 7, 8, 9, 22, 23});    // v1
-        writeVE(pve, {0, 1, 9, 10, 21, 22});   // v2
-        writeVE(pve, {1, 2, 12, 13, 20, 21});  // v3
-        writeVE(pve, {5, 6, 14, 15, 18, 19});  // v4
-        writeVE(pve, {4, 5, 8, 11, 16, 19});   // v5
-        writeVE(pve, {0, 3, 10, 11, 16, 17});  // v6
-        writeVE(pve, {2, 3, 12, 15, 17, 18});  // v7
+        std::vector<SkyFace> skyFaces;
 
-        // Portal vertex references: 24 entries (6 portals * 4 verts = 24 uint16 = 48 bytes)
+        if (!entities.empty()) {
+            for (const brush_t& brush : entities[0].brushes) {
+                for (const side_t& side : brush.sides) {
+                    if (!(side.compileFlags & C_SKY)) continue;
+                    if (side.winding.size() < 3) continue;
+                    SkyFace face;
+                    face.verts.assign(side.winding.begin(), side.winding.end());
+                    face.plane = side.plane;
+                    skyFaces.push_back(std::move(face));
+                }
+            }
+        }
+
+        // If no sky faces found, fall back to a large ceiling portal
+        if (skyFaces.empty()) {
+            SkyFace face;
+            face.verts = {
+                Vector3(-32768, -32768, 16384),
+                Vector3( 32768, -32768, 16384),
+                Vector3( 32768,  32768, 16384),
+                Vector3(-32768,  32768, 16384)
+            };
+            face.plane = Plane3(Vector3(0, 0, 1), 16384);
+            skyFaces.push_back(std::move(face));
+        }
+
+        const uint16_t numPortals = (uint16_t)skyFaces.size();
+        const uint16_t skyVirtualCell = 2;  // numCells(1) + 1
+
+        // Clear all portal-related stubs
+        auto& portals = Titanfall::Bsp::portals_stub;
+        auto& pverts = Titanfall::Bsp::portalVertices_stub;
+        auto& pedges = Titanfall::Bsp::portalEdges_stub;
+        auto& pve = Titanfall::Bsp::portalVertexEdges_stub;
         auto& pvr = Titanfall::Bsp::portalVertexReferences_stub;
-        pvr.clear();
-        // Portal 0 (North): v6, v2, v3, v7  (CCW from inward -Y)
-        writeU16(pvr, 6); writeU16(pvr, 2); writeU16(pvr, 3); writeU16(pvr, 7);
-        // Portal 1 (South): v1, v5, v4, v0  (CCW from inward +Y)
-        writeU16(pvr, 1); writeU16(pvr, 5); writeU16(pvr, 4); writeU16(pvr, 0);
-        // Portal 2 (East):  v5, v1, v2, v6  (CCW from inward -X)
-        writeU16(pvr, 5); writeU16(pvr, 1); writeU16(pvr, 2); writeU16(pvr, 6);
-        // Portal 3 (West):  v7, v3, v0, v4  (CCW from inward +X)
-        writeU16(pvr, 7); writeU16(pvr, 3); writeU16(pvr, 0); writeU16(pvr, 4);
-        // Portal 4 (Top):   v5, v6, v7, v4  (CCW from inward -Z)
-        writeU16(pvr, 5); writeU16(pvr, 6); writeU16(pvr, 7); writeU16(pvr, 4);
-        // Portal 5 (Bottom): v0, v3, v2, v1  (CW from +Z = inward for bottom)
-        writeU16(pvr, 0); writeU16(pvr, 3); writeU16(pvr, 2); writeU16(pvr, 1);
-
-        // Portal edge references: 24 entries (same count as vertex refs)
         auto& per = Titanfall::Bsp::portalEdgeReferences_stub;
-        per.clear();
-        // Portal 0: edges e0, e1, e2, e3
-        writeU16(per, 0); writeU16(per, 1); writeU16(per, 2); writeU16(per, 3);
-        // Portal 1: edges e4, e5, e6, e7
-        writeU16(per, 4); writeU16(per, 5); writeU16(per, 6); writeU16(per, 7);
-        // Portal 2: edges e8, e9, e10, e11
-        writeU16(per, 8); writeU16(per, 9); writeU16(per, 10); writeU16(per, 11);
-        // Portal 3: edges e12, e13, e14, e15
-        writeU16(per, 12); writeU16(per, 13); writeU16(per, 14); writeU16(per, 15);
-        // Portal 4: edges e16, e17, e18, e19
-        writeU16(per, 16); writeU16(per, 17); writeU16(per, 18); writeU16(per, 19);
-        // Portal 5: edges e20, e21, e22, e23
-        writeU16(per, 20); writeU16(per, 21); writeU16(per, 22); writeU16(per, 23);
-
-        // Portal edge intersect header: 1 per edge (8 bytes each = 192 bytes)
-        // {uint32 first, uint32 count} — count MUST be >= 1 (engine uses do-while loop)
-        // Provide 1 dummy intersection entry per edge with 0xFFFF sentinels
         auto& pieh = Titanfall::Bsp::portalEdgeIntersectHeader_stub;
-        pieh.clear();
-        for (uint32_t i = 0; i < 24; i++) {
-            writeU32(pieh, i);  // first = index into isect arrays
-            writeU32(pieh, 1);  // count = 1 (minimum to avoid do-while infinite loop)
-        }
-
-        // Portal edge intersect edge: 24 entries (16 bytes each = 384 bytes)
-        // Each entry is mportal_edgeset_t = 8 x uint16 edge indices
-        // Fill with 0xFFFF so no edge index (0-23) ever matches → safe no-op
         auto& piee = Titanfall::Bsp::portalEdgeIntersectEdge_stub;
-        piee.clear();
-        for (int i = 0; i < 24; i++) {
-            for (int j = 0; j < 8; j++) writeU16(piee, 0xFFFF);
+        auto& pieav = Titanfall::Bsp::portalEdgeIntersectAtVertex_stub;
+        portals.clear(); pverts.clear(); pedges.clear(); pve.clear();
+        pvr.clear(); per.clear(); pieh.clear(); piee.clear(); pieav.clear();
+
+        // Track global indices
+        uint16_t globalVertIdx = 0;
+        uint16_t globalEdgeIdx = 0;
+        uint16_t globalRefIdx = 0;
+        uint32_t globalIsectIdx = 0;
+
+        // Per-portal data for edge intersection computation
+        struct PortalEdgeInfo {
+            uint16_t globalEdgeStart;
+            uint16_t numEdges;
+            // Each edge: two endpoint Vector3s
+            std::vector<std::pair<Vector3, Vector3>> edgeEndpoints;
+        };
+        std::vector<PortalEdgeInfo> portalEdgeInfos;
+
+        uint32_t basePlaneIdx = (uint32_t)Titanfall::Bsp::planes.size();
+
+        for (uint16_t pi = 0; pi < numPortals; pi++) {
+            const SkyFace& face = skyFaces[pi];
+            const uint16_t nv = (uint16_t)face.verts.size();
+
+            // Portal plane: inward normal (negated face normal, which points outward)
+            // Plane3f(a,b,c,d) where (a,b,c) is normal, d is dist
+            Vector3 inNormal = -face.plane.normal();
+            float inDist = (float)(-face.plane.dist());
+            Titanfall::Bsp::planes.emplace_back(Plane3f(
+                (float)inNormal.x(), (float)inNormal.y(), (float)inNormal.z(), inDist));
+
+            // Emit portal struct (12 bytes)
+            portals.push_back(0);              // isReversed = 0
+            portals.push_back(1);              // portalType = 1 (sky)
+            portals.push_back((uint8_t)nv);    // numEdges
+            portals.push_back(0);              // pad
+            writeU16(portals, globalRefIdx);   // firstRef
+            writeU16(portals, skyVirtualCell); // cellTo
+            writeU32(portals, basePlaneIdx + pi); // planeNum
+
+            uint16_t portalVertStart = globalVertIdx;
+            uint16_t portalEdgeStart = globalEdgeIdx;
+
+            // Emit vertices (12 bytes each)
+            for (uint16_t vi = 0; vi < nv; vi++) {
+                const Vector3& v = face.verts[vi];
+                writeVec3(pverts, (float)v.x(), (float)v.y(), (float)v.z());
+            }
+
+            // Emit edges: consecutive vertex pairs forming the winding
+            // CCW winding as seen from inside cell 0 (looking outward toward sky
+            // means the face normal points outward; from inside, vertices appear CW
+            // so we reverse the winding)
+            PortalEdgeInfo edgeInfo;
+            edgeInfo.globalEdgeStart = globalEdgeIdx;
+            edgeInfo.numEdges = nv;
+            for (uint16_t ei = 0; ei < nv; ei++) {
+                uint16_t v0 = portalVertStart + ((nv - 1) - ei);
+                uint16_t v1 = portalVertStart + ((nv - 1) - ((ei + 1) % nv));
+                writeU16(pedges, v0);
+                writeU16(pedges, v1);
+                edgeInfo.edgeEndpoints.push_back({
+                    face.verts[(nv - 1) - ei],
+                    face.verts[(nv - 1) - ((ei + 1) % nv)]
+                });
+            }
+            portalEdgeInfos.push_back(edgeInfo);
+
+            // Emit vertex edges: for each vertex, list all edges incident to it
+            // (up to 8, padded with 0xFFFF)
+            for (uint16_t vi = 0; vi < nv; vi++) {
+                uint16_t gvi = portalVertStart + vi;
+                int count = 0;
+                for (uint16_t ei = 0; ei < nv; ei++) {
+                    uint16_t v0 = portalVertStart + ((nv - 1) - ei);
+                    uint16_t v1 = portalVertStart + ((nv - 1) - ((ei + 1) % nv));
+                    if (v0 == gvi || v1 == gvi) {
+                        writeU16(pve, portalEdgeStart + ei);
+                        count++;
+                    }
+                }
+                for (int pad = count; pad < 8; pad++) {
+                    writeU16(pve, 0xFFFF);
+                }
+            }
+
+            // Emit vertex references (reversed winding order)
+            for (uint16_t ei = 0; ei < nv; ei++) {
+                writeU16(pvr, portalVertStart + ((nv - 1) - ei));
+            }
+
+            // Emit edge references: engine decodes as (ref >> 1) = edgeIndex, (ref & 1) = directionBit
+            for (uint16_t ei = 0; ei < nv; ei++) {
+                writeU16(per, (portalEdgeStart + ei) << 1);  // direction = 0
+            }
+
+            globalVertIdx += nv;
+            globalEdgeIdx += nv;
+            globalRefIdx += nv;
         }
 
-        // Portal edge intersect at vertex: 24 entries (16 bytes each = 384 bytes)
-        // Each entry is mportal_vertset_t = 8 x uint16 vertex indices
-        // Fill with 0xFFFF sentinel (won't be used since edge match fails)
-        auto& pieav = Titanfall::Bsp::portalEdgeIntersectAtVertex_stub;
-        pieav.clear();
-        for (int i = 0; i < 24; i++) {
-            for (int j = 0; j < 8; j++) writeU16(pieav, 0xFFFF);
+        // Compute edge intersections between portals in the same cell
+        // For each edge, find edges from OTHER portals that share a vertex position
+        // (within tolerance) — these are the "intersecting" edges
+        const float EDGE_ISECT_TOL = 1.0f;
+        auto vecClose = [EDGE_ISECT_TOL](const Vector3& a, const Vector3& b) -> bool {
+            return fabs(a.x() - b.x()) < EDGE_ISECT_TOL &&
+                   fabs(a.y() - b.y()) < EDGE_ISECT_TOL &&
+                   fabs(a.z() - b.z()) < EDGE_ISECT_TOL;
+        };
+
+        for (uint16_t pi = 0; pi < numPortals; pi++) {
+            const PortalEdgeInfo& info = portalEdgeInfos[pi];
+            for (uint16_t ei = 0; ei < info.numEdges; ei++) {
+                const auto& [eA, eB] = info.edgeEndpoints[ei];
+
+                // Collect intersecting edges from other portals
+                std::vector<uint16_t> isectEdges;
+                std::vector<uint16_t> isectAtVertex;
+
+                for (uint16_t oj = 0; oj < numPortals; oj++) {
+                    if (oj == pi) continue;
+                    const PortalEdgeInfo& other = portalEdgeInfos[oj];
+                    for (uint16_t oe = 0; oe < other.numEdges; oe++) {
+                        const auto& [oA, oB] = other.edgeEndpoints[oe];
+                        // Check if edges share a vertex
+                        if (vecClose(eA, oA) || vecClose(eA, oB) ||
+                            vecClose(eB, oA) || vecClose(eB, oB)) {
+                            isectEdges.push_back(other.globalEdgeStart + oe);
+                            // atVertex: which vertex of THIS edge is at the intersection
+                            if (vecClose(eA, oA) || vecClose(eA, oB))
+                                isectAtVertex.push_back(info.globalEdgeStart + ei);  // v0 side
+                            else
+                                isectAtVertex.push_back(info.globalEdgeStart + ei);  // v1 side
+                        }
+                    }
+                }
+
+                // Write header entry (8 bytes): {first, count}
+                // count must be >= 1 (engine uses do-while)
+                uint32_t isectCount = std::max((uint32_t)isectEdges.size(), (uint32_t)1);
+                writeU32(pieh, globalIsectIdx);
+                writeU32(pieh, isectCount);
+
+                if (isectEdges.empty()) {
+                    // No intersections — write sentinel entry
+                    for (int j = 0; j < 8; j++) writeU16(piee, 0xFFFF);
+                    for (int j = 0; j < 8; j++) writeU16(pieav, 0xFFFF);
+                    globalIsectIdx++;
+                } else {
+                    // Write one entry per intersection
+                    for (size_t k = 0; k < isectEdges.size(); k++) {
+                        // Edge entry: up to 8 edge indices
+                        writeU16(piee, isectEdges[k]);
+                        for (int j = 1; j < 8; j++) writeU16(piee, 0xFFFF);
+                        // AtVertex entry: up to 8 indices
+                        writeU16(pieav, isectAtVertex[k]);
+                        for (int j = 1; j < 8; j++) writeU16(pieav, 0xFFFF);
+                        globalIsectIdx++;
+                    }
+                }
+            }
+        }
+
+        // Cells: 1 cell with N sky portals, skyFlags=1
+        {
+            // struct mcell_t { uint16 numPortals, firstPortal, skyFlags, unk; }
+            auto& cells = Titanfall::Bsp::cells_stub;
+            cells.clear();
+            writeU16(cells, numPortals);  // numPortals
+            writeU16(cells, 0);           // firstPortal
+            writeU16(cells, 1);           // skyFlags = 1
+            writeU16(cells, 0xFFFF);      // unk
         }
     }
 }

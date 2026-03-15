@@ -41,7 +41,7 @@ void Shared::MakeMeshes(const entity_t &e) {
         for (const side_t &side : brush.sides) {
             // Skip bevels & check flags
             if (side.bevel
-             || side.shaderInfo->compileFlags & C_NODRAW) {
+             || side.shaderInfo->compileFlags & (C_NODRAW | C_SKY)) {
                 continue;
             }
 
@@ -114,6 +114,12 @@ void Shared::MakeMeshes(const entity_t &e) {
     parseMesh_t *patch;
     patch = e.patches;
     while (patch != NULL) {
+        // Skip sky patches
+        if (patch->shaderInfo->compileFlags & C_SKY) {
+            patch = patch->next;
+            continue;
+        }
+
         mesh_t patchMesh = patch->mesh;
 
         Shared::Mesh_t &mesh = Shared::meshes.emplace_back();
