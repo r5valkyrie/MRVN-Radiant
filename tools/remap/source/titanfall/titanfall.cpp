@@ -428,43 +428,45 @@ void Titanfall::EmitStubs() {
         };
         Titanfall::Bsp::cellBSPNodes_stub = { data.begin(), data.end() };
     }
-    {  // Cells: 1 cell with 5 sky portals, skyFlags=1
+    {  // Cells: 1 cell with 6 sky portals, skyFlags=1
         // struct mcell_t { uint16 numPortals, firstPortal, skyFlags, unk; }
         constexpr std::array<uint8_t, 8> data = {
-            0x05, 0x00,  // numPortals = 5
+            0x06, 0x00,  // numPortals = 6
             0x00, 0x00,  // firstPortal = 0
             0x01, 0x00,  // skyFlags = 1
             0xFF, 0xFF   // unk (always 0xFFFF)
         };
         Titanfall::Bsp::cells_stub = { data.begin(), data.end() };
     }
-    {  // Sky portal stubs: 5 portals forming a sky box (N/S/E/W/top walls)
+    {  // Sky portal stubs: 6 portals forming a complete sky box (N/S/E/W/top/bottom walls)
         // numCells=1, so sky virtual cell = numCells+1 = 2
         // struct mportal_t { u8 isReversed, portalType, numEdges, pad; u16 firstRef, cellTo; u32 planeNum; }
         // Portal vertices: 8 vertices forming a huge box from (-32768,-32768,-16384) to (32768,32768,16384)
         //   v0=(-32768,-32768,-16384)  v1=(32768,-32768,-16384)  v2=(32768,32768,-16384)  v3=(-32768,32768,-16384)
         //   v4=(-32768,-32768, 16384)  v5=(32768,-32768, 16384)  v6=(32768,32768, 16384)  v7=(-32768,32768, 16384)
 
-        // Add 5 planes to the planes vector (one per portal)
+        // Add 6 planes to the planes vector (one per portal)
         // pvs->planes = s_pMap->planes, so portal planeNum indexes into Titanfall::Bsp::planes
         uint32_t basePlaneIdx = (uint32_t)Titanfall::Bsp::planes.size();
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  1,  0, 32768));  // Portal 0 (North +Y)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0, -1,  0, 32768));  // Portal 1 (South -Y)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 1,  0,  0, 32768));  // Portal 2 (East +X)
-        Titanfall::Bsp::planes.emplace_back(Plane3f(-1,  0,  0, 32768));  // Portal 3 (West -X)
-        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  0,  1, 16384));  // Portal 4 (Top +Z)
+        Titanfall::Bsp::planes.emplace_back(Plane3f( 0, -1,  0, -32768));  // Portal 0 (North wall, normal -Y inward)
+        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  1,  0, -32768));  // Portal 1 (South wall, normal +Y inward)
+        Titanfall::Bsp::planes.emplace_back(Plane3f(-1,  0,  0, -32768));  // Portal 2 (East wall, normal -X inward)
+        Titanfall::Bsp::planes.emplace_back(Plane3f( 1,  0,  0, -32768));  // Portal 3 (West wall, normal +X inward)
+        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  0, -1, -16384));  // Portal 4 (Top wall, normal -Z inward)
+        Titanfall::Bsp::planes.emplace_back(Plane3f( 0,  0,  1, -16384));  // Portal 5 (Bottom wall, normal +Z inward)
 
-        // 5 portals (12 bytes each = 60 bytes total)
-        // Portal 0: North wall  (y=+32768)  verts: v7,v3,v2,v6
-        // Portal 1: South wall  (y=-32768)  verts: v0,v4,v5,v1
-        // Portal 2: East wall   (x=+32768)  verts: v6,v2,v1,v5
-        // Portal 3: West wall   (x=-32768)  verts: v4,v0,v3,v7
-        // Portal 4: Top/ceiling (z=+16384)  verts: v4,v7,v6,v5
+        // 6 portals (12 bytes each = 72 bytes total)
+        // Portal 0: North wall  (y=+32768)  verts: v6,v2,v3,v7  (CCW from inward normal -Y)
+        // Portal 1: South wall  (y=-32768)  verts: v1,v5,v4,v0  (CCW from inward normal +Y)
+        // Portal 2: East wall   (x=+32768)  verts: v5,v1,v2,v6  (CCW from inward normal -X)
+        // Portal 3: West wall   (x=-32768)  verts: v7,v3,v0,v4  (CCW from inward normal +X)
+        // Portal 4: Top/ceiling (z=+16384)  verts: v5,v6,v7,v4  (CCW from inward normal -Z)
+        // Portal 5: Bottom/floor(z=-16384)  verts: v0,v3,v2,v1  (CW from +Z = correct for inward +Z)
         auto& portals = Titanfall::Bsp::portals_stub;
         portals.clear();
-        for (uint32_t i = 0; i < 5; i++) {
+        for (uint32_t i = 0; i < 6; i++) {
             portals.push_back(0);              // isReversed = 0
-            portals.push_back(1);              // portalType = 1 (sky)
+            portals.push_back(1);              // portalType = 1 (ortho PVS skips, preserves shadows)
             portals.push_back(4);              // numEdges = 4
             portals.push_back(0);              // pad
             uint16_t firstRef = (uint16_t)(i * 4);
@@ -516,41 +518,40 @@ void Titanfall::EmitStubs() {
         writeVec3(pverts, hi, hi, zhi);  // v6
         writeVec3(pverts, lo, hi, zhi);  // v7
 
-        // Portal edges: 12 edges (4 bytes each = 48 bytes)
-        // Each quad portal has 4 edges. Shared edges between adjacent quads.
-        // North wall (v7,v3,v2,v6): e0=(v7,v3) e1=(v3,v2) e2=(v2,v6) e3=(v6,v7)
-        // South wall (v0,v4,v5,v1): e4=(v0,v4) e5=(v4,v5) e6=(v5,v1) e7=(v1,v0)
-        // East  wall (v6,v2,v1,v5): e8=(v6,v2)=e2rev  e9=(v2,v1) e10=(v1,v5)=e6rev e11=(v5,v6)=e5rev
-        // West  wall (v4,v0,v3,v7): uses e4rev, e1rev, e0rev, e5rev...
-        // Top   wall (v4,v7,v6,v5): uses edges from other quads
-        // Use 12 unique edges for simplicity:
+        // Portal edges: 24 edges (4 bytes each = 96 bytes)
+        // Each quad portal has 4 edges, 6 portals = 24 edges total.
         auto& pedges = Titanfall::Bsp::portalEdges_stub;
         pedges.clear();
-        // North wall edges (portal 0): e0-e3
-        writeU16(pedges, 7); writeU16(pedges, 3);  // e0
-        writeU16(pedges, 3); writeU16(pedges, 2);  // e1
-        writeU16(pedges, 2); writeU16(pedges, 6);  // e2
-        writeU16(pedges, 6); writeU16(pedges, 7);  // e3
-        // South wall edges (portal 1): e4-e7
-        writeU16(pedges, 0); writeU16(pedges, 4);  // e4
-        writeU16(pedges, 4); writeU16(pedges, 5);  // e5
-        writeU16(pedges, 5); writeU16(pedges, 1);  // e6
-        writeU16(pedges, 1); writeU16(pedges, 0);  // e7
-        // East wall edges (portal 2): e8-e11
-        writeU16(pedges, 6); writeU16(pedges, 2);  // e8
-        writeU16(pedges, 2); writeU16(pedges, 1);  // e9
-        writeU16(pedges, 1); writeU16(pedges, 5);  // e10
-        writeU16(pedges, 5); writeU16(pedges, 6);  // e11
-        // West wall edges (portal 3): e12-e15
-        writeU16(pedges, 4); writeU16(pedges, 0);  // e12
-        writeU16(pedges, 0); writeU16(pedges, 3);  // e13
-        writeU16(pedges, 3); writeU16(pedges, 7);  // e14
-        writeU16(pedges, 7); writeU16(pedges, 4);  // e15
-        // Top wall edges (portal 4): e16-e19
-        writeU16(pedges, 4); writeU16(pedges, 7);  // e16
-        writeU16(pedges, 7); writeU16(pedges, 6);  // e17
-        writeU16(pedges, 6); writeU16(pedges, 5);  // e18
-        writeU16(pedges, 5); writeU16(pedges, 4);  // e19
+        // North wall edges (portal 0): e0-e3  (reversed winding: v6→v2→v3→v7)
+        writeU16(pedges, 6); writeU16(pedges, 2);  // e0
+        writeU16(pedges, 2); writeU16(pedges, 3);  // e1
+        writeU16(pedges, 3); writeU16(pedges, 7);  // e2
+        writeU16(pedges, 7); writeU16(pedges, 6);  // e3
+        // South wall edges (portal 1): e4-e7  (reversed winding: v1→v5→v4→v0)
+        writeU16(pedges, 1); writeU16(pedges, 5);  // e4
+        writeU16(pedges, 5); writeU16(pedges, 4);  // e5
+        writeU16(pedges, 4); writeU16(pedges, 0);  // e6
+        writeU16(pedges, 0); writeU16(pedges, 1);  // e7
+        // East wall edges (portal 2): e8-e11  (reversed winding: v5→v1→v2→v6)
+        writeU16(pedges, 5); writeU16(pedges, 1);  // e8
+        writeU16(pedges, 1); writeU16(pedges, 2);  // e9
+        writeU16(pedges, 2); writeU16(pedges, 6);  // e10
+        writeU16(pedges, 6); writeU16(pedges, 5);  // e11
+        // West wall edges (portal 3): e12-e15  (reversed winding: v7→v3→v0→v4)
+        writeU16(pedges, 7); writeU16(pedges, 3);  // e12
+        writeU16(pedges, 3); writeU16(pedges, 0);  // e13
+        writeU16(pedges, 0); writeU16(pedges, 4);  // e14
+        writeU16(pedges, 4); writeU16(pedges, 7);  // e15
+        // Top wall edges (portal 4): e16-e19  (reversed winding: v5→v6→v7→v4)
+        writeU16(pedges, 5); writeU16(pedges, 6);  // e16
+        writeU16(pedges, 6); writeU16(pedges, 7);  // e17
+        writeU16(pedges, 7); writeU16(pedges, 4);  // e18
+        writeU16(pedges, 4); writeU16(pedges, 5);  // e19
+        // Bottom wall edges (portal 5): e20-e23  (winding: v0→v3→v2→v1)
+        writeU16(pedges, 0); writeU16(pedges, 3);  // e20
+        writeU16(pedges, 3); writeU16(pedges, 2);  // e21
+        writeU16(pedges, 2); writeU16(pedges, 1);  // e22
+        writeU16(pedges, 1); writeU16(pedges, 0);  // e23
 
         // Portal vertex edges: 1 per vertex (16 bytes each = 128 bytes)
         // Lists all edges incident to each vertex (up to 8 as uint16, padded with 0xFFFF)
@@ -561,30 +562,32 @@ void Titanfall::EmitStubs() {
             for (uint16_t e : edges) { writeU16(vec, e); count++; }
             for (int i = count; i < 8; i++) { writeU16(vec, 0xFFFF); }
         };
-        writeVE(pve, {4, 7, 12, 13});  // v0: edges touching vertex 0
-        writeVE(pve, {6, 7, 9, 10});   // v1
-        writeVE(pve, {1, 2, 8, 9});    // v2
-        writeVE(pve, {0, 1, 13, 14});  // v3
-        writeVE(pve, {4, 5, 12, 15, 16, 19});  // v4
-        writeVE(pve, {5, 6, 10, 11, 18, 19});  // v5
-        writeVE(pve, {2, 3, 8, 11, 17, 18});   // v6
-        writeVE(pve, {0, 3, 14, 15, 16, 17});  // v7
+        writeVE(pve, {6, 7, 13, 14, 20, 23});  // v0: edges touching vertex 0
+        writeVE(pve, {4, 7, 8, 9, 22, 23});    // v1
+        writeVE(pve, {0, 1, 9, 10, 21, 22});   // v2
+        writeVE(pve, {1, 2, 12, 13, 20, 21});  // v3
+        writeVE(pve, {5, 6, 14, 15, 18, 19});  // v4
+        writeVE(pve, {4, 5, 8, 11, 16, 19});   // v5
+        writeVE(pve, {0, 3, 10, 11, 16, 17});  // v6
+        writeVE(pve, {2, 3, 12, 15, 17, 18});  // v7
 
-        // Portal vertex references: 20 entries (5 portals * 4 verts = 20 uint16 = 40 bytes)
+        // Portal vertex references: 24 entries (6 portals * 4 verts = 24 uint16 = 48 bytes)
         auto& pvr = Titanfall::Bsp::portalVertexReferences_stub;
         pvr.clear();
-        // Portal 0 (North): v7, v3, v2, v6
-        writeU16(pvr, 7); writeU16(pvr, 3); writeU16(pvr, 2); writeU16(pvr, 6);
-        // Portal 1 (South): v0, v4, v5, v1
-        writeU16(pvr, 0); writeU16(pvr, 4); writeU16(pvr, 5); writeU16(pvr, 1);
-        // Portal 2 (East):  v6, v2, v1, v5
-        writeU16(pvr, 6); writeU16(pvr, 2); writeU16(pvr, 1); writeU16(pvr, 5);
-        // Portal 3 (West):  v4, v0, v3, v7
-        writeU16(pvr, 4); writeU16(pvr, 0); writeU16(pvr, 3); writeU16(pvr, 7);
-        // Portal 4 (Top):   v4, v7, v6, v5
-        writeU16(pvr, 4); writeU16(pvr, 7); writeU16(pvr, 6); writeU16(pvr, 5);
+        // Portal 0 (North): v6, v2, v3, v7  (CCW from inward -Y)
+        writeU16(pvr, 6); writeU16(pvr, 2); writeU16(pvr, 3); writeU16(pvr, 7);
+        // Portal 1 (South): v1, v5, v4, v0  (CCW from inward +Y)
+        writeU16(pvr, 1); writeU16(pvr, 5); writeU16(pvr, 4); writeU16(pvr, 0);
+        // Portal 2 (East):  v5, v1, v2, v6  (CCW from inward -X)
+        writeU16(pvr, 5); writeU16(pvr, 1); writeU16(pvr, 2); writeU16(pvr, 6);
+        // Portal 3 (West):  v7, v3, v0, v4  (CCW from inward +X)
+        writeU16(pvr, 7); writeU16(pvr, 3); writeU16(pvr, 0); writeU16(pvr, 4);
+        // Portal 4 (Top):   v5, v6, v7, v4  (CCW from inward -Z)
+        writeU16(pvr, 5); writeU16(pvr, 6); writeU16(pvr, 7); writeU16(pvr, 4);
+        // Portal 5 (Bottom): v0, v3, v2, v1  (CW from +Z = inward for bottom)
+        writeU16(pvr, 0); writeU16(pvr, 3); writeU16(pvr, 2); writeU16(pvr, 1);
 
-        // Portal edge references: 20 entries (same count as vertex refs)
+        // Portal edge references: 24 entries (same count as vertex refs)
         auto& per = Titanfall::Bsp::portalEdgeReferences_stub;
         per.clear();
         // Portal 0: edges e0, e1, e2, e3
@@ -597,32 +600,34 @@ void Titanfall::EmitStubs() {
         writeU16(per, 12); writeU16(per, 13); writeU16(per, 14); writeU16(per, 15);
         // Portal 4: edges e16, e17, e18, e19
         writeU16(per, 16); writeU16(per, 17); writeU16(per, 18); writeU16(per, 19);
+        // Portal 5: edges e20, e21, e22, e23
+        writeU16(per, 20); writeU16(per, 21); writeU16(per, 22); writeU16(per, 23);
 
-        // Portal edge intersect header: 1 per edge (8 bytes each = 160 bytes)
+        // Portal edge intersect header: 1 per edge (8 bytes each = 192 bytes)
         // {uint32 first, uint32 count} — count MUST be >= 1 (engine uses do-while loop)
         // Provide 1 dummy intersection entry per edge with 0xFFFF sentinels
         auto& pieh = Titanfall::Bsp::portalEdgeIntersectHeader_stub;
         pieh.clear();
-        for (uint32_t i = 0; i < 20; i++) {
+        for (uint32_t i = 0; i < 24; i++) {
             writeU32(pieh, i);  // first = index into isect arrays
             writeU32(pieh, 1);  // count = 1 (minimum to avoid do-while infinite loop)
         }
 
-        // Portal edge intersect edge: 20 entries (16 bytes each = 320 bytes)
+        // Portal edge intersect edge: 24 entries (16 bytes each = 384 bytes)
         // Each entry is mportal_edgeset_t = 8 x uint16 edge indices
-        // Fill with 0xFFFF so no edge index (0-19) ever matches → safe no-op
+        // Fill with 0xFFFF so no edge index (0-23) ever matches → safe no-op
         auto& piee = Titanfall::Bsp::portalEdgeIntersectEdge_stub;
         piee.clear();
-        for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < 24; i++) {
             for (int j = 0; j < 8; j++) writeU16(piee, 0xFFFF);
         }
 
-        // Portal edge intersect at vertex: 20 entries (16 bytes each = 320 bytes)
+        // Portal edge intersect at vertex: 24 entries (16 bytes each = 384 bytes)
         // Each entry is mportal_vertset_t = 8 x uint16 vertex indices
         // Fill with 0xFFFF sentinel (won't be used since edge match fails)
         auto& pieav = Titanfall::Bsp::portalEdgeIntersectAtVertex_stub;
         pieav.clear();
-        for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < 24; i++) {
             for (int j = 0; j < 8; j++) writeU16(pieav, 0xFFFF);
         }
     }
