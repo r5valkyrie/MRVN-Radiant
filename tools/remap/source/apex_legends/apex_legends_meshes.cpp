@@ -52,7 +52,7 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
     for (const Shared::Mesh_t &mesh : Shared::meshes) {
         ApexLegends::Mesh_t &m = ApexLegends::Bsp::meshes.emplace_back();
         m.flags = mesh.shaderInfo->surfaceFlags;
-        m.triOffset = Titanfall::Bsp::meshIndices.size();
+        m.triOffset = ApexLegends::Bsp::meshIndices.size();
         m.triCount = mesh.triangles.size() / 3;
 
         int vertexOffset;
@@ -132,11 +132,11 @@ void ApexLegends::EmitMeshes(const entity_t &e) {
 
         // Save triangles
         for (uint16_t triangle : mesh.triangles) {
-            Titanfall::Bsp::meshIndices.emplace_back(triangle + vertexOffset - materialSortOffset);
+            ApexLegends::Bsp::meshIndices.emplace_back(triangle + vertexOffset - materialSortOffset);
         }
 
         // Save MeshBounds
-        Titanfall::MeshBounds_t &mb = Titanfall::Bsp::meshBounds.emplace_back();
+        Titanfall::MeshBounds_t &mb = ApexLegends::Bsp::meshBounds.emplace_back();
         mb.origin = (aabb.maxs + aabb.mins) / 2;
         mb.extents = (aabb.maxs - aabb.mins) / 2;
 

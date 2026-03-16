@@ -174,7 +174,7 @@
 #define R5_LUMP_BVH_NODES						0x12
 #define R5_LUMP_BVH_LEAF_DATA					0x13
 #define R5_LUMP_PACKED_VERTICES					0x14
-// DEAD LUMPS: 0x15-0x16 — Engine never loads these. No loader calls, no references.
+// 0x15-0x16 — Engine never loads these. No loader calls, no references.
 // #define R5_LUMP_COLL_HEIGHTFIELDS			0x15  // Heightfield collision definitions
 // #define R5_LUMP_COLL_HEIGHTFIELD_SAMPLES		0x16  // Heightfield height samples
 #define R5_LUMP_ENTITY_PARTITIONS				0x18
@@ -183,7 +183,7 @@
 #define R5_LUMP_CELL_AABB_NUM_OBJ_REFS_TOTAL	0x25  // Cumulative obj ref count per cell AABB node
 #define R5_LUMP_CSM_AABB_NUM_OBJ_REFS_TOTAL		0x26  // Cumulative obj ref count per CSM AABB node
 #define R5_LUMP_CELL_AABB_FADEDISTS				0x27  // Fade distances for cell AABB objects
-// DEAD LUMPS: 0x28, 0x2B-0x30 — Engine never loads these. No loader calls, no references.
+// 0x28, 0x2B-0x30 — Engine never loads these. No loader calls, no references.
 // #define R5_LUMP_PAKFILE						0x28
 #define R5_LUMP_CUBEMAPS						0x2A
 // #define R5_LUMP_CUBEMAPS_AMBIENT_RCP		0x2B
@@ -208,7 +208,7 @@
 #define R5_LUMP_MATERIAL_SORT					0x52
 #define R5_LUMP_LIGHTMAP_HEADERS				0x53
 #define R5_LUMP_TWEAK_LIGHTS					0x55
-// DEAD LUMPS: 0x60-0x61 — Engine never loads these. No loader calls, no references.
+// 0x60-0x61 — Engine never loads these. No loader calls, no references.
 // #define R5_LUMP_SOUND_PROBES				0x60  // Sound probe data for audio propagation
 // #define R5_LUMP_LIGHTMAP_DATA_SKY_COMPRESSED	0x61  // Compressed sky lightmap data
 #define R5_LUMP_LIGHTMAP_DATA_SKY				0x62

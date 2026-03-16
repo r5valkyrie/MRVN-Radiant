@@ -248,6 +248,8 @@ static_assert(sizeof(CSMAABBNode_t) == 32, "CSMAABBNode_t must be exactly 32 byt
 
 namespace ApexLegends {
     void        EmitStubs();
+    void        EmitPortals();
+    void        EmitCells();
 
     void        SetupGameLump();
     void        EmitStaticProp(entity_t &e);
@@ -609,10 +611,14 @@ namespace ApexLegends {
         inline std::vector<VertexUnlitTS_t>     vertexUnlitTSVertices;
         inline std::vector<VertexBlinnPhong_t>  vertexBlinnPhongVertices;
         inline std::vector<uint16_t>            meshIndices;
+        inline std::vector<Titanfall::MeshBounds_t> meshBounds;
         inline std::vector<Mesh_t>              meshes;
         inline std::vector<MaterialSort_t>      materialSorts;
         inline std::vector<CellAABBNode_t>      cellAABBNodes;
         inline std::vector<int32_t>             objReferences;
+        inline std::vector<Titanfall::ObjReferenceBounds_t> objReferenceBounds;
+        inline std::vector<Vector3>             occlusionMeshVertices;
+        inline std::vector<uint16_t>            occlusionMeshIndices;
         inline std::vector<LevelInfo_t>         levelInfo;
         inline std::vector<ShadowEnvironment_t> shadowEnvironments;
         inline std::vector<WorldLight_t>        worldLights;
@@ -665,5 +671,18 @@ namespace ApexLegends {
         inline GameLumpPropHeader_t                     gameLumpPropHeader;
         inline std::vector<GameLumpProp_t>              gameLumpProps;
         inline std::vector<GameLumpParentInfo_t>        gameLumpParentInfos;
+
+        // Portal & Cell lumps
+        inline std::vector<uint8_t>              cellBSPNodes;
+        inline std::vector<uint8_t>              cells;
+        inline std::vector<uint8_t>              portals;
+        inline std::vector<uint8_t>              portalVertices;
+        inline std::vector<uint8_t>              portalEdges;
+        inline std::vector<uint8_t>              portalVertexEdges;
+        inline std::vector<uint8_t>              portalVertexReferences;
+        inline std::vector<uint8_t>              portalEdgeReferences;
+        inline std::vector<uint8_t>              portalEdgeIntersectEdge;
+        inline std::vector<uint8_t>              portalEdgeIntersectAtVertex;
+        inline std::vector<uint8_t>              portalEdgeIntersectHeader;
     }
 }

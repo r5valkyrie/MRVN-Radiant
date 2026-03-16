@@ -439,11 +439,11 @@ void ApexLegends::EmitShadowMeshes() {
         uint32_t indexCount = mesh.triCount * 3;  // triCount is triangle count, need 3 indices per tri
         
         for (uint32_t i = 0; i < indexCount; i++) {
-            if (indexStart + i >= Titanfall::Bsp::meshIndices.size()) {
+            if (indexStart + i >= ApexLegends::Bsp::meshIndices.size()) {
                 break;
             }
             
-            uint16_t origIdx = Titanfall::Bsp::meshIndices[indexStart + i];
+            uint16_t origIdx = ApexLegends::Bsp::meshIndices[indexStart + i];
             
             // Check if we've already remapped this vertex
             auto it = vertexRemap.find(origIdx);

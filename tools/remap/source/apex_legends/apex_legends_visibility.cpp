@@ -75,7 +75,7 @@ void ApexLegends::EmitVisTree() {
     
     // Emit mesh references with large bounds and fade distances
     for (Shared::visRef_t &ref : Shared::visRefs) {
-        Titanfall::ObjReferenceBounds_t &rb = Titanfall::Bsp::objReferenceBounds.emplace_back();
+        Titanfall::ObjReferenceBounds_t &rb = ApexLegends::Bsp::objReferenceBounds.emplace_back();
         rb.maxs = largeMax;
         rb.mins = largeMin;
 
@@ -87,7 +87,7 @@ void ApexLegends::EmitVisTree() {
 
     // Emit static prop references
     for (uint32_t i = 0; i < numProps; i++) {
-        Titanfall::ObjReferenceBounds_t &rb = Titanfall::Bsp::objReferenceBounds.emplace_back();
+        Titanfall::ObjReferenceBounds_t &rb = ApexLegends::Bsp::objReferenceBounds.emplace_back();
         rb.maxs = largeMax;
         rb.mins = largeMin;
 
@@ -109,7 +109,7 @@ void ApexLegends::EmitVisTree() {
 */
 std::size_t ApexLegends::EmitObjReferences(Shared::visNode_t &node) {
     for (Shared::visRef_t &ref : node.refs) {
-        Titanfall::ObjReferenceBounds_t &rb = Titanfall::Bsp::objReferenceBounds.emplace_back();
+        Titanfall::ObjReferenceBounds_t &rb = ApexLegends::Bsp::objReferenceBounds.emplace_back();
         rb.maxs = ref.minmax.maxs;
         rb.mins = ref.minmax.mins;
 
