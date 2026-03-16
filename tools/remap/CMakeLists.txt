@@ -60,6 +60,7 @@ add_executable(remap
                source/apex_legends/apex_legends_lightmaps.cpp
                source/apex_legends/apex_legends_meshes.cpp
                source/apex_legends/apex_legends_models.cpp
+               source/apex_legends/apex_legends_portals.cpp
                source/apex_legends/apex_legends_textures.cpp
                source/apex_legends/apex_legends_vertices.cpp
                source/apex_legends/apex_legends_visibility.cpp

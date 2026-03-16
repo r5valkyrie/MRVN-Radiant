@@ -4,6 +4,7 @@
 // NODRAWS
 textures/tools/toolsnodraw
 {
+    %trans 0.40
     $compileflag nodraw
 }
 
@@ -266,12 +267,14 @@ textures/tools/toolsskip
 // SKYBOX
 textures/tools/toolsskybox
 {
+    %trans 0.40
     $surfaceflag sky
     $compileflag sky
 }
 
 textures/tools/toolsskybox2d
 {
+    %trans 0.40
     $surfaceflag sky2d
     $compileflag sky
 }

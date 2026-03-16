@@ -35,6 +35,7 @@
 
 #include "../remap.h"
 #include "../bspfile_abstract.h"
+#include "miniz.h"
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
@@ -58,57 +59,30 @@ void ApexLegends::EmitCubemaps() {
     Sys_FPrintf(SYS_VRB, "--- EmitCubemaps ---\n");
     
     ApexLegends::Bsp::cubemaps.clear();
-    ApexLegends::Bsp::cubemapsAmbientRcp.clear();
     
-    // Collect env_cubemap entities
-    std::vector<Vector3> cubemapPositions;
+    // Lump 0x2A stores cubemap samples — one per VTF frame in the
+    // pakfile cubemap atlas.  Multiple envmap_volume entities can
+    // share the same cubemapID index into this table.
+    // The default VTF has 25 frames, so we emit 25 samples.
+    constexpr int VTF_FRAME_COUNT = 25;
     
-    for (const entity_t &entity : entities) {
-        const char *classname = entity.classname();
-        if (striEqual(classname, "env_cubemap")) {
-            Vector3 origin;
-            if (entity.read_keyvalue(origin, "origin")) {
-                cubemapPositions.push_back(origin);
-            }
-        }
+    // Calculate world center for sample positions
+    MinMax worldBounds;
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        worldBounds.extend(mesh.minmax.mins);
+        worldBounds.extend(mesh.minmax.maxs);
     }
+    Vector3 center = worldBounds.valid()
+        ? (worldBounds.mins + worldBounds.maxs) * 0.5f
+        : Vector3(0, 0, 0);
     
-    // If no cubemaps, generate default positions based on world bounds
-    if (cubemapPositions.empty()) {
-        // Calculate world bounds
-        MinMax worldBounds;
-        for (const Shared::Mesh_t &mesh : Shared::meshes) {
-            worldBounds.extend(mesh.minmax.mins);
-            worldBounds.extend(mesh.minmax.maxs);
-        }
-        
-        if (worldBounds.valid()) {
-            // Place a single cubemap at world center
-            Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
-            cubemapPositions.push_back(center);
-            Sys_Printf("     No env_cubemap entities, using world center\n");
-        } else {
-            // Fallback if no geometry
-            cubemapPositions.push_back(Vector3(0, 0, 0));
-            Sys_Printf("     No geometry, using origin\n");
-        }
-    } else {
-        Sys_Printf("     Found %zu env_cubemap entities\n", cubemapPositions.size());
-    }
-    
-    // Emit cubemap samples
-    for (const Vector3 &pos : cubemapPositions) {
+    for (int i = 0; i < VTF_FRAME_COUNT; i++) {
         CubemapSample_t sample;
-        // Engine reads origin as int32[3] and converts to float
-        sample.origin[0] = static_cast<int32_t>(pos[0]);
-        sample.origin[1] = static_cast<int32_t>(pos[1]);
-        sample.origin[2] = static_cast<int32_t>(pos[2]);
-        sample.guid = 0;  // No pre-baked texture, runtime capture required
+        sample.origin[0] = static_cast<int32_t>(center[0]);
+        sample.origin[1] = static_cast<int32_t>(center[1]);
+        sample.origin[2] = static_cast<int32_t>(center[2]);
+        sample.guid = 0;
         ApexLegends::Bsp::cubemaps.push_back(sample);
-        
-        // Ambient RCP: reciprocal of ambient contribution
-        // Default to 1.0 (full ambient)
-        ApexLegends::Bsp::cubemapsAmbientRcp.push_back(1.0f);
     }
 
     Sys_Printf("     %9zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
@@ -465,11 +439,11 @@ void ApexLegends::EmitShadowMeshes() {
         uint32_t indexCount = mesh.triCount * 3;  // triCount is triangle count, need 3 indices per tri
         
         for (uint32_t i = 0; i < indexCount; i++) {
-            if (indexStart + i >= Titanfall::Bsp::meshIndices.size()) {
+            if (indexStart + i >= ApexLegends::Bsp::meshIndices.size()) {
                 break;
             }
             
-            uint16_t origIdx = Titanfall::Bsp::meshIndices[indexStart + i];
+            uint16_t origIdx = ApexLegends::Bsp::meshIndices[indexStart + i];
             
             // Check if we've already remapped this vertex
             auto it = vertexRemap.find(origIdx);

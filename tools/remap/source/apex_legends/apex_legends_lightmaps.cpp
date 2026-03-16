@@ -2309,792 +2309,332 @@ static Vector3 PushProbeAwayFromSurfaces(const Vector3 &pos, float minDistance) 
 
 /*
     GenerateProbePositionsVoronoi
-    Generate light probe positions using Voronoi-based adaptive placement.
-    
-    This approach:
-    1. Samples geometry surfaces (mesh vertices, face centers) as seed points
-    2. Clusters seeds using K-means to find natural groupings
-    3. Uses Lloyd relaxation to optimize probe positions
-    4. Results in more probes where geometry is dense, fewer in open areas
-    
-    Much better quality than uniform grid for complex maps.
+    Generate light probe positions using Voronoi spatial binning.
+
+    Algorithm:
+    1. Collect seed points: geometry surface samples + floor-traced positions
+    2. Batch GPU solid rejection of all seeds
+    3. 3D Voronoi spatial binning: partition world into cubic cells, centroid per cell
+    4. Validate: batch solid rejection + surface push + minimum spacing filter
 */
-static void GenerateProbePositionsVoronoi(const MinMax &worldBounds, 
+static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
                                           std::vector<Vector3> &probePositions) {
     Sys_Printf("     Generating Voronoi-based probe positions...\n");
-    
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    constexpr float PROBE_ELEVATION     = 64.0f;   // Height above surface samples
+    constexpr float MIN_SURFACE_DIST    = 64.0f;   // Minimum distance from geometry
+    constexpr float SOLID_TEST_DIST     = 32.0f;   // Ray length for inside-solid test
+    constexpr float FLOOR_GRID_SPACING  = 128.0f;  // Grid spacing for floor probes
+    constexpr float FLOOR_PROBE_HEIGHT  = 64.0f;   // Height above detected floors
+
+    const Vector3 cardinalDirs[6] = {
+        Vector3(1,0,0), Vector3(-1,0,0),
+        Vector3(0,1,0), Vector3(0,-1,0),
+        Vector3(0,0,1), Vector3(0,0,-1)
+    };
+
     // =========================================================================
-    // Step 1: Collect geometry sample points
+    // Step 1: Collect seed points from geometry and floor traces
     // =========================================================================
-    std::vector<Vector3> geometrySamples;
-    geometrySamples.reserve(65536);
-    
-    // Sample mesh vertices and face centers
-    for (const Shared::Mesh_t &mesh : Shared::meshes) {
-        // Skip meshes with specific material properties (like skybox)
-        // Add all vertices as samples
-        for (size_t v = 0; v < mesh.vertices.size(); v++) {
-            // Subsample - take every Nth vertex to avoid explosion
-            if (v % 4 == 0) {
-                geometrySamples.push_back(mesh.vertices[v].xyz);
-            }
-        }
-        
-        // Add face centers
-        for (size_t t = 0; t + 2 < mesh.triangles.size(); t += 3) {
-            const Vector3 &v0 = mesh.vertices[mesh.triangles[t + 0]].xyz;
-            const Vector3 &v1 = mesh.vertices[mesh.triangles[t + 1]].xyz;
-            const Vector3 &v2 = mesh.vertices[mesh.triangles[t + 2]].xyz;
-            Vector3 center = (v0 + v1 + v2) * (1.0f / 3.0f);
-            geometrySamples.push_back(center);
-        }
-    }
-    
-    Sys_FPrintf(SYS_VRB, "     Collected %zu geometry samples\n", geometrySamples.size());
-    
-    if (geometrySamples.empty()) {
-        // Fallback: use world center
-        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
-        probePositions.push_back(center);
-        Sys_Printf("     No geometry samples, using world center\n");
-        return;
-    }
-    
-    // =========================================================================
-    // Step 2: Offset samples above surfaces for probe positions
-    // Uses batch GPU dispatch for solid rejection tests
-    // =========================================================================
-    std::vector<Vector3> candidatePositions;
-    candidatePositions.reserve(geometrySamples.size());
-    
-    constexpr float MIN_SURFACE_DISTANCE = 72.0f;  // Minimum distance from any surface
-    
-    auto step2Start = std::chrono::high_resolution_clock::now();
-    
-    // Phase 1: Batch solid rejection - test all elevated positions at once
-    Sys_FPrintf(SYS_VRB, "     Step 2: Testing %zu positions for solid rejection...\n", geometrySamples.size());
-    {
-        size_t N = geometrySamples.size();
-        std::vector<Vector3> elevatedPositions(N);
-        for (size_t i = 0; i < N; i++) {
-            elevatedPositions[i] = geometrySamples[i] + Vector3(0, 0, 96.0f);
-        }
-        
-        // Generate 6 cardinal direction rays per position for solid test
-        const Vector3 cardinalDirs[6] = {
-            Vector3(1,0,0), Vector3(-1,0,0),
-            Vector3(0,1,0), Vector3(0,-1,0),
-            Vector3(0,0,1), Vector3(0,0,-1)
-        };
-        const float solidOffset = 2.0f;
-        const float solidTestDist = 48.0f;
-        
-        size_t totalRays = N * 6;
-        std::vector<Vector3> rayOrigins(totalRays);
-        std::vector<Vector3> rayDirs(totalRays);
-        std::vector<float>   rayMaxDists(totalRays);
-        
-        for (size_t i = 0; i < N; i++) {
-            for (int d = 0; d < 6; d++) {
-                size_t idx = i * 6 + d;
-                rayOrigins[idx] = elevatedPositions[i] + cardinalDirs[d] * solidOffset;
-                rayDirs[idx] = cardinalDirs[d];
-                rayMaxDists[idx] = solidTestDist;
-            }
-        }
-        
-        // Batch GPU dispatch
-        std::vector<uint8_t> hitResults(totalRays, 0);
-        if (totalRays > 0 && HIPRTTrace::IsSceneReady()) {
-            HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays), rayOrigins.data(),
-                                            rayDirs.data(), rayMaxDists.data(), hitResults.data());
-        }
-        
-        // Filter: keep positions where NOT all 6 directions hit (not inside solid)
-        std::vector<Vector3> passedFirst;
-        passedFirst.reserve(N);
-        for (size_t i = 0; i < N; i++) {
-            size_t base = i * 6;
-            bool allHit = hitResults[base] && hitResults[base+1] && hitResults[base+2] &&
-                          hitResults[base+3] && hitResults[base+4] && hitResults[base+5];
-            if (!allHit) {
-                passedFirst.push_back(elevatedPositions[i]);
-            }
-        }
-        
-        Sys_FPrintf(SYS_VRB, "     %zu / %zu passed initial solid rejection (%.1fs)\n", 
-                   passedFirst.size(), N,
-                   std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - step2Start).count());
-        
-        // Phase 2: Push probes away from surfaces (iterative, uses closest-hit)
-        // Batch across all surviving positions per iteration
-        Sys_FPrintf(SYS_VRB, "     Pushing %zu probes away from surfaces...\n", passedFirst.size());
-        
-        std::vector<Vector3> pushedPositions = passedFirst;
-        std::vector<bool> converged(pushedPositions.size(), false);
-        
-        for (int iter = 0; iter < 4; iter++) {
-            // Collect all active positions that need distance checks
-            std::vector<size_t> activeIndices;
-            for (size_t i = 0; i < pushedPositions.size(); i++) {
-                if (!converged[i]) activeIndices.push_back(i);
-            }
-            if (activeIndices.empty()) break;
-            
-            // Generate 6 closest-hit rays per active position
-            size_t numActive = activeIndices.size();
-            size_t numRays = numActive * 6;
-            std::vector<Vector3> distRayOrigins(numRays);
-            std::vector<Vector3> distRayDirs(numRays);
-            std::vector<float>   distRayMaxDists(numRays, 512.0f);
-            
-            for (size_t a = 0; a < numActive; a++) {
-                const Vector3 &pos = pushedPositions[activeIndices[a]];
-                for (int d = 0; d < 6; d++) {
-                    size_t idx = a * 6 + d;
-                    distRayOrigins[idx] = pos + cardinalDirs[d] * solidOffset;
-                    distRayDirs[idx] = cardinalDirs[d];
-                }
-            }
-            
-            // Batch closest-hit dispatch
-            std::vector<float> hitDists(numRays, -1.0f);
-            if (numRays > 0 && HIPRTTrace::IsSceneReady()) {
-                HIPRTTrace::BatchTraceRay(static_cast<int>(numRays), distRayOrigins.data(),
-                                          distRayDirs.data(), distRayMaxDists.data(), hitDists.data());
-            }
-            
-            // Process results: find nearest surface per position and push away
-            for (size_t a = 0; a < numActive; a++) {
-                size_t posIdx = activeIndices[a];
-                float minDist = FLT_MAX;
-                int minDir = -1;
-                
-                for (int d = 0; d < 6; d++) {
-                    float dist = hitDists[a * 6 + d];
-                    if (dist >= 0 && dist < minDist) {
-                        minDist = dist;
-                        minDir = d;
-                    }
-                }
-                
-                if (minDist >= MIN_SURFACE_DISTANCE) {
-                    converged[posIdx] = true;
-                } else if (minDir >= 0) {
-                    float pushAmount = MIN_SURFACE_DISTANCE - minDist + 8.0f;
-                    pushedPositions[posIdx] = pushedPositions[posIdx] + cardinalDirs[minDir] * (-pushAmount);
-                }
-            }
-        }
-        
-        // Phase 3: Batch second solid rejection for pushed positions
-        {
-            size_t M = pushedPositions.size();
-            size_t totalRays2 = M * 6;
-            std::vector<Vector3> rayOrigins2(totalRays2);
-            std::vector<Vector3> rayDirs2(totalRays2);
-            std::vector<float>   rayMaxDists2(totalRays2);
-            
-            for (size_t i = 0; i < M; i++) {
-                for (int d = 0; d < 6; d++) {
-                    size_t idx = i * 6 + d;
-                    rayOrigins2[idx] = pushedPositions[i] + cardinalDirs[d] * solidOffset;
-                    rayDirs2[idx] = cardinalDirs[d];
-                    rayMaxDists2[idx] = 32.0f;
-                }
-            }
-            
-            std::vector<uint8_t> hitResults2(totalRays2, 0);
-            if (totalRays2 > 0 && HIPRTTrace::IsSceneReady()) {
-                HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays2), rayOrigins2.data(),
-                                                rayDirs2.data(), rayMaxDists2.data(), hitResults2.data());
-            }
-            
-            for (size_t i = 0; i < M; i++) {
-                size_t base = i * 6;
-                bool allHit = hitResults2[base] && hitResults2[base+1] && hitResults2[base+2] &&
-                              hitResults2[base+3] && hitResults2[base+4] && hitResults2[base+5];
-                if (!allHit) {
-                    candidatePositions.push_back(pushedPositions[i]);
-                }
-            }
-        }
-    }
-    
-    {
-        auto now = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(now - step2Start).count();
-        Sys_FPrintf(SYS_VRB, "     %zu valid candidate positions after solid rejection (%.2fs)\n", candidatePositions.size(), elapsed);
-    }
-    
-    if (candidatePositions.empty()) {
-        Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
-        probePositions.push_back(center);
-        return;
-    }
-    
-    // =========================================================================
-    // Step 3: K-means clustering to find probe centroids
-    // =========================================================================
-    // Target probe count based on world size and geometry density
-    Vector3 size = worldBounds.maxs - worldBounds.mins;
-    float worldVolume = size[0] * size[1] * size[2];
-    float avgDimension = std::cbrt(worldVolume);
-    
-    // Aim for roughly GRID_SPACING spacing, but let geometry density influence
-    int targetProbes = std::max(8, 
-        (int)(worldVolume / (LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING * LIGHT_PROBE_GRID_SPACING)));
-    
-    // Increase target if we have dense geometry
-    float densityFactor = std::min(4.0f, (float)candidatePositions.size() / 1000.0f);
-    targetProbes = (int)(targetProbes * (1.0f + densityFactor));
-    
-    // Apply max count limit if not unlimited (-1)
-    if (LIGHT_PROBE_MAX_COUNT >= 0) {
-        targetProbes = std::min(LIGHT_PROBE_MAX_COUNT, targetProbes);
-    }
-    
-    Sys_FPrintf(SYS_VRB, "     Target probe count: %d (world avg dimension: %.0f)\n", targetProbes, avgDimension);
-    
-    // Initialize K-means centroids using K-means++ seeding
-    std::vector<Vector3> centroids;
-    centroids.reserve(targetProbes);
-    
-    // First centroid: random sample
-    centroids.push_back(candidatePositions[0]);
-    
-    // K-means++ seeding: each new centroid is chosen with probability proportional
-    // to squared distance from nearest existing centroid
-    std::vector<float> minDistSq(candidatePositions.size(), FLT_MAX);
-    
-    while (centroids.size() < (size_t)targetProbes && centroids.size() < candidatePositions.size()) {
-        // Update minimum distances
-        const Vector3 &lastCentroid = centroids.back();
-        float totalWeight = 0;
-        
-        for (size_t i = 0; i < candidatePositions.size(); i++) {
-            Vector3 delta = candidatePositions[i] - lastCentroid;
-            float distSq = vector3_dot(delta, delta);
-            minDistSq[i] = std::min(minDistSq[i], distSq);
-            totalWeight += minDistSq[i];
-        }
-        
-        if (totalWeight < 0.001f) break;
-        
-        // Pick next centroid with probability proportional to D^2
-        float threshold = (float)(centroids.size() * 7919 % 10000) / 10000.0f * totalWeight;
-        float cumulative = 0;
-        size_t chosen = 0;
-        
-        for (size_t i = 0; i < candidatePositions.size(); i++) {
-            cumulative += minDistSq[i];
-            if (cumulative >= threshold) {
-                chosen = i;
-                break;
-            }
-        }
-        
-        centroids.push_back(candidatePositions[chosen]);
-        
-        // Progress indicator
-        if (centroids.size() % 100 == 0) {
-            Sys_FPrintf(SYS_VRB, "       Seeded %zu / %d centroids...\n", centroids.size(), targetProbes);
-        }
-    }
-    
-    Sys_FPrintf(SYS_VRB, "     Seeded %zu initial centroids, running Lloyd relaxation...\n", centroids.size());
-    
-    // =========================================================================
-    // Step 4: Lloyd relaxation (K-means iterations)
-    // =========================================================================
-    constexpr int MAX_LLOYD_ITERATIONS = 10;
-    
-    std::vector<int> assignments(candidatePositions.size(), -1);
-    std::vector<Vector3> newCentroids(centroids.size());
-    std::vector<int> clusterCounts(centroids.size());
-    
-    for (int iter = 0; iter < MAX_LLOYD_ITERATIONS; iter++) {
-        // Assign each candidate to nearest centroid
-        for (size_t i = 0; i < candidatePositions.size(); i++) {
-            float minDist = FLT_MAX;
-            int nearest = 0;
-            
-            for (size_t c = 0; c < centroids.size(); c++) {
-                Vector3 delta = candidatePositions[i] - centroids[c];
-                float dist = vector3_dot(delta, delta);
-                if (dist < minDist) {
-                    minDist = dist;
-                    nearest = static_cast<int>(c);
-                }
-            }
-            
-            assignments[i] = nearest;
-        }
-        
-        // Compute new centroids as cluster means
-        std::fill(newCentroids.begin(), newCentroids.end(), Vector3(0, 0, 0));
-        std::fill(clusterCounts.begin(), clusterCounts.end(), 0);
-        
-        for (size_t i = 0; i < candidatePositions.size(); i++) {
-            int c = assignments[i];
-            newCentroids[c] = newCentroids[c] + candidatePositions[i];
-            clusterCounts[c]++;
-        }
-        
-        // Update centroids
-        float maxMove = 0;
-        for (size_t c = 0; c < centroids.size(); c++) {
-            if (clusterCounts[c] > 0) {
-                Vector3 updated = newCentroids[c] * (1.0f / clusterCounts[c]);
-                Vector3 delta = updated - centroids[c];
-                float moveDist = static_cast<float>(vector3_dot(delta, delta));
-                maxMove = std::max(maxMove, moveDist);
-                centroids[c] = updated;
-            }
-        }
-        
-        // Convergence check
-        if (maxMove < 1.0f) {
-            Sys_FPrintf(SYS_VRB, "     Lloyd converged after %d iterations\n", iter + 1);
-            break;
-        }
-    }
-    
-    // =========================================================================
-    // Step 5: Filter final positions and enforce minimum spacing
-    // Uses batch GPU dispatch for solid rejection
-    // =========================================================================
-    std::vector<Vector3> finalPositions;
-    finalPositions.reserve(centroids.size());
-    
-    constexpr float FINAL_MIN_SURFACE_DISTANCE = 64.0f;
-    
-    Sys_FPrintf(SYS_VRB, "     Step 5: Filtering %zu centroids...\n", centroids.size());
-    auto step5Start = std::chrono::high_resolution_clock::now();
-    
-    {
-        const Vector3 cardinalDirs[6] = {
-            Vector3(1,0,0), Vector3(-1,0,0),
-            Vector3(0,1,0), Vector3(0,-1,0),
-            Vector3(0,0,1), Vector3(0,0,-1)
-        };
-        const float solidOffset = 2.0f;
-        
-        // Phase 1: Batch solid rejection of centroids
-        size_t M = centroids.size();
-        size_t totalRays = M * 6;
-        std::vector<Vector3> rayOrigins(totalRays);
-        std::vector<Vector3> rayDirs(totalRays);
-        std::vector<float>   rayMaxDists(totalRays);
-        
-        for (size_t i = 0; i < M; i++) {
-            for (int d = 0; d < 6; d++) {
-                size_t idx = i * 6 + d;
-                rayOrigins[idx] = centroids[i] + cardinalDirs[d] * solidOffset;
-                rayDirs[idx] = cardinalDirs[d];
-                rayMaxDists[idx] = 32.0f;
-            }
-        }
-        
-        std::vector<uint8_t> solidHits(totalRays, 0);
-        if (totalRays > 0 && HIPRTTrace::IsSceneReady()) {
-            HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays), rayOrigins.data(),
-                                            rayDirs.data(), rayMaxDists.data(), solidHits.data());
-        }
-        
-        // Collect non-solid centroids
-        std::vector<Vector3> validCentroids;
-        for (size_t i = 0; i < M; i++) {
-            size_t base = i * 6;
-            bool allHit = solidHits[base] && solidHits[base+1] && solidHits[base+2] &&
-                          solidHits[base+3] && solidHits[base+4] && solidHits[base+5];
-            if (!allHit) {
-                validCentroids.push_back(centroids[i]);
-            }
-        }
-        
-        Sys_FPrintf(SYS_VRB, "     %zu / %zu centroids passed solid rejection\n", validCentroids.size(), M);
-        
-        // Phase 2: Batch push away from surfaces
-        std::vector<Vector3> pushedPositions = validCentroids;
-        std::vector<bool> converged(pushedPositions.size(), false);
-        
-        for (int iter = 0; iter < 4; iter++) {
-            std::vector<size_t> activeIndices;
-            for (size_t i = 0; i < pushedPositions.size(); i++) {
-                if (!converged[i]) activeIndices.push_back(i);
-            }
-            if (activeIndices.empty()) break;
-            
-            size_t numActive = activeIndices.size();
-            size_t numRays = numActive * 6;
-            std::vector<Vector3> distRayOrigins(numRays);
-            std::vector<Vector3> distRayDirs(numRays);
-            std::vector<float>   distRayMaxDists(numRays, 512.0f);
-            
-            for (size_t a = 0; a < numActive; a++) {
-                const Vector3 &pos = pushedPositions[activeIndices[a]];
-                for (int d = 0; d < 6; d++) {
-                    size_t idx = a * 6 + d;
-                    distRayOrigins[idx] = pos + cardinalDirs[d] * solidOffset;
-                    distRayDirs[idx] = cardinalDirs[d];
-                }
-            }
-            
-            std::vector<float> hitDists(numRays, -1.0f);
-            if (numRays > 0 && HIPRTTrace::IsSceneReady()) {
-                HIPRTTrace::BatchTraceRay(static_cast<int>(numRays), distRayOrigins.data(),
-                                          distRayDirs.data(), distRayMaxDists.data(), hitDists.data());
-            }
-            
-            for (size_t a = 0; a < numActive; a++) {
-                size_t posIdx = activeIndices[a];
-                float minDist = FLT_MAX;
-                int minDir = -1;
-                
-                for (int d = 0; d < 6; d++) {
-                    float dist = hitDists[a * 6 + d];
-                    if (dist >= 0 && dist < minDist) {
-                        minDist = dist;
-                        minDir = d;
-                    }
-                }
-                
-                if (minDist >= FINAL_MIN_SURFACE_DISTANCE) {
-                    converged[posIdx] = true;
-                } else if (minDir >= 0) {
-                    float pushAmount = FINAL_MIN_SURFACE_DISTANCE - minDist + 8.0f;
-                    pushedPositions[posIdx] = pushedPositions[posIdx] + cardinalDirs[minDir] * (-pushAmount);
-                }
-            }
-        }
-        
-        // Phase 3: Batch second solid rejection + minimum spacing filter
-        {
-            size_t P = pushedPositions.size();
-            size_t totalRays2 = P * 6;
-            std::vector<Vector3> rayOrigins2(totalRays2);
-            std::vector<Vector3> rayDirs2(totalRays2);
-            std::vector<float>   rayMaxDists2(totalRays2);
-            
-            for (size_t i = 0; i < P; i++) {
-                for (int d = 0; d < 6; d++) {
-                    size_t idx = i * 6 + d;
-                    rayOrigins2[idx] = pushedPositions[i] + cardinalDirs[d] * solidOffset;
-                    rayDirs2[idx] = cardinalDirs[d];
-                    rayMaxDists2[idx] = 24.0f;
-                }
-            }
-            
-            std::vector<uint8_t> solidHits2(totalRays2, 0);
-            if (totalRays2 > 0 && HIPRTTrace::IsSceneReady()) {
-                HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays2), rayOrigins2.data(),
-                                                rayDirs2.data(), rayMaxDists2.data(), solidHits2.data());
-            }
-            
-            for (size_t i = 0; i < P; i++) {
-                size_t base = i * 6;
-                bool allHit = solidHits2[base] && solidHits2[base+1] && solidHits2[base+2] &&
-                              solidHits2[base+3] && solidHits2[base+4] && solidHits2[base+5];
-                if (allHit) continue;
-                
-                // Skip if too close to an existing probe
-                bool tooClose = false;
-                for (const Vector3 &existing : finalPositions) {
-                    Vector3 delta = pushedPositions[i] - existing;
-                    if (vector3_dot(delta, delta) < LIGHT_PROBE_MIN_SPACING * LIGHT_PROBE_MIN_SPACING) {
-                        tooClose = true;
-                        break;
-                    }
-                }
-                if (!tooClose) {
-                    finalPositions.push_back(pushedPositions[i]);
-                }
-            }
-        }
-    }
-    
-    {
-        auto now = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(now - step5Start).count();
-        Sys_FPrintf(SYS_VRB, "     %zu final positions after filtering (%.2fs)\n", finalPositions.size(), elapsed);
-    }
-    
-    // =========================================================================
-    // Step 6: Add probes at shadow/light transition boundaries
-    // Uses batch GPU dispatch for shadow boundary detection
-    // =========================================================================
-    Sys_FPrintf(SYS_VRB, "     Step 6: Detecting shadow boundaries (%zu probes)...\n", finalPositions.size());
-    auto step6Start = std::chrono::high_resolution_clock::now();
-    
-    std::vector<Vector3> shadowBoundaryProbes;
-    
-    {
-        // Generate 8 upward-angled rays per probe for shadow boundary detection
-        size_t N = finalPositions.size();
-        size_t totalRays = N * 8;
-        std::vector<Vector3> rayOrigins(totalRays);
-        std::vector<Vector3> rayDirs(totalRays);
-        std::vector<float>   rayMaxDists(totalRays);
-        
-        std::vector<Vector3> testDirs(8);
-        for (int d = 0; d < 8; d++) {
-            float angle = d * M_PI / 4.0f;
-            testDirs[d] = Vector3(std::cos(angle) * 0.5f, std::sin(angle) * 0.5f, 0.707f);
-        }
-        
-        for (size_t i = 0; i < N; i++) {
-            for (int d = 0; d < 8; d++) {
-                size_t idx = i * 8 + d;
-                rayOrigins[idx] = finalPositions[i] + testDirs[d] * 2.0f;
-                rayDirs[idx] = testDirs[d];
-                rayMaxDists[idx] = 8192.0f;
-            }
-        }
-        
-        // Batch dispatch
-        std::vector<uint8_t> hitResults(totalRays, 0);
-        if (totalRays > 0 && HIPRTTrace::IsSceneReady()) {
-            HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays), rayOrigins.data(),
-                                            rayDirs.data(), rayMaxDists.data(), hitResults.data());
-        }
-        
-        // Process results: find probes at shadow boundaries and add extra probes
-        const Vector3 cardinalDirs[6] = {
-            Vector3(1,0,0), Vector3(-1,0,0),
-            Vector3(0,1,0), Vector3(0,-1,0),
-            Vector3(0,0,1), Vector3(0,0,-1)
-        };
-        
-        // Collect candidate boundary probe positions
-        std::vector<Vector3> boundaryCandidates;
-        
-        for (size_t i = 0; i < N; i++) {
-            int sunlitCount = 0;
-            for (int d = 0; d < 8; d++) {
-                if (!hitResults[i * 8 + d]) sunlitCount++;
-            }
-            
-            if (sunlitCount > 0 && sunlitCount < 8) {
-                for (int dir = 0; dir < 4; dir++) {
-                    float angle = dir * M_PI / 2.0f;
-                    Vector3 offset(std::cos(angle) * 64.0f, std::sin(angle) * 64.0f, 0);
-                    Vector3 newPos = finalPositions[i] + offset;
-                    boundaryCandidates.push_back(newPos);
-                }
-            }
-        }
-        
-        if (!boundaryCandidates.empty()) {
-            // Batch solid rejection for boundary candidates
-            size_t BC = boundaryCandidates.size();
-            size_t bcTotalRays = BC * 6;
-            std::vector<Vector3> bcRayOrigins(bcTotalRays);
-            std::vector<Vector3> bcRayDirs(bcTotalRays);
-            std::vector<float>   bcRayMaxDists(bcTotalRays);
-            
-            for (size_t i = 0; i < BC; i++) {
-                for (int d = 0; d < 6; d++) {
-                    size_t idx = i * 6 + d;
-                    bcRayOrigins[idx] = boundaryCandidates[i] + cardinalDirs[d] * 2.0f;
-                    bcRayDirs[idx] = cardinalDirs[d];
-                    bcRayMaxDists[idx] = 24.0f;
-                }
-            }
-            
-            std::vector<uint8_t> bcHits(bcTotalRays, 0);
-            if (bcTotalRays > 0 && HIPRTTrace::IsSceneReady()) {
-                HIPRTTrace::BatchTestVisibility(static_cast<int>(bcTotalRays), bcRayOrigins.data(),
-                                                bcRayDirs.data(), bcRayMaxDists.data(), bcHits.data());
-            }
-            
-            for (size_t i = 0; i < BC; i++) {
-                size_t base = i * 6;
-                bool allHit = bcHits[base] && bcHits[base+1] && bcHits[base+2] &&
-                              bcHits[base+3] && bcHits[base+4] && bcHits[base+5];
-                if (allHit) continue;
-                
-                Vector3 &newPos = boundaryCandidates[i];
-                
-                bool tooClose = false;
-                for (const Vector3 &existing : finalPositions) {
-                    Vector3 delta = newPos - existing;
-                    if (vector3_dot(delta, delta) < 48.0f * 48.0f) {
-                        tooClose = true;
-                        break;
-                    }
-                }
-                if (!tooClose) {
-                    for (const Vector3 &existing : shadowBoundaryProbes) {
-                        Vector3 delta = newPos - existing;
-                        if (vector3_dot(delta, delta) < 48.0f * 48.0f) {
-                            tooClose = true;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!tooClose) {
-                    shadowBoundaryProbes.push_back(newPos);
-                }
-            }
-        }
-    }
-    
-    // Add shadow boundary probes to final list
-    for (const Vector3 &sbp : shadowBoundaryProbes) {
-        finalPositions.push_back(sbp);
-    }
-    
-    {
-        auto now = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(now - step6Start).count();
-        if (!shadowBoundaryProbes.empty()) {
-            Sys_FPrintf(SYS_VRB, "     Added %zu shadow boundary probes (%.2fs)\n", shadowBoundaryProbes.size(), elapsed);
-        } else {
-            Sys_FPrintf(SYS_VRB, "     No shadow boundary probes needed (%.2fs)\n", elapsed);
-        }
-    }
-    
-    // =========================================================================
-    // Step 7: Gap-filling - add probes on a regular grid across all floors
-    // The Voronoi approach is geometry-driven and misses open floor areas.
-    // This ensures every walkable floor area has probe coverage.
-    // =========================================================================
-    Sys_FPrintf(SYS_VRB, "     Gap-filling floor areas with grid...\n");
-    
-    constexpr float FLOOR_GRID_SPACING = 128.0f;  // Dense grid for good floor coverage
-    constexpr float PROBE_HEIGHT_ABOVE_FLOOR = 64.0f;  // Player height above floor
-    constexpr float MIN_PROBE_SPACING = 64.0f;  // Don't place if another probe is closer than this
-    
-    std::vector<Vector3> gapFillProbes;
-    
-    // Compute tighter bounds from actual mesh geometry (worldBounds might include skybox)
+    std::vector<Vector3> seeds;
+    seeds.reserve(65536);
+
+    // Tight bounds from non-sky geometry
     MinMax meshBounds;
     for (const Shared::Mesh_t &mesh : Shared::meshes) {
-        // Skip sky surfaces
         if (mesh.shaderInfo && (mesh.shaderInfo->compileFlags & C_SKY))
             continue;
         meshBounds.extend(mesh.minmax.mins);
         meshBounds.extend(mesh.minmax.maxs);
     }
-    
-    if (!meshBounds.valid()) {
-        meshBounds = worldBounds;
+    if (!meshBounds.valid()) meshBounds = worldBounds;
+
+    // Geometry surface samples: subsampled vertices + face centers, elevated
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        if (mesh.shaderInfo && (mesh.shaderInfo->compileFlags & C_SKY))
+            continue;
+
+        for (size_t v = 0; v < mesh.vertices.size(); v += 4) {
+            seeds.push_back(mesh.vertices[v].xyz + Vector3(0, 0, PROBE_ELEVATION));
+        }
+        for (size_t t = 0; t + 2 < mesh.triangles.size(); t += 3) {
+            Vector3 center = (mesh.vertices[mesh.triangles[t]].xyz +
+                              mesh.vertices[mesh.triangles[t+1]].xyz +
+                              mesh.vertices[mesh.triangles[t+2]].xyz) * (1.0f / 3.0f);
+            seeds.push_back(center + Vector3(0, 0, PROBE_ELEVATION));
+        }
     }
-    
-    Vector3 meshSize = meshBounds.maxs - meshBounds.mins;
-    Sys_FPrintf(SYS_VRB, "     Mesh bounds: (%.0f,%.0f,%.0f) to (%.0f,%.0f,%.0f)\n",
-               meshBounds.mins[0], meshBounds.mins[1], meshBounds.mins[2],
-               meshBounds.maxs[0], meshBounds.maxs[1], meshBounds.maxs[2]);
-    
-    // Use 2D grid based on mesh bounds (not world bounds which may be huge)
-    int gridX = std::max(1, (int)std::ceil(meshSize[0] / FLOOR_GRID_SPACING));
-    int gridY = std::max(1, (int)std::ceil(meshSize[1] / FLOOR_GRID_SPACING));
-    
-    gridX = std::min(gridX, 256);
-    gridY = std::min(gridY, 256);
-    
-    Sys_FPrintf(SYS_VRB, "     Floor grid: %d x %d (%d cells)\n", gridX, gridY, gridX * gridY);
-    
-    int floorsFound = 0;
-    int probesAdded = 0;
-    
-    for (int iy = 0; iy < gridY; iy++) {
-        for (int ix = 0; ix < gridX; ix++) {
-            float posX = meshBounds.mins[0] + (ix + 0.5f) * (meshSize[0] / gridX);
-            float posY = meshBounds.mins[1] + (iy + 0.5f) * (meshSize[1] / gridY);
-            
-            // Try multiple trace start heights to handle different scenarios
-            // Start from reasonable heights within the mesh bounds
-            float floorZ = meshBounds.mins[2];
-            bool foundFloor = false;
-            
-            // Try tracing from several heights (top of mesh, middle, etc.)
-            float traceHeights[] = {
-                meshBounds.maxs[2] - 8.0f,
-                meshBounds.mins[2] + meshSize[2] * 0.75f,
-                meshBounds.mins[2] + meshSize[2] * 0.5f,
-                meshBounds.mins[2] + meshSize[2] * 0.25f
-            };
-            
-            for (float startZ : traceHeights) {
-                if (foundFloor) break;
-                
-                Vector3 rayStart(posX, posY, startZ);
-                Vector3 rayDir(0, 0, -1);
-                float maxTrace = startZ - meshBounds.mins[2] + 16.0f;
-                
+
+    // Floor-traced grid probes (integrated into seeds, not bolted on later)
+    {
+        Vector3 meshSize = meshBounds.maxs - meshBounds.mins;
+        int gridX = std::clamp((int)std::ceil(meshSize[0] / FLOOR_GRID_SPACING), 1, 256);
+        int gridY = std::clamp((int)std::ceil(meshSize[1] / FLOOR_GRID_SPACING), 1, 256);
+
+        for (int iy = 0; iy < gridY; iy++) {
+            for (int ix = 0; ix < gridX; ix++) {
+                float posX = meshBounds.mins[0] + (ix + 0.5f) * (meshSize[0] / gridX);
+                float posY = meshBounds.mins[1] + (iy + 0.5f) * (meshSize[1] / gridY);
+
+                // Trace downward from top of mesh bounds to find floor
+                Vector3 rayStart(posX, posY, meshBounds.maxs[2] - 8.0f);
+                float maxTrace = meshSize[2] + 16.0f;
+
                 if (HIPRTTrace::IsSceneReady()) {
                     float hitDist;
                     Vector3 hitNormal;
-                    int meshIndex;
-                    if (HIPRTTrace::TraceRay(rayStart, rayDir, maxTrace, hitDist, hitNormal, meshIndex)) {
-                        // Accept any upward-facing surface as floor
+                    int meshIdx;
+                    if (HIPRTTrace::TraceRay(rayStart, Vector3(0,0,-1), maxTrace,
+                                             hitDist, hitNormal, meshIdx)) {
                         if (hitNormal[2] > 0.1f) {
-                            floorZ = rayStart[2] - hitDist;
-                            foundFloor = true;
+                            float floorZ = rayStart[2] - hitDist;
+                            seeds.push_back(Vector3(posX, posY, floorZ + FLOOR_PROBE_HEIGHT));
                         }
                     }
-                } else {
-                    // Fallback without HIPRT
-                    if (TraceRayAgainstMeshes(rayStart, rayDir, maxTrace)) {
-                        floorZ = meshBounds.mins[2] + 16.0f;
-                        foundFloor = true;
-                    }
+                } else if (TraceRayAgainstMeshes(rayStart, Vector3(0,0,-1), maxTrace)) {
+                    seeds.push_back(Vector3(posX, posY, meshBounds.mins[2] + FLOOR_PROBE_HEIGHT));
                 }
-            }
-            
-            if (foundFloor) floorsFound++;
-            
-            if (!foundFloor) continue;
-            
-            Vector3 probePos(posX, posY, floorZ + PROBE_HEIGHT_ABOVE_FLOOR);
-            
-            // Quick solid check - very relaxed
-            if (IsPositionInsideSolid(probePos, 4.0f)) {
-                continue;
-            }
-            
-            // Only skip if VERY close to an existing probe (avoid duplicates)
-            bool tooClose = false;
-            for (const Vector3 &existing : finalPositions) {
-                Vector3 delta = probePos - existing;
-                if (vector3_dot(delta, delta) < MIN_PROBE_SPACING * MIN_PROBE_SPACING) {
-                    tooClose = true;
-                    break;
-                }
-            }
-            if (!tooClose) {
-                for (const Vector3 &existing : gapFillProbes) {
-                    Vector3 delta = probePos - existing;
-                    if (vector3_dot(delta, delta) < MIN_PROBE_SPACING * MIN_PROBE_SPACING) {
-                        tooClose = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!tooClose) {
-                gapFillProbes.push_back(probePos);
-                probesAdded++;
             }
         }
     }
-    
-    Sys_FPrintf(SYS_VRB, "     Found %d floor cells, added %d gap-fill probes\n", floorsFound, probesAdded);
-    
-    // Add gap-fill probes
-    for (const Vector3 &gfp : gapFillProbes) {
-        finalPositions.push_back(gfp);
+
+    Sys_FPrintf(SYS_VRB, "     Collected %zu seed points\n", seeds.size());
+
+    if (seeds.empty()) {
+        probePositions.push_back((worldBounds.mins + worldBounds.maxs) * 0.5f);
+        Sys_Printf("     No seeds found, using world center\n");
+        return;
     }
-    
-    if (!gapFillProbes.empty()) {
-        Sys_FPrintf(SYS_VRB, "     Added %zu gap-fill probes in empty areas\n", gapFillProbes.size());
+
+    // =========================================================================
+    // Step 2: Batch solid rejection of all seeds
+    // =========================================================================
+    std::vector<Vector3> validSeeds;
+    {
+        size_t N = seeds.size();
+        size_t totalRays = N * 6;
+        std::vector<Vector3> rayOrigins(totalRays);
+        std::vector<Vector3> rayDirs(totalRays);
+        std::vector<float>   rayMaxDists(totalRays, SOLID_TEST_DIST);
+
+        for (size_t i = 0; i < N; i++) {
+            for (int d = 0; d < 6; d++) {
+                size_t idx = i * 6 + d;
+                rayOrigins[idx] = seeds[i] + cardinalDirs[d] * 2.0f;
+                rayDirs[idx] = cardinalDirs[d];
+            }
+        }
+
+        std::vector<uint8_t> hits(totalRays, 0);
+        if (totalRays > 0 && HIPRTTrace::IsSceneReady()) {
+            HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays),
+                rayOrigins.data(), rayDirs.data(), rayMaxDists.data(), hits.data());
+        }
+
+        validSeeds.reserve(N);
+        for (size_t i = 0; i < N; i++) {
+            size_t base = i * 6;
+            bool allHit = hits[base] && hits[base+1] && hits[base+2] &&
+                          hits[base+3] && hits[base+4] && hits[base+5];
+            if (!allHit) validSeeds.push_back(seeds[i]);
+        }
     }
-    
+    seeds.clear();
+
+    Sys_FPrintf(SYS_VRB, "     %zu seeds passed solid rejection\n", validSeeds.size());
+
+    if (validSeeds.empty()) {
+        probePositions.push_back((worldBounds.mins + worldBounds.maxs) * 0.5f);
+        return;
+    }
+
+    // =========================================================================
+    // Step 3: 3D Voronoi spatial binning
+    // Partition world into cubic cells of GRID_SPACING size. Each seed is
+    // assigned to its enclosing cell (nearest Voronoi site on a regular lattice).
+    // Each occupied cell produces one probe at the centroid of its seeds.
+    // This is O(N) — no iterative clustering needed.
+    // =========================================================================
+    const float cellSize = (float)LIGHT_PROBE_GRID_SPACING;
+
+    struct CellAccum {
+        Vector3 sum;
+        int count;
+    };
+    std::unordered_map<uint64_t, CellAccum> cellMap;
+    cellMap.reserve(validSeeds.size() / 2);
+
+    // Hash function: pack (ix, iy, iz) into uint64_t
+    // Using signed grid coords with offset to handle negative positions
+    auto cellKey = [&](int ix, int iy, int iz) -> uint64_t {
+        uint64_t ux = (uint64_t)(uint32_t)(ix + 32768);
+        uint64_t uy = (uint64_t)(uint32_t)(iy + 32768);
+        uint64_t uz = (uint64_t)(uint32_t)(iz + 32768);
+        return (ux << 40) | (uy << 20) | uz;
+    };
+
+    for (const Vector3 &seed : validSeeds) {
+        int ix = (int)std::floor(seed[0] / cellSize);
+        int iy = (int)std::floor(seed[1] / cellSize);
+        int iz = (int)std::floor(seed[2] / cellSize);
+        uint64_t key = cellKey(ix, iy, iz);
+
+        auto it = cellMap.find(key);
+        if (it != cellMap.end()) {
+            it->second.sum = it->second.sum + seed;
+            it->second.count++;
+        } else {
+            cellMap[key] = { seed, 1 };
+        }
+    }
+    validSeeds.clear();
+
+    // Extract centroids from occupied cells
+    std::vector<Vector3> centroids;
+    centroids.reserve(cellMap.size());
+    for (auto &[key, cell] : cellMap) {
+        centroids.push_back(cell.sum * (1.0f / cell.count));
+    }
+    cellMap.clear();
+
+    Sys_FPrintf(SYS_VRB, "     Voronoi binning: %zu cells occupied (cell size %.0f)\n",
+               centroids.size(), cellSize);
+
+    // =========================================================================
+    // Step 4: Validate centroids — solid rejection + surface push + min spacing
+    // =========================================================================
+    Sys_FPrintf(SYS_VRB, "     Validating %zu centroids...\n", centroids.size());
+
+    // Batch solid rejection
+    std::vector<Vector3> validCentroids;
+    {
+        size_t M = centroids.size();
+        size_t totalRays = M * 6;
+        std::vector<Vector3> rayOrigins(totalRays);
+        std::vector<Vector3> rayDirs(totalRays);
+        std::vector<float>   rayMaxDists(totalRays, SOLID_TEST_DIST);
+
+        for (size_t i = 0; i < M; i++) {
+            for (int d = 0; d < 6; d++) {
+                size_t idx = i * 6 + d;
+                rayOrigins[idx] = centroids[i] + cardinalDirs[d] * 2.0f;
+                rayDirs[idx] = cardinalDirs[d];
+            }
+        }
+
+        std::vector<uint8_t> hits(totalRays, 0);
+        if (totalRays > 0 && HIPRTTrace::IsSceneReady()) {
+            HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays),
+                rayOrigins.data(), rayDirs.data(), rayMaxDists.data(), hits.data());
+        }
+
+        validCentroids.reserve(M);
+        for (size_t i = 0; i < M; i++) {
+            size_t base = i * 6;
+            bool allHit = hits[base] && hits[base+1] && hits[base+2] &&
+                          hits[base+3] && hits[base+4] && hits[base+5];
+            if (!allHit) validCentroids.push_back(centroids[i]);
+        }
+    }
+    centroids.clear();
+
+    Sys_FPrintf(SYS_VRB, "     %zu passed solid rejection\n", validCentroids.size());
+
+    // Batch push away from surfaces (iterative closest-hit)
+    {
+        std::vector<bool> converged(validCentroids.size(), false);
+
+        for (int iter = 0; iter < 4; iter++) {
+            std::vector<size_t> active;
+            for (size_t i = 0; i < validCentroids.size(); i++) {
+                if (!converged[i]) active.push_back(i);
+            }
+            if (active.empty()) break;
+
+            size_t nRays = active.size() * 6;
+            std::vector<Vector3> rayOrigins(nRays);
+            std::vector<Vector3> rayDirs(nRays);
+            std::vector<float>   rayMaxDists(nRays, 512.0f);
+
+            for (size_t a = 0; a < active.size(); a++) {
+                for (int d = 0; d < 6; d++) {
+                    size_t idx = a * 6 + d;
+                    rayOrigins[idx] = validCentroids[active[a]] + cardinalDirs[d] * 2.0f;
+                    rayDirs[idx] = cardinalDirs[d];
+                }
+            }
+
+            std::vector<float> hitDists(nRays, -1.0f);
+            if (nRays > 0 && HIPRTTrace::IsSceneReady()) {
+                HIPRTTrace::BatchTraceRay(static_cast<int>(nRays),
+                    rayOrigins.data(), rayDirs.data(), rayMaxDists.data(), hitDists.data());
+            }
+
+            for (size_t a = 0; a < active.size(); a++) {
+                size_t posIdx = active[a];
+                float nearest = FLT_MAX;
+                int nearDir = -1;
+                for (int d = 0; d < 6; d++) {
+                    float dist = hitDists[a * 6 + d];
+                    if (dist >= 0 && dist < nearest) { nearest = dist; nearDir = d; }
+                }
+                if (nearest >= MIN_SURFACE_DIST) {
+                    converged[posIdx] = true;
+                } else if (nearDir >= 0) {
+                    float push = MIN_SURFACE_DIST - nearest + 8.0f;
+                    validCentroids[posIdx] = validCentroids[posIdx] + cardinalDirs[nearDir] * (-push);
+                }
+            }
+        }
+    }
+
+    // Final solid re-check + minimum spacing filter
+    std::vector<Vector3> finalPositions;
+    {
+        size_t P = validCentroids.size();
+        size_t totalRays = P * 6;
+        std::vector<Vector3> rayOrigins(totalRays);
+        std::vector<Vector3> rayDirs(totalRays);
+        std::vector<float>   rayMaxDists(totalRays, 24.0f);
+
+        for (size_t i = 0; i < P; i++) {
+            for (int d = 0; d < 6; d++) {
+                size_t idx = i * 6 + d;
+                rayOrigins[idx] = validCentroids[i] + cardinalDirs[d] * 2.0f;
+                rayDirs[idx] = cardinalDirs[d];
+            }
+        }
+
+        std::vector<uint8_t> hits(totalRays, 0);
+        if (totalRays > 0 && HIPRTTrace::IsSceneReady()) {
+            HIPRTTrace::BatchTestVisibility(static_cast<int>(totalRays),
+                rayOrigins.data(), rayDirs.data(), rayMaxDists.data(), hits.data());
+        }
+
+        finalPositions.reserve(P);
+        const float minSpacingSq = (float)(LIGHT_PROBE_MIN_SPACING * LIGHT_PROBE_MIN_SPACING);
+
+        for (size_t i = 0; i < P; i++) {
+            size_t base = i * 6;
+            bool allHit = hits[base] && hits[base+1] && hits[base+2] &&
+                          hits[base+3] && hits[base+4] && hits[base+5];
+            if (allHit) continue;
+
+            bool tooClose = false;
+            for (const Vector3 &existing : finalPositions) {
+                Vector3 delta = validCentroids[i] - existing;
+                if (vector3_dot(delta, delta) < minSpacingSq) { tooClose = true; break; }
+            }
+            if (!tooClose) finalPositions.push_back(validCentroids[i]);
+        }
+    }
+
+    auto elapsed = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - startTime).count();
     probePositions = std::move(finalPositions);
-    Sys_Printf("     Generated %zu Voronoi-based probe positions\n", probePositions.size());
+    Sys_Printf("     Generated %zu Voronoi probe positions (%.2fs)\n",
+               probePositions.size(), elapsed);
 }
 
 /*

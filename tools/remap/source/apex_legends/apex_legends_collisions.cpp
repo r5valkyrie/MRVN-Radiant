@@ -1271,6 +1271,9 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
         surfaceName = "TOOLS\\TOOLSTRIGGER_NO_ZIPLINE";
     } else if (striEqualPrefix(cls, "trigger_slip")) {
         surfaceName = "TOOLS\\TOOLSTRIGGER_SLIP";
+    } else if (striEqual(cls, "envmap_volume")) {
+        surfaceName = "TOOLS\\TOOLSENVMAPVOLUME";
+        contentsMask = 0x10E31240;
     }
 
     /* ---- collect per-brush convex hull geometry ---- */
@@ -1541,7 +1544,7 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
 
     /* ---- surface property and name buffers ---- */
     ApexLegends::CollSurfProps_t surfProp{};
-    surfProp.surfFlags   = 0x0400;
+    surfProp.surfFlags   = striEqual(cls, "envmap_volume") ? 0x0610 : 0x0400;
     surfProp.surfTypeID  = 0;
     surfProp.contentsIdx = 0;
     surfProp.nameOffset  = 0;
@@ -1715,4 +1718,15 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
     snprintf(originBuf, sizeof(originBuf), "%.1f %.1f %.1f",
              entityOrigin.x(), entityOrigin.y(), entityOrigin.z());
     entity.setKeyValue("origin", originBuf);
+
+    /* set mins/maxs keys (local-space bounds relative to origin) */
+    char minsBuf[128], maxsBuf[128];
+    Vector3 localMins = entityBounds.mins - entityOrigin;
+    Vector3 localMaxs = entityBounds.maxs - entityOrigin;
+    snprintf(minsBuf, sizeof(minsBuf), "%f %f %f",
+             localMins.x(), localMins.y(), localMins.z());
+    snprintf(maxsBuf, sizeof(maxsBuf), "%f %f %f",
+             localMaxs.x(), localMaxs.y(), localMaxs.z());
+    entity.setKeyValue("mins", minsBuf);
+    entity.setKeyValue("maxs", maxsBuf);
 }
