@@ -430,6 +430,7 @@ void Entity_Construct( EGameType gameType ){
 
 	RenderablePivot::StaticShader::instance() = GlobalShaderCache().capture( "$PIVOT" );
 	RenderableNamedEntity::StaticShader::instance() = GlobalShaderCache().capture( "$TEXT" );
+	RenderableConnectionLines::setShader( GlobalShaderCache().capture( "$ZIPLINE_DEBUG" ) );
 
 	GlobalShaderCache().attachRenderable( StaticRenderableConnectionLines::instance() );
 }
@@ -437,6 +438,7 @@ void Entity_Construct( EGameType gameType ){
 void Entity_Destroy(){
 	GlobalShaderCache().detachRenderable( StaticRenderableConnectionLines::instance() );
 
+	GlobalShaderCache().release( "$ZIPLINE_DEBUG" );
 	GlobalShaderCache().release( "$PIVOT" );
 	GlobalShaderCache().release( "$TEXT" );
 

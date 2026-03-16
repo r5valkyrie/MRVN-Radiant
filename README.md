@@ -20,9 +20,9 @@ MRVN-Radiant is a fork of NetRadiant-custom (GtkRadiant 1.4 &rarr; massive rewri
 |------|----------|------|
 | Titanfall Online | 38% | No triangle collision, no lighting, no portals |
 | Titanfall 2 | 37% | No triangle collision, no lighting, no portals |
-| Apex Legends | 62% | No realtime lights, no portals, no water, no heightfields |
+| Apex Legends | 85% | Cubemaps needs finished, no RTL lightmaps, no occlusion meshes, unused vertex types (blinn phong, reserved 5/6/7) |
 
-> Coverage = Lumps with generated data / Total lump count (128). Stub/empty lumps not counted.
+> Coverage = Lumps with generated data / Total valid engine lumps (67). Dead lumps excluded.
 
 > NOTE: These values are updated manually.
 

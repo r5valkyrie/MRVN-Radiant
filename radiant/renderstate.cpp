@@ -1836,6 +1836,12 @@ void OpenGLShader::construct( const char* name ){
 			hiddenLine.m_linewidth = 2;
 			hiddenLine.m_depthfunc = GL_GREATER;
 		}
+		else if ( string_equal( name + 1, "ZIPLINE_DEBUG" ) ) {
+			state.m_state = RENDER_COLOURARRAY | RENDER_COLOURWRITE | RENDER_DEPTHTEST | RENDER_DEPTHWRITE;
+			state.m_sort = OpenGLState::eSortGUI1;
+			state.m_linewidth = 2;
+			state.m_depthfunc = GL_LEQUAL;
+		}
 		else if ( string_equal( name + 1, "BLENDLINE" ) ) {
 			state.m_state = RENDER_COLOURARRAY | RENDER_COLOURWRITE | RENDER_BLEND;
 			state.m_sort = OpenGLState::eSortGUI0 - 1;
