@@ -422,6 +422,21 @@ void InitPaths( Args& args ){
 		vfsInitDirectory( pakPath.c_str() );
 	}
 
+	/* add gamepack shaders path (relative to executable) */
+	/* remap.exe is in install/, gamepacks are in install/gamepacks/<Game>.game/<gamePath>/ */
+	{
+		const auto exeDirRange = PathFilenameless( args.getArg0() );
+		for ( const auto& gamePath : gamePaths )
+		{
+			if ( !exeDirRange.empty() ) {
+				stream( PathCleaned( exeDirRange ), "gamepacks/", g_game->arg, ".game/", gamePath );
+			} else {
+				stream( "gamepacks/", g_game->arg, ".game/", gamePath );
+			}
+			vfsInitDirectory( stream );
+		}
+	}
+
 	/* done */
 	Sys_Printf( "\n" );
 }

@@ -134,6 +134,8 @@ void QE_InitVFS(){
 	paths_push( str( userRoot, basegame, '/' ) ); // userBasePath
 	// <fs_basepath>/<fs_main>
 	paths_push( str( globalRoot, basegame, '/' ) ); // globalBasePath
+	// <GameToolsPath>/<basegame> (gamepack fallback for bundled shaders/textures)
+	paths_push( str( GameToolsPath_get(), basegame, '/' ) );
 
 	for( const auto& path : paths )
 		GlobalFileSystem().initDirectory( path.c_str() );
@@ -196,6 +198,12 @@ void bsp_init(){
 	for( const auto& path : ExtraResourcePaths_get() )
 		if( !path.empty() )
 			stream << " -fs_pakpath " << makeQuoted( path );
+	// include gamepack path so remap can find bundled shaders
+	{
+		const auto gamepackPath = StringStream( GameToolsPath_get(), basegame_get(), '/' );
+		if( !string_empty( gamepackPath.c_str() ) )
+			stream << " -fs_pakpath " << makeQuoted( gamepackPath );
+	}
 	build_set_variable( "ExtraResourcePaths", stream );
 	build_set_variable( "MonitorAddress", ( g_WatchBSP_Enabled ) ? RADIANT_MONITOR_ADDRESS : "" );
 	build_set_variable( "GameName", gamename_get() );

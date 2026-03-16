@@ -533,8 +533,8 @@ void Titanfall::EmitStubs() {
             // Plane3f(a,b,c,d) where (a,b,c) is normal, d is dist
             Vector3 inNormal = -face.plane.normal();
             float inDist = (float)(-face.plane.dist());
-            Sys_FPrintf( SYS_VRB, "  Portal %d: %d verts, plane (%.2f %.2f %.2f) d=%.2f\n",
-                (int)pi, (int)nv, inNormal.x(), inNormal.y(), inNormal.z(), inDist );
+            //Sys_FPrintf( SYS_VRB, "  Portal %d: %d verts, plane (%.2f %.2f %.2f) d=%.2f\n",
+            //    (int)pi, (int)nv, inNormal.x(), inNormal.y(), inNormal.z(), inDist );
             Titanfall::Bsp::planes.emplace_back(Plane3f(
                 (float)inNormal.x(), (float)inNormal.y(), (float)inNormal.z(), inDist));
 
@@ -554,7 +554,7 @@ void Titanfall::EmitStubs() {
             for (uint16_t vi = 0; vi < nv; vi++) {
                 const Vector3& v = face.verts[vi];
                 writeVec3(pverts, (float)v.x(), (float)v.y(), (float)v.z());
-                Sys_FPrintf( SYS_VRB, "    vert[%d]: (%.1f %.1f %.1f)\n", (int)vi, v.x(), v.y(), v.z() );
+                //Sys_FPrintf( SYS_VRB, "    vert[%d]: (%.1f %.1f %.1f)\n", (int)vi, v.x(), v.y(), v.z() );
             }
 
             // Emit edges: consecutive vertex pairs in original face winding order

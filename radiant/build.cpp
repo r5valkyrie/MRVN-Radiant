@@ -258,8 +258,9 @@ public:
 	void flush(){
 		if ( !m_buffer.empty() ) {
 			m_tool.push_back( new VariableString( m_buffer.c_str() ) );
-			// q3map2 ExtraResourcePaths hack
-			if( strstr( m_buffer.c_str(), "[RadiantPath]q3map2.[ExecutableType]" ) != nullptr // is q3map2
+			// ExtraResourcePaths hack for q3map2 and remap
+			if( ( strstr( m_buffer.c_str(), "[RadiantPath]q3map2.[ExecutableType]" ) != nullptr
+			  || strstr( m_buffer.c_str(), "[RadiantPath]remap[ExecutableType]" ) != nullptr )
 			 && strstr( m_buffer.c_str(), "[ExtraResourcePaths]" ) == nullptr ){ // has no extra path right away (could have been added by this before)
 				m_tool.push_back( new VariableString( "[ExtraResourcePaths]" ) );
 			}

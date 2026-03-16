@@ -691,8 +691,14 @@ public:
 				};
 
 				constructDirectory( baseDirectory, "fgd" );
+				{
+					const auto baseEntitiesDirectory = StringStream( baseDirectory, "entities/" );
+					constructDirectory( baseEntitiesDirectory, "fgd" );
+				}
 				if ( !string_equal( baseDirectory, gameDirectory ) ) {
 					constructDirectory( gameDirectory, "fgd" );
+					const auto gameEntitiesDirectory = StringStream( gameDirectory, "entities/" );
+					constructDirectory( gameEntitiesDirectory, "fgd" );
 				}
 
 				for( const auto& [ name, path ] : name_path ){

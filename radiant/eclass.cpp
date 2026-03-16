@@ -196,20 +196,26 @@ void EntityClassQuake3_constructDirectory( const char* directory, const char* ex
 void EntityClassQuake3_Construct(){
 	const auto baseDirectory = StringStream( GlobalRadiant().getGameToolsPath(), GlobalRadiant().getRequiredGameDescriptionKeyValue( "basegame" ), '/' );
 	const auto gameDirectory = StringStream( GlobalRadiant().getGameToolsPath(), GlobalRadiant().getGameName(), '/' );
+	const auto baseEntitiesDirectory = StringStream( baseDirectory, "entities/" );
+	const auto gameEntitiesDirectory = StringStream( gameDirectory, "entities/" );
 
 	class LoadEntityDefinitionsVisitor : public EClassModules::Visitor
 	{
 		const char* baseDirectory;
 		const char* gameDirectory;
+		const char* baseEntitiesDirectory;
+		const char* gameEntitiesDirectory;
 	public:
-		LoadEntityDefinitionsVisitor( const char* baseDirectory, const char* gameDirectory )
-			: baseDirectory( baseDirectory ), gameDirectory( gameDirectory ){
+		LoadEntityDefinitionsVisitor( const char* baseDirectory, const char* gameDirectory, const char* baseEntitiesDirectory, const char* gameEntitiesDirectory )
+			: baseDirectory( baseDirectory ), gameDirectory( gameDirectory ), baseEntitiesDirectory( baseEntitiesDirectory ), gameEntitiesDirectory( gameEntitiesDirectory ){
 		}
 		void visit( const char* name, const EntityClassScanner& table ) const {
 			Paths paths;
 			EntityClassQuake3_constructDirectory( baseDirectory, table.getExtension(), paths );
+			EntityClassQuake3_constructDirectory( baseEntitiesDirectory, table.getExtension(), paths );
 			if ( !string_equal( baseDirectory, gameDirectory ) ) {
 				EntityClassQuake3_constructDirectory( gameDirectory, table.getExtension(), paths );
+				EntityClassQuake3_constructDirectory( gameEntitiesDirectory, table.getExtension(), paths );
 			}
 
 			for ( Paths::iterator i = paths.begin(); i != paths.end(); ++i )
@@ -219,7 +225,7 @@ void EntityClassQuake3_Construct(){
 		}
 	};
 
-	EntityClassManager_getEClassModules().foreachModule( LoadEntityDefinitionsVisitor( baseDirectory, gameDirectory ) );
+	EntityClassManager_getEClassModules().foreachModule( LoadEntityDefinitionsVisitor( baseDirectory, gameDirectory, baseEntitiesDirectory, gameEntitiesDirectory ) );
 }
 
 EntityClass *Eclass_ForName( const char *name, bool has_brushes ){
