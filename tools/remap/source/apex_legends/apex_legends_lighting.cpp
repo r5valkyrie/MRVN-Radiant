@@ -35,6 +35,7 @@
 
 #include "../remap.h"
 #include "../bspfile_abstract.h"
+#include "miniz.h"
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
@@ -60,58 +61,138 @@ void ApexLegends::EmitCubemaps() {
     ApexLegends::Bsp::cubemaps.clear();
     ApexLegends::Bsp::cubemapsAmbientRcp.clear();
     
-    // Collect env_cubemap entities
-    std::vector<Vector3> cubemapPositions;
+    // Lump 0x2A stores cubemap samples — one per VTF frame in the
+    // pakfile cubemap atlas.  Multiple envmap_volume entities can
+    // share the same cubemapID index into this table.
+    // The default VTF has 25 frames, so we emit 25 samples.
+    constexpr int VTF_FRAME_COUNT = 25;
     
-    for (const entity_t &entity : entities) {
-        const char *classname = entity.classname();
-        if (striEqual(classname, "env_cubemap")) {
-            Vector3 origin;
-            if (entity.read_keyvalue(origin, "origin")) {
-                cubemapPositions.push_back(origin);
-            }
-        }
+    // Calculate world center for sample positions
+    MinMax worldBounds;
+    for (const Shared::Mesh_t &mesh : Shared::meshes) {
+        worldBounds.extend(mesh.minmax.mins);
+        worldBounds.extend(mesh.minmax.maxs);
     }
+    Vector3 center = worldBounds.valid()
+        ? (worldBounds.mins + worldBounds.maxs) * 0.5f
+        : Vector3(0, 0, 0);
     
-    // If no cubemaps, generate default positions based on world bounds
-    if (cubemapPositions.empty()) {
-        // Calculate world bounds
-        MinMax worldBounds;
-        for (const Shared::Mesh_t &mesh : Shared::meshes) {
-            worldBounds.extend(mesh.minmax.mins);
-            worldBounds.extend(mesh.minmax.maxs);
-        }
-        
-        if (worldBounds.valid()) {
-            // Place a single cubemap at world center
-            Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
-            cubemapPositions.push_back(center);
-            Sys_Printf("     No env_cubemap entities, using world center\n");
-        } else {
-            // Fallback if no geometry
-            cubemapPositions.push_back(Vector3(0, 0, 0));
-            Sys_Printf("     No geometry, using origin\n");
-        }
-    } else {
-        Sys_Printf("     Found %zu env_cubemap entities\n", cubemapPositions.size());
-    }
-    
-    // Emit cubemap samples
-    for (const Vector3 &pos : cubemapPositions) {
+    for (int i = 0; i < VTF_FRAME_COUNT; i++) {
         CubemapSample_t sample;
-        // Engine reads origin as int32[3] and converts to float
-        sample.origin[0] = static_cast<int32_t>(pos[0]);
-        sample.origin[1] = static_cast<int32_t>(pos[1]);
-        sample.origin[2] = static_cast<int32_t>(pos[2]);
-        sample.guid = 0;  // No pre-baked texture, runtime capture required
+        sample.origin[0] = static_cast<int32_t>(center[0]);
+        sample.origin[1] = static_cast<int32_t>(center[1]);
+        sample.origin[2] = static_cast<int32_t>(center[2]);
+        sample.guid = 0;
         ApexLegends::Bsp::cubemaps.push_back(sample);
-        
-        // Ambient RCP: reciprocal of ambient contribution
-        // Default to 1.0 (full ambient)
         ApexLegends::Bsp::cubemapsAmbientRcp.push_back(1.0f);
     }
 
     Sys_Printf("     %9zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
+}
+
+/*
+    EmitPakFile
+    Builds the pakfile lump (0x28) as an in-memory zip archive
+    containing the default cubemap VTF at materials/maps/<mapname>/cubemaps.hdr.vtf
+    
+    The engine expects lump 0x28 to be a zip containing the cubemap texture
+    used by the cubemap samples in lump 0x2A.
+*/
+void ApexLegends::EmitPakFile() {
+    Sys_FPrintf(SYS_VRB, "--- EmitPakFile ---\n");
+    
+    ApexLegends::Bsp::pakfile.clear();
+    
+    // Load the default cubemap VTF from the gamepack
+    MemBuffer vtfData = vfsLoadFile("textures/default_cubemap.hdr.vtf");
+    if (!vtfData) {
+        Sys_Warning("Could not load textures/default_cubemap.hdr.vtf, pakfile lump will be empty\n");
+        return;
+    }
+    
+    // Build the zip entry path: materials/maps/<mapname>/cubemaps.hdr.vtf
+    const auto mapName = StringStream<256>(PathFilename(source));
+    const auto entryPath = StringStream<512>("materials/maps/", mapName.c_str(), "/cubemaps.hdr.vtf");
+    
+    Sys_Printf("     Packing %s (%zu bytes)\n", entryPath.c_str(), vtfData.size());
+    
+    const uint8_t *fileData = static_cast<const uint8_t *>(vtfData.data());
+    const uint32_t fileSize = static_cast<uint32_t>(vtfData.size());
+    const uint16_t fnLen    = static_cast<uint16_t>(strlen(entryPath.c_str()));
+    
+    // CRC32 (use miniz's crc32)
+    uint32_t crc = mz_crc32(MZ_CRC32_INIT, fileData, fileSize);
+    
+    // Helper lambdas
+    auto wr16 = [](std::vector<uint8_t> &v, uint16_t x) {
+        v.push_back(static_cast<uint8_t>(x));
+        v.push_back(static_cast<uint8_t>(x >> 8));
+    };
+    auto wr32 = [](std::vector<uint8_t> &v, uint32_t x) {
+        v.push_back(static_cast<uint8_t>(x));
+        v.push_back(static_cast<uint8_t>(x >> 8));
+        v.push_back(static_cast<uint8_t>(x >> 16));
+        v.push_back(static_cast<uint8_t>(x >> 24));
+    };
+    auto wrBytes = [](std::vector<uint8_t> &v, const void *p, size_t n) {
+        const uint8_t *b = static_cast<const uint8_t *>(p);
+        v.insert(v.end(), b, b + n);
+    };
+    
+    std::vector<uint8_t> &pak = ApexLegends::Bsp::pakfile;
+    
+    // ---- Local file header ----
+    const uint32_t localHeaderOfs = 0;
+    wr32(pak, 0x04034B50);      // PK\x03\x04
+    wr16(pak, 0x000A);          // version needed (1.0)
+    wr16(pak, 0x0000);          // flags (none)
+    wr16(pak, 0x0000);          // compression: stored
+    wr16(pak, 0x0000);          // mod time
+    wr16(pak, 0x0000);          // mod date
+    wr32(pak, crc);             // CRC-32
+    wr32(pak, fileSize);        // compressed size
+    wr32(pak, fileSize);        // uncompressed size
+    wr16(pak, fnLen);           // filename length
+    wr16(pak, 0);               // extra field length
+    wrBytes(pak, entryPath.c_str(), fnLen);
+    
+    // ---- File data ----
+    wrBytes(pak, fileData, fileSize);
+    
+    // ---- Central directory header ----
+    const uint32_t cdOfs = static_cast<uint32_t>(pak.size());
+    wr32(pak, 0x02014B50);      // PK\x01\x02
+    wr16(pak, 0x000A);          // version made by
+    wr16(pak, 0x000A);          // version needed
+    wr16(pak, 0x0000);          // flags
+    wr16(pak, 0x0000);          // compression: stored
+    wr16(pak, 0x0000);          // mod time
+    wr16(pak, 0x0000);          // mod date
+    wr32(pak, crc);             // CRC-32
+    wr32(pak, fileSize);        // compressed size
+    wr32(pak, fileSize);        // uncompressed size
+    wr16(pak, fnLen);           // filename length
+    wr16(pak, 0);               // extra field length
+    wr16(pak, 0);               // comment length
+    wr16(pak, 0);               // disk number start
+    wr16(pak, 0);               // internal attributes
+    wr32(pak, 0);               // external attributes
+    wr32(pak, localHeaderOfs);  // local header offset
+    wrBytes(pak, entryPath.c_str(), fnLen);
+    
+    const uint32_t cdSize = static_cast<uint32_t>(pak.size()) - cdOfs;
+    
+    // ---- End of central directory ----
+    wr32(pak, 0x06054B50);      // PK\x05\x06
+    wr16(pak, 0);               // disk number
+    wr16(pak, 0);               // disk with CD
+    wr16(pak, 1);               // entries on this disk
+    wr16(pak, 1);               // total entries
+    wr32(pak, cdSize);          // central directory size
+    wr32(pak, cdOfs);           // central directory offset
+    wr16(pak, 0);               // comment length
+    
+    Sys_Printf("     %9zu bytes pakfile\n", pak.size());
 }
 
 /*

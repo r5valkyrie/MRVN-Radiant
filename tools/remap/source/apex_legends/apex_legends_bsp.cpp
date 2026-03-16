@@ -172,8 +172,9 @@ void WriteR5BSPFile(const char *filename) {
     AddLump(file, header.lumps[R5_LUMP_CELL_AABB_NUM_OBJ_REFS_TOTAL], ApexLegends::Bsp::cellAABBNumObjRefsTotal);
     AddLump(file, header.lumps[R5_LUMP_CSM_AABB_NUM_OBJ_REFS_TOTAL],  ApexLegends::Bsp::csmNumObjRefsTotalForAabb);
     AddLump(file, header.lumps[R5_LUMP_CELL_AABB_FADEDISTS],         ApexLegends::Bsp::cellAABBFadeDists);
+    //AddLump(file, header.lumps[R5_LUMP_PAKFILE],                 ApexLegends::Bsp::pakfile);
     AddLump(file, header.lumps[R5_LUMP_CUBEMAPS],                ApexLegends::Bsp::cubemaps);
-    AddLump(file, header.lumps[R5_LUMP_CUBEMAPS_AMBIENT_RCP],    ApexLegends::Bsp::cubemapsAmbientRcp);
+    //AddLump(file, header.lumps[R5_LUMP_CUBEMAPS_AMBIENT_RCP],    ApexLegends::Bsp::cubemapsAmbientRcp);
     AddLump(file, header.lumps[R5_LUMP_WORLD_LIGHTS],            ApexLegends::Bsp::worldLights);
     AddLump(file, header.lumps[R5_LUMP_VERTEX_UNLIT],            ApexLegends::Bsp::vertexUnlitVertices);
     AddLump(file, header.lumps[R5_LUMP_VERTEX_LIT_FLAT],         ApexLegends::Bsp::vertexLitFlatVertices);
@@ -306,10 +307,24 @@ void CompileR5BSPFile() {
                     /* Entities routed to .ent files need their collision BVH
                     serialized as *coll key-value pairs, since the engine
                     loads collision for these from the entity string rather
-                    than from BSP lumps. */
-                    if (!ApexLegends::EntityGoesToBSPLump(entity)) {
+                    than from BSP lumps.  envmap_volume goes to the BSP lump
+                    but still carries inline *coll data. */
+                    if (!ApexLegends::EntityGoesToBSPLump(entity)
+                        || striEqual(entity.classname(), "envmap_volume")) {
                         ApexLegends::SerializeCollisionToEntity(entity);
                     }
+                }
+            }
+
+            /* envmap_volume: ensure cubeMapIndex is set (engine reads this key
+               to look up cubemap samples in lump 0x2A) */
+            if (striEqual(entity.classname(), "envmap_volume")) {
+                const char *cubemapID = entity.valueForKey("cubemapID");
+                if (cubemapID[0] != '\0') {
+                    entity.setKeyValue("cubeMapIndex", cubemapID);
+                } else {
+                    entity.setKeyValue("cubeMapIndex", "0");
+                    entity.setKeyValue("cubemapID", "0");
                 }
             }
 
@@ -352,6 +367,7 @@ void CompileR5BSPFile() {
     ApexLegends::EmitLevelInfo();
     ApexLegends::EmitWorldLights();
     ApexLegends::EmitCubemaps();
+    //ApexLegends::EmitPakFile();
     ApexLegends::EmitShadowMeshes();
     ApexLegends::EmitShadowEnvironments();
 

@@ -47,6 +47,11 @@
 bool ApexLegends::EntityGoesToBSPLump(const entity_t &e) {
     const char *cls = e.valueForKey("classname");
     
+    // Entities that start with "env" but go into BSP lump
+    if (striEqual(cls, "envmap_volume")) {
+        return true;
+    }
+    
     // env
     if (striEqualPrefix(cls, "light")
      || striEqualPrefix(cls, "color")
@@ -108,8 +113,11 @@ void ApexLegends::EmitEntity(const entity_t &e) {
 
     std::vector<char> str = { data.begin(), data.end() };
 
+    // Entities that start with "env" but go into BSP entity lump
+    if (striEqual(e.valueForKey("classname"), "envmap_volume")) {
+        Titanfall::Bsp::entities.insert(Titanfall::Bsp::entities.end(), str.begin(), str.end());
     // env
-    if (striEqualPrefix(e.valueForKey("classname"), "light")
+    } else if (striEqualPrefix(e.valueForKey("classname"), "light")
      || striEqualPrefix(e.valueForKey("classname"), "color")
      || striEqualPrefix(e.valueForKey("classname"), "fog")
      || striEqualPrefix(e.valueForKey("classname"), "env")

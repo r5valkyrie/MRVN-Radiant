@@ -273,6 +273,7 @@ namespace ApexLegends {
     void        EmitLevelInfo();
     void        EmitWorldLights();
     void        EmitCubemaps();
+    void        EmitPakFile();
     void        EmitShadowEnvironments();
     void        EmitShadowMeshes();
     void        EmitLightmaps();
@@ -647,6 +648,9 @@ namespace ApexLegends {
         // Per-texel data for dynamic lights affecting lightmapped surfaces
         inline std::vector<uint8_t>                lightmapDataRealTimeLights; // Lump 0x69
         
+        // Pakfile lump (0x28)
+        inline std::vector<uint8_t>              pakfile;             // Lump 0x28 - embedded zip (cubemap VTF)
+
         // Cubemap lumps (0x2A, 0x2B)
         inline std::vector<CubemapSample_t>      cubemaps;            // Lump 0x2A - cubemap sample positions
         inline std::vector<float>                cubemapsAmbientRcp;  // Lump 0x2B - ambient reciprocal per cubemap
