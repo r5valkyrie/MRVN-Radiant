@@ -59,7 +59,6 @@ void ApexLegends::EmitCubemaps() {
     Sys_FPrintf(SYS_VRB, "--- EmitCubemaps ---\n");
     
     ApexLegends::Bsp::cubemaps.clear();
-    ApexLegends::Bsp::cubemapsAmbientRcp.clear();
     
     // Lump 0x2A stores cubemap samples — one per VTF frame in the
     // pakfile cubemap atlas.  Multiple envmap_volume entities can
@@ -84,115 +83,9 @@ void ApexLegends::EmitCubemaps() {
         sample.origin[2] = static_cast<int32_t>(center[2]);
         sample.guid = 0;
         ApexLegends::Bsp::cubemaps.push_back(sample);
-        ApexLegends::Bsp::cubemapsAmbientRcp.push_back(1.0f);
     }
 
     Sys_Printf("     %9zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
-}
-
-/*
-    EmitPakFile
-    Builds the pakfile lump (0x28) as an in-memory zip archive
-    containing the default cubemap VTF at materials/maps/<mapname>/cubemaps.hdr.vtf
-    
-    The engine expects lump 0x28 to be a zip containing the cubemap texture
-    used by the cubemap samples in lump 0x2A.
-*/
-void ApexLegends::EmitPakFile() {
-    Sys_FPrintf(SYS_VRB, "--- EmitPakFile ---\n");
-    
-    ApexLegends::Bsp::pakfile.clear();
-    
-    // Load the default cubemap VTF from the gamepack
-    MemBuffer vtfData = vfsLoadFile("textures/default_cubemap.hdr.vtf");
-    if (!vtfData) {
-        Sys_Warning("Could not load textures/default_cubemap.hdr.vtf, pakfile lump will be empty\n");
-        return;
-    }
-    
-    // Build the zip entry path: materials/maps/<mapname>/cubemaps.hdr.vtf
-    const auto mapName = StringStream<256>(PathFilename(source));
-    const auto entryPath = StringStream<512>("materials/maps/", mapName.c_str(), "/cubemaps.hdr.vtf");
-    
-    Sys_Printf("     Packing %s (%zu bytes)\n", entryPath.c_str(), vtfData.size());
-    
-    const uint8_t *fileData = static_cast<const uint8_t *>(vtfData.data());
-    const uint32_t fileSize = static_cast<uint32_t>(vtfData.size());
-    const uint16_t fnLen    = static_cast<uint16_t>(strlen(entryPath.c_str()));
-    
-    // CRC32 (use miniz's crc32)
-    uint32_t crc = mz_crc32(MZ_CRC32_INIT, fileData, fileSize);
-    
-    // Helper lambdas
-    auto wr16 = [](std::vector<uint8_t> &v, uint16_t x) {
-        v.push_back(static_cast<uint8_t>(x));
-        v.push_back(static_cast<uint8_t>(x >> 8));
-    };
-    auto wr32 = [](std::vector<uint8_t> &v, uint32_t x) {
-        v.push_back(static_cast<uint8_t>(x));
-        v.push_back(static_cast<uint8_t>(x >> 8));
-        v.push_back(static_cast<uint8_t>(x >> 16));
-        v.push_back(static_cast<uint8_t>(x >> 24));
-    };
-    auto wrBytes = [](std::vector<uint8_t> &v, const void *p, size_t n) {
-        const uint8_t *b = static_cast<const uint8_t *>(p);
-        v.insert(v.end(), b, b + n);
-    };
-    
-    std::vector<uint8_t> &pak = ApexLegends::Bsp::pakfile;
-    
-    // ---- Local file header ----
-    const uint32_t localHeaderOfs = 0;
-    wr32(pak, 0x04034B50);      // PK\x03\x04
-    wr16(pak, 0x000A);          // version needed (1.0)
-    wr16(pak, 0x0000);          // flags (none)
-    wr16(pak, 0x0000);          // compression: stored
-    wr16(pak, 0x0000);          // mod time
-    wr16(pak, 0x0000);          // mod date
-    wr32(pak, crc);             // CRC-32
-    wr32(pak, fileSize);        // compressed size
-    wr32(pak, fileSize);        // uncompressed size
-    wr16(pak, fnLen);           // filename length
-    wr16(pak, 0);               // extra field length
-    wrBytes(pak, entryPath.c_str(), fnLen);
-    
-    // ---- File data ----
-    wrBytes(pak, fileData, fileSize);
-    
-    // ---- Central directory header ----
-    const uint32_t cdOfs = static_cast<uint32_t>(pak.size());
-    wr32(pak, 0x02014B50);      // PK\x01\x02
-    wr16(pak, 0x000A);          // version made by
-    wr16(pak, 0x000A);          // version needed
-    wr16(pak, 0x0000);          // flags
-    wr16(pak, 0x0000);          // compression: stored
-    wr16(pak, 0x0000);          // mod time
-    wr16(pak, 0x0000);          // mod date
-    wr32(pak, crc);             // CRC-32
-    wr32(pak, fileSize);        // compressed size
-    wr32(pak, fileSize);        // uncompressed size
-    wr16(pak, fnLen);           // filename length
-    wr16(pak, 0);               // extra field length
-    wr16(pak, 0);               // comment length
-    wr16(pak, 0);               // disk number start
-    wr16(pak, 0);               // internal attributes
-    wr32(pak, 0);               // external attributes
-    wr32(pak, localHeaderOfs);  // local header offset
-    wrBytes(pak, entryPath.c_str(), fnLen);
-    
-    const uint32_t cdSize = static_cast<uint32_t>(pak.size()) - cdOfs;
-    
-    // ---- End of central directory ----
-    wr32(pak, 0x06054B50);      // PK\x05\x06
-    wr16(pak, 0);               // disk number
-    wr16(pak, 0);               // disk with CD
-    wr16(pak, 1);               // entries on this disk
-    wr16(pak, 1);               // total entries
-    wr32(pak, cdSize);          // central directory size
-    wr32(pak, cdOfs);           // central directory offset
-    wr16(pak, 0);               // comment length
-    
-    Sys_Printf("     %9zu bytes pakfile\n", pak.size());
 }
 
 /*
