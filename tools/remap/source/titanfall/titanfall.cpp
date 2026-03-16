@@ -549,22 +549,21 @@ void Titanfall::EmitStubs() {
                 writeVec3(pverts, (float)v.x(), (float)v.y(), (float)v.z());
             }
 
-            // Emit edges: consecutive vertex pairs forming the winding
-            // CCW winding as seen from inside cell 0 (looking outward toward sky
-            // means the face normal points outward; from inside, vertices appear CW
-            // so we reverse the winding)
+            // Emit edges: consecutive vertex pairs in original face winding order
+            // (CCW from face normal direction). cross(v0_rel, v1_rel) in this order
+            // produces inward-pointing edge normals needed for correct PVS clipping.
             PortalEdgeInfo edgeInfo;
             edgeInfo.globalVertStart = portalVertStart;
             edgeInfo.globalEdgeStart = globalEdgeIdx;
             edgeInfo.numEdges = nv;
             for (uint16_t ei = 0; ei < nv; ei++) {
-                uint16_t v0 = portalVertStart + ((nv - 1) - ei);
-                uint16_t v1 = portalVertStart + ((nv - 1) - ((ei + 1) % nv));
+                uint16_t v0 = portalVertStart + ei;
+                uint16_t v1 = portalVertStart + ((ei + 1) % nv);
                 writeU16(pedges, v0);
                 writeU16(pedges, v1);
                 edgeInfo.edges.push_back({
-                    face.verts[(nv - 1) - ei],
-                    face.verts[(nv - 1) - ((ei + 1) % nv)],
+                    face.verts[ei],
+                    face.verts[(ei + 1) % nv],
                     v0, v1
                 });
             }
@@ -576,8 +575,8 @@ void Titanfall::EmitStubs() {
                 uint16_t gvi = portalVertStart + vi;
                 int count = 0;
                 for (uint16_t ei = 0; ei < nv; ei++) {
-                    uint16_t v0 = portalVertStart + ((nv - 1) - ei);
-                    uint16_t v1 = portalVertStart + ((nv - 1) - ((ei + 1) % nv));
+                    uint16_t v0 = portalVertStart + ei;
+                    uint16_t v1 = portalVertStart + ((ei + 1) % nv);
                     if (v0 == gvi || v1 == gvi) {
                         writeU16(pve, portalEdgeStart + ei);
                         count++;
@@ -588,9 +587,9 @@ void Titanfall::EmitStubs() {
                 }
             }
 
-            // Emit vertex references (reversed winding order)
+            // Emit vertex references (original face winding order)
             for (uint16_t ei = 0; ei < nv; ei++) {
-                writeU16(pvr, portalVertStart + ((nv - 1) - ei));
+                writeU16(pvr, portalVertStart + ei);
             }
 
             // Emit edge references: engine decodes as (ref >> 1) = edgeIndex, (ref & 1) = directionBit
