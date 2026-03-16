@@ -33,3 +33,7 @@ libassimp.*
 /install/radiant
 /remap
 install/remap
+*.py
+*.ps1
+*.c
+ProjectAccessPaths.json

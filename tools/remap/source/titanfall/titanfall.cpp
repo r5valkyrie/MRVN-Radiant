@@ -429,6 +429,7 @@ void Titanfall::EmitStubs() {
         Titanfall::Bsp::cellBSPNodes_stub = { data.begin(), data.end() };
     }
     // Generate sky portals from actual sky-textured brush faces
+    Sys_FPrintf( SYS_VRB, "--- EmitStubs: Portal Generation ---\n" );
     {
         // Helper lambdas for writing binary data
         auto writeFloat = [](std::vector<uint8_t>& vec, float f) {
@@ -469,6 +470,8 @@ void Titanfall::EmitStubs() {
             }
         }
 
+        Sys_FPrintf( SYS_VRB, "  Sky faces found: %d\n", (int)skyFaces.size() );
+
         // If no sky faces found, fall back to a large ceiling portal
         if (skyFaces.empty()) {
             SkyFace face;
@@ -480,9 +483,11 @@ void Titanfall::EmitStubs() {
             };
             face.plane = Plane3(Vector3(0, 0, 1), 16384);
             skyFaces.push_back(std::move(face));
+            Sys_FPrintf( SYS_VRB, "  Using fallback ceiling portal\n" );
         }
 
         const uint16_t numPortals = (uint16_t)skyFaces.size();
+        Sys_FPrintf( SYS_VRB, "  Total portals: %d\n", (int)numPortals );
         const uint16_t skyVirtualCell = 2;  // numCells(1) + 1
 
         // Clear all portal-related stubs
@@ -528,6 +533,8 @@ void Titanfall::EmitStubs() {
             // Plane3f(a,b,c,d) where (a,b,c) is normal, d is dist
             Vector3 inNormal = -face.plane.normal();
             float inDist = (float)(-face.plane.dist());
+            Sys_FPrintf( SYS_VRB, "  Portal %d: %d verts, plane (%.2f %.2f %.2f) d=%.2f\n",
+                (int)pi, (int)nv, inNormal.x(), inNormal.y(), inNormal.z(), inDist );
             Titanfall::Bsp::planes.emplace_back(Plane3f(
                 (float)inNormal.x(), (float)inNormal.y(), (float)inNormal.z(), inDist));
 
@@ -547,6 +554,7 @@ void Titanfall::EmitStubs() {
             for (uint16_t vi = 0; vi < nv; vi++) {
                 const Vector3& v = face.verts[vi];
                 writeVec3(pverts, (float)v.x(), (float)v.y(), (float)v.z());
+                Sys_FPrintf( SYS_VRB, "    vert[%d]: (%.1f %.1f %.1f)\n", (int)vi, v.x(), v.y(), v.z() );
             }
 
             // Emit edges: consecutive vertex pairs in original face winding order
@@ -601,6 +609,9 @@ void Titanfall::EmitStubs() {
             globalEdgeIdx += nv;
             globalRefIdx += nv;
         }
+
+        Sys_FPrintf( SYS_VRB, "  Totals: %d vertices, %d edges, %d refs\n",
+            (int)globalVertIdx, (int)globalEdgeIdx, (int)globalRefIdx );
 
         // Compute edge intersections between portals in the same cell
         // For each edge, find edges from OTHER portals that share a vertex position
@@ -665,6 +676,8 @@ void Titanfall::EmitStubs() {
             }
         }
 
+        Sys_FPrintf( SYS_VRB, "  Edge intersections: %d entries\n", (int)globalIsectIdx );
+
         // Cells: 1 cell with N sky portals, skyFlags=1
         {
             // struct mcell_t { uint16 numPortals, firstPortal, skyFlags, unk; }
@@ -675,6 +688,8 @@ void Titanfall::EmitStubs() {
             writeU16(cells, 1);           // skyFlags = 1
             writeU16(cells, 0xFFFF);      // unk
         }
+        Sys_FPrintf( SYS_VRB, "  Cell: %d portals, skyFlags=1\n", (int)numPortals );
     }
+    Sys_FPrintf( SYS_VRB, "--- Portal Generation Complete ---\n" );
 }
 
