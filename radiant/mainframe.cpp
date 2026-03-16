@@ -1432,6 +1432,7 @@ void create_main_statusbar( QStatusBar *statusbar, QLabel *pStatusLabel[c_status
 	for ( int i = 1; i < c_status__count; ++i )
 	{
 		if( i == c_status_brushcount ){
+			constexpr int c_statusIconSize = 16;
 			QWidget *widget = new QWidget;
 			QHBoxLayout *hbox = new QHBoxLayout( widget );
 			hbox->setMargin( 0 );
@@ -1439,7 +1440,13 @@ void create_main_statusbar( QStatusBar *statusbar, QLabel *pStatusLabel[c_status
 			const char* imgs[3] = { "status_brush.png", "patch_wireframe.png", "status_entity.png" };
 			for( ; i < c_status_brushcount + 3; ++i ){
 				QLabel *label = new QLabel();
-				label->setPixmap( new_local_image( imgs[i - c_status_brushcount] ) );
+				label->setFixedSize( c_statusIconSize, c_statusIconSize );
+				label->setAlignment( Qt::AlignCenter );
+				label->setPixmap( new_local_image( imgs[i - c_status_brushcount] ).scaled(
+					c_statusIconSize,
+					c_statusIconSize,
+					Qt::KeepAspectRatio,
+					Qt::SmoothTransformation ) );
 				hbox->addWidget( label );
 
 				label = new QLabel();
