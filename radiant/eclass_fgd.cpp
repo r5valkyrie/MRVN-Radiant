@@ -692,12 +692,12 @@ public:
 
 				constructDirectory( baseDirectory, "fgd" );
 				{
-					const auto baseEntitiesDirectory = StringStream( baseDirectory, "entities/" );
+					const auto baseEntitiesDirectory = StringStream( baseDirectory.c_str(), "entities/" );
 					constructDirectory( baseEntitiesDirectory, "fgd" );
 				}
 				if ( !string_equal( baseDirectory, gameDirectory ) ) {
 					constructDirectory( gameDirectory, "fgd" );
-					const auto gameEntitiesDirectory = StringStream( gameDirectory, "entities/" );
+					const auto gameEntitiesDirectory = StringStream( gameDirectory.c_str(), "entities/" );
 					constructDirectory( gameEntitiesDirectory, "fgd" );
 				}
 

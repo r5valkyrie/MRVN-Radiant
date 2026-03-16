@@ -432,10 +432,20 @@ class RenderableConnectionLines : public Renderable
 {
 	typedef std::set<TargetableInstance*> TargetableInstances;
 	typedef std::pair<const TargetableInstance*, const TargetableInstance*> TargetPair;
+	typedef Static<Shader*, RenderableConnectionLines> StaticShader;
 	TargetableInstances m_instances;
 	mutable RenderablePointVector m_zipline_lines;
+	static Shader* getShader(){
+		return StaticShader::instance();
+	}
 	static bool isZiplineClass( const char* classname ){
 		return string_equal( classname, "zipline" );
+	}
+	static bool isZiplineEndClass( const char* classname ){
+		return string_equal( classname, "zipline_end" );
+	}
+	static bool isZiplineDebugClass( const char* classname ){
+		return isZiplineClass( classname ) || isZiplineEndClass( classname );
 	}
 	static bool isMoveRopeClass( const char* classname ){
 		return string_equal( classname, "move_rope" );
@@ -587,10 +597,41 @@ class RenderableConnectionLines : public Renderable
 		appendSagLine( lines, source.world_position(), target.world_position(), ziplineSagHeight( source, target ), volume );
 		return true;
 	}
+	void appendZiplineConnections( RenderablePointVector& lines, std::set<TargetPair>& drawn, const TargetableInstance& source, const VolumeTest& volume ) const {
+		const char* linkKeys[2] = { "link_to_guid_0", "link_to_guid_1" };
+		for ( int k = 0; k < 2; ++k )
+		{
+			const TargetableInstance* target = findByKeyValue( "link_guid", source.keyValue( linkKeys[k] ), &source );
+			if ( target != 0 ) {
+				appendConnection( lines, drawn, source, *target, volume );
+			}
+		}
+
+		const char* sourceGuid = source.keyValue( "link_guid" );
+		if ( string_empty( sourceGuid ) ) {
+			return;
+		}
+
+		for ( TargetableInstances::const_iterator i = m_instances.begin(); i != m_instances.end(); ++i )
+		{
+			const TargetableInstance& target = **i;
+			if ( &target == &source || !target.path().top().get().visible() || !isZiplineDebugClass( target.className() ) ) {
+				continue;
+			}
+
+			for ( int k = 0; k < 2; ++k )
+			{
+				if ( string_equal( target.keyValue( linkKeys[k] ), sourceGuid ) ) {
+					appendConnection( lines, drawn, source, target, volume );
+					break;
+				}
+			}
+		}
+	}
 	void renderZiplineLines( Renderer& renderer, const VolumeTest& volume ) const {
 		m_zipline_lines.clear();
 		std::set<TargetPair> drawn;
-		Shader* shader = RenderablePivot::getShader();
+		Shader* shader = getShader();
 		const Vector3& viewer = volume.getViewer();
 		const float maxDistSq = 4096.f * 4096.f;
 
@@ -613,21 +654,14 @@ class RenderableConnectionLines : public Renderable
 			const char* classname = source.className();
 			if ( isMoveRopeClass( classname ) ) {
 				const TargetableInstance* target = findByTargetName( source.keyValue( "NextKey" ), &source );
-				if ( target != 0 && appendConnection( m_zipline_lines, drawn, source, *target, volume ) && shader == 0 ) {
-					shader = source.entity().getEntityClass().m_state_wire;
+				if ( target != 0 ) {
+					appendConnection( m_zipline_lines, drawn, source, *target, volume );
 				}
 				continue;
 			}
 
-			if ( isZiplineClass( classname ) ) {
-				const char* linkKeys[2] = { "link_to_guid_0", "link_to_guid_1" };
-				for ( int k = 0; k < 2; ++k )
-				{
-					const TargetableInstance* target = findByKeyValue( "link_guid", source.keyValue( linkKeys[k] ), &source );
-					if ( target != 0 && appendConnection( m_zipline_lines, drawn, source, *target, volume ) && shader == 0 ) {
-						shader = source.entity().getEntityClass().m_state_wire;
-					}
-				}
+			if ( isZiplineDebugClass( classname ) ) {
+				appendZiplineConnections( m_zipline_lines, drawn, source, volume );
 			}
 		}
 
@@ -639,6 +673,9 @@ class RenderableConnectionLines : public Renderable
 	}
 public:
 	RenderableConnectionLines() : m_zipline_lines( GL_LINES ){
+	}
+	static void setShader( Shader* shader ){
+		StaticShader::instance() = shader;
 	}
 	void attach( TargetableInstance& instance ){
 		const bool inserted = m_instances.insert( &instance ).second;

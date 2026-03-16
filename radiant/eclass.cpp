@@ -196,8 +196,8 @@ void EntityClassQuake3_constructDirectory( const char* directory, const char* ex
 void EntityClassQuake3_Construct(){
 	const auto baseDirectory = StringStream( GlobalRadiant().getGameToolsPath(), GlobalRadiant().getRequiredGameDescriptionKeyValue( "basegame" ), '/' );
 	const auto gameDirectory = StringStream( GlobalRadiant().getGameToolsPath(), GlobalRadiant().getGameName(), '/' );
-	const auto baseEntitiesDirectory = StringStream( baseDirectory, "entities/" );
-	const auto gameEntitiesDirectory = StringStream( gameDirectory, "entities/" );
+	const auto baseEntitiesDirectory = StringStream( baseDirectory.c_str(), "entities/" );
+	const auto gameEntitiesDirectory = StringStream( gameDirectory.c_str(), "entities/" );
 
 	class LoadEntityDefinitionsVisitor : public EClassModules::Visitor
 	{
