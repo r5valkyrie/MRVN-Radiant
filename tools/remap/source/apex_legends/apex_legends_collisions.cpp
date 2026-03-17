@@ -1696,7 +1696,7 @@ void ApexLegends::SerializeCollisionToEntity(entity_t &entity) {
     }
 
     /* ---- split into *coll key-value pairs ---- */
-    constexpr size_t COLL_LINE_LEN = 196;
+    constexpr size_t COLL_LINE_LEN = 160;
 
     int lineNum = 0;
     for (size_t pos = 0; pos < base64.size(); pos += COLL_LINE_LEN) {

@@ -400,6 +400,33 @@ void CompileR5BSPFile() {
         ApexLegends::EmitLightProbes();
     }
 
+    /* Emit info_lightprobe entities into BSP entity lump (0000) for each
+       generated probe reference.  The engine expects these in the main
+       entity lump so it can locate light probes at runtime. */
+    {
+        /* EmitEntityPartitions() already null-terminated the entity vector,
+           so pop it, append new entities, then re-add the terminator. */
+        if (!Titanfall::Bsp::entities.empty() && Titanfall::Bsp::entities.back() == '\0') {
+            Titanfall::Bsp::entities.pop_back();
+        }
+
+        for (const LightProbeRef_t &ref : ApexLegends::Bsp::lightprobeReferences) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     "{\n\"origin\" \"%.6g %.6g %.6g\"\n\"classname\" \"info_lightprobe\"\n}\n",
+                     ref.origin[0], ref.origin[1], ref.origin[2]);
+            const char *p = buf;
+            while (*p) {
+                Titanfall::Bsp::entities.push_back(*p++);
+            }
+        }
+
+        Titanfall::Bsp::entities.push_back('\0');
+
+        Sys_Printf("  %zu info_lightprobe entities written to entity lump\n",
+                   ApexLegends::Bsp::lightprobeReferences.size());
+    }
+
     HIPRTTrace::Shutdown();
 
     Sys_PhaseBegin( 7 );

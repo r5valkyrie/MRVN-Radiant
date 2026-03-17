@@ -350,7 +350,7 @@ void ParseEntities() {
     must be called before UnparseEntities
 */
 void InjectCommandLine(const char *stage, const std::vector<const char*> &args) {
-    auto str = StringStream(entities[0].valueForKey("_q3map2_cmdline"));  // read previousCommandLine
+    /*auto str = StringStream(entities[0].valueForKey("_q3map2_cmdline"));  // read previousCommandLine
     if(!str.empty()) {
         str << "; ";
     }
@@ -364,10 +364,11 @@ void InjectCommandLine(const char *stage, const std::vector<const char*> &args) 
                 str << *c;
             }
         }
-    }
+    }*/
 
-    entities[0].setKeyValue("_q3map2_cmdline", str);
-    entities[0].setKeyValue("_q3map2_version", Q3MAP_VERSION);
+    entities[0].setKeyValue("lightprobe_voronoi_leafsize", "1");
+    //entities[0].setKeyValue("_q3map2_cmdline", str);
+    //entities[0].setKeyValue("_q3map2_version", Q3MAP_VERSION);
 }
 
 
