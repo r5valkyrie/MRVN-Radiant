@@ -484,8 +484,8 @@ void ApexLegends::SetupSurfaceLightmaps() {
     }
     
     if (litSurfaces > 0) {
-        Sys_Printf("     %9d lit surfaces\n", litSurfaces);
-        Sys_Printf("     %9d lightmap pages\n", (int)ApexLegends::Bsp::lightmapPages.size());
+        Sys_Printf("  %d lit surfaces\n", litSurfaces);
+        Sys_Printf("  %d lightmap pages\n", (int)ApexLegends::Bsp::lightmapPages.size());
     }
 }
 
@@ -629,7 +629,7 @@ static bool TraceRayAgainstMeshes(const Vector3 &origin, const Vector3 &dir, flo
 static void GatherRadiosityLight(int bounceNum) {
     if (RadiosityData::patches.empty()) return;
     
-    Sys_Printf("     Radiosity bounce %d (%zu patches)...\n", bounceNum, RadiosityData::patches.size());
+    Sys_Printf("  Radiosity bounce %d (%zu patches)...\n", bounceNum, RadiosityData::patches.size());
     
     // Store incoming light for this bounce
     std::vector<Vector3> incomingLight(RadiosityData::patches.size(), Vector3(0, 0, 0));
@@ -957,12 +957,10 @@ void ApexLegends::ComputeLightmapLighting() {
     int totalTexels = 0;
     int patchIndex = 0;  // Track patch index for radiosity
     
-    Sys_Printf("     Computing direct lighting...\n");
-    
     int totalSurfaces = static_cast<int>(LightmapBuild::surfaces.size());
     int surfacesDone = 0;
-    int lastPct = -1;
     auto lightingStart = std::chrono::high_resolution_clock::now();
+    Sys_ProgressBegin("Direct lighting", totalSurfaces);
     
     // Pre-compute sun direction once
     Vector3 sunDir(0, 0, 0);
@@ -1148,20 +1146,9 @@ void ApexLegends::ComputeLightmapLighting() {
         }
         
         surfacesDone++;
-        int pct = (totalSurfaces > 0) ? (surfacesDone * 100 / totalSurfaces) : 100;
-        if (pct != lastPct && (pct % 10 == 0 || surfacesDone == totalSurfaces)) {
-            auto now = std::chrono::high_resolution_clock::now();
-            double elapsed = std::chrono::duration<double>(now - lightingStart).count();
-            Sys_Printf("     ...%d%% (%d/%d surfaces, %d rays, %.1fs elapsed)\n", pct, surfacesDone, totalSurfaces, totalRays, elapsed);
-            lastPct = pct;
-        }
+        Sys_ProgressUpdate(surfacesDone);
     }
-    
-    {
-        auto now = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(now - lightingStart).count();
-        Sys_Printf("     %9d texels computed (direct) in %.2fs\n", totalTexels, elapsed);
-    }
+    Sys_ProgressEnd();
     
     // =====================================================
     // ADAPTIVE SUPERSAMPLING (Source SDK style)
@@ -1170,15 +1157,12 @@ void ApexLegends::ComputeLightmapLighting() {
     // Uses batch GPU ray dispatch for performance.
     // =====================================================
     if (SUPERSAMPLE_PASSES > 0) {
-        Sys_Printf("     Computing adaptive supersampling (%d passes, %dx%d grid)...\n",
-                   SUPERSAMPLE_PASSES, SUPERSAMPLE_GRID, SUPERSAMPLE_GRID);
         int totalSupersampled = 0;
-        auto ssStart = std::chrono::high_resolution_clock::now();
         
         int ssSubSamples = SUPERSAMPLE_GRID * SUPERSAMPLE_GRID;
         int ssSurfacesDone = 0;
         int ssTotalSurfaces = static_cast<int>(LightmapBuild::surfaces.size());
-        int ssLastPct = -1;
+        Sys_ProgressBegin("Supersampling", ssTotalSurfaces);
         
         for (SurfaceLightmap_t &surf : LightmapBuild::surfaces) {
             int w = surf.rect.width;
@@ -1399,26 +1383,16 @@ void ApexLegends::ComputeLightmapLighting() {
             }
             
             ssSurfacesDone++;
-            int pct = (ssTotalSurfaces > 0) ? (ssSurfacesDone * 100 / ssTotalSurfaces) : 100;
-            if (pct != ssLastPct && (pct % 10 == 0 || ssSurfacesDone == ssTotalSurfaces)) {
-                auto now = std::chrono::high_resolution_clock::now();
-                double elapsed = std::chrono::duration<double>(now - ssStart).count();
-                Sys_Printf("     ...%d%% (%d/%d surfaces, %d supersampled, %.1fs elapsed)\n",
-                           pct, ssSurfacesDone, ssTotalSurfaces, totalSupersampled, elapsed);
-                ssLastPct = pct;
-            }
+            Sys_ProgressUpdate(ssSurfacesDone);
         }
-        
-        auto ssEnd = std::chrono::high_resolution_clock::now();
-        double ssElapsed = std::chrono::duration<double>(ssEnd - ssStart).count();
-        Sys_Printf("     %9d texels supersampled in %.2fs\n", totalSupersampled, ssElapsed);
+        Sys_ProgressEnd();
     }
     
     // =====================================================
     // RADIOSITY: Compute bounce lighting
     // =====================================================
     if (RADIOSITY_BOUNCES > 0 && !RadiosityData::patches.empty()) {
-        Sys_Printf("     Computing %d radiosity bounce(s)...\n", RADIOSITY_BOUNCES);
+        Sys_Printf("  Radiosity: %d bounce(s)...\n", RADIOSITY_BOUNCES);
         
         for (int bounce = 1; bounce <= RADIOSITY_BOUNCES; bounce++) {
             GatherRadiosityLight(bounce);
@@ -1441,7 +1415,7 @@ void ApexLegends::ComputeLightmapLighting() {
             }
         }
         
-        Sys_Printf("     Radiosity complete\n");
+        Sys_Printf("  Radiosity complete\n");
     }
 }
 
@@ -1645,8 +1619,9 @@ void ApexLegends::EmitLightmaps()
         }
     }
 
-    Sys_Printf("     %9zu lightmap pages\n", ApexLegends::Bsp::lightmapHeaders.size());
-    Sys_Printf("     %9zu bytes data\n", ApexLegends::Bsp::lightmapDataSky.size());
+    Sys_Printf("  %zu lightmap pages, %.1f KB data\n",
+               ApexLegends::Bsp::lightmapHeaders.size(),
+               ApexLegends::Bsp::lightmapDataSky.size() / 1024.0f);
 }
 
 /*
@@ -1785,7 +1760,7 @@ static SkyEnvironment GetSkyEnvironment() {
                 // Official data shows direct sun exponents of 10-20 (linear values 1K-1M)
                 //sky.sunIntensity = brightness;
                 foundSkyLight = true;
-                Sys_Printf("     Found light_environment _light: %s (intensity=%.1f)\n", lightValue, brightness);
+                Sys_Printf("  light_environment _light: %s (intensity=%.1f)\n", lightValue, brightness);
             }
             
             // Get ambient color from _ambient key
@@ -1796,7 +1771,7 @@ static SkyEnvironment GetSkyEnvironment() {
                 sky.ambientColor = ambientColor;
                 //sky.ambientIntensity = ambientBrightness;
                 foundSkyAmbient = true;
-                Sys_Printf("     Found light_environment _ambient: %s (intensity=%.1f)\n", ambientValue, ambientBrightness);
+                Sys_Printf("  light_environment _ambient: %s (intensity=%.1f)\n", ambientValue, ambientBrightness);
             }
             
             // Get sun direction from angles or pitch/SunSpreadAngle
@@ -1849,10 +1824,10 @@ static SkyEnvironment GetSkyEnvironment() {
     sky.valid = true;
     
     if (!foundSkyAmbient) {
-        Sys_Printf("     Warning: No emit_skyambient found, using default\n");
+        Sys_Warning("No emit_skyambient found, using default\n");
     }
     if (!foundSkyLight) {
-        Sys_Printf("     Warning: No emit_skylight found, using default sun direction\n");
+        Sys_Warning("No emit_skylight found, using default sun direction\n");
     }
     
     return sky;
@@ -2319,7 +2294,7 @@ static Vector3 PushProbeAwayFromSurfaces(const Vector3 &pos, float minDistance) 
 */
 static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
                                           std::vector<Vector3> &probePositions) {
-    Sys_Printf("     Generating Voronoi-based probe positions...\n");
+    Sys_Printf("  Generating Voronoi probe positions...\n");
     auto startTime = std::chrono::high_resolution_clock::now();
 
     constexpr float PROBE_ELEVATION     = 64.0f;   // Height above surface samples
@@ -2399,11 +2374,11 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
         }
     }
 
-    Sys_FPrintf(SYS_VRB, "     Collected %zu seed points\n", seeds.size());
+    Sys_FPrintf(SYS_VRB, "    Collected %zu seed points\n", seeds.size());
 
     if (seeds.empty()) {
         probePositions.push_back((worldBounds.mins + worldBounds.maxs) * 0.5f);
-        Sys_Printf("     No seeds found, using world center\n");
+        Sys_Printf("  No seeds, using world center\n");
         return;
     }
 
@@ -2442,7 +2417,7 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     }
     seeds.clear();
 
-    Sys_FPrintf(SYS_VRB, "     %zu seeds passed solid rejection\n", validSeeds.size());
+    Sys_FPrintf(SYS_VRB, "    %zu seeds passed solid rejection\n", validSeeds.size());
 
     if (validSeeds.empty()) {
         probePositions.push_back((worldBounds.mins + worldBounds.maxs) * 0.5f);
@@ -2498,13 +2473,13 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     }
     cellMap.clear();
 
-    Sys_FPrintf(SYS_VRB, "     Voronoi binning: %zu cells occupied (cell size %.0f)\n",
+    Sys_FPrintf(SYS_VRB, "    Voronoi binning: %zu cells occupied (cell size %.0f)\n",
                centroids.size(), cellSize);
 
     // =========================================================================
     // Step 4: Validate centroids — solid rejection + surface push + min spacing
     // =========================================================================
-    Sys_FPrintf(SYS_VRB, "     Validating %zu centroids...\n", centroids.size());
+    Sys_FPrintf(SYS_VRB, "    Validating %zu centroids...\n", centroids.size());
 
     // Batch solid rejection
     std::vector<Vector3> validCentroids;
@@ -2539,7 +2514,7 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     }
     centroids.clear();
 
-    Sys_FPrintf(SYS_VRB, "     %zu passed solid rejection\n", validCentroids.size());
+    Sys_FPrintf(SYS_VRB, "    %zu passed solid rejection\n", validCentroids.size());
 
     // Batch push away from surfaces (iterative closest-hit)
     {
@@ -2633,7 +2608,7 @@ static void GenerateProbePositionsVoronoi(const MinMax &worldBounds,
     auto elapsed = std::chrono::duration<double>(
         std::chrono::high_resolution_clock::now() - startTime).count();
     probePositions = std::move(finalPositions);
-    Sys_Printf("     Generated %zu Voronoi probe positions (%.2fs)\n",
+    Sys_Printf("  %zu Voronoi probe positions (%.2fs)\n",
                probePositions.size(), elapsed);
 }
 
@@ -2752,7 +2727,7 @@ static void CompressProbeList(std::vector<ProbeCandidate> &candidates,
                                int maxProbes = 1024) {
     if (candidates.size() <= (size_t)maxProbes) return;
     
-    Sys_FPrintf(SYS_VRB, "     Compressing %zu probes to %d...\n", candidates.size(), maxProbes);
+    Sys_FPrintf(SYS_VRB, "    Compressing %zu probes to %d...\n", candidates.size(), maxProbes);
     
     // Mark all as kept initially
     for (auto &c : candidates) c.keep = true;
@@ -2817,14 +2792,14 @@ static void CompressProbeList(std::vector<ProbeCandidate> &candidates,
     }
     candidates = kept;
     
-    Sys_FPrintf(SYS_VRB, "     Kept %zu probes after compression\n", candidates.size());
+    Sys_FPrintf(SYS_VRB, "    Kept %zu probes after compression\n", candidates.size());
 }
 
 // Legacy function for logging (called once to print sky info)
 static void LogSkyEnvironment(const SkyEnvironment &sky) {
-    Sys_FPrintf(SYS_VRB, "     Sun direction: (%.2f, %.2f, %.2f)\n", sky.sunDir[0], sky.sunDir[1], sky.sunDir[2]);
-    Sys_FPrintf(SYS_VRB, "     Sun intensity: %.2f, color: (%.2f, %.2f, %.2f)\n", sky.sunIntensity, sky.sunColor[0], sky.sunColor[1], sky.sunColor[2]);
-    Sys_FPrintf(SYS_VRB, "     Ambient color: (%.2f, %.2f, %.2f)\n", sky.ambientColor[0], sky.ambientColor[1], sky.ambientColor[2]);
+    Sys_FPrintf(SYS_VRB, "    Sun direction: (%.2f, %.2f, %.2f)\n", sky.sunDir[0], sky.sunDir[1], sky.sunDir[2]);
+    Sys_FPrintf(SYS_VRB, "    Sun intensity: %.2f, color: (%.2f, %.2f, %.2f)\n", sky.sunIntensity, sky.sunColor[0], sky.sunColor[1], sky.sunColor[2]);
+    Sys_FPrintf(SYS_VRB, "    Ambient color: (%.2f, %.2f, %.2f)\n", sky.ambientColor[0], sky.ambientColor[1], sky.ambientColor[2]);
 }
 
 
@@ -3062,7 +3037,7 @@ static void BuildLightProbeTree() {
     }
     ApexLegends::Bsp::lightprobeReferences = std::move(reorderedRefs);
     
-    Sys_FPrintf(SYS_VRB, "     Built KD-tree with %zu nodes for %u probes\n", 
+    Sys_FPrintf(SYS_VRB, "    Built KD-tree with %zu nodes for %u probes\n", 
                ApexLegends::Bsp::lightprobeTree.size(), numRefs);
 }
 
@@ -3146,13 +3121,13 @@ void ApexLegends::EmitSingleLightProbe() {
     info.lightProbeRefCount = 1;
     ApexLegends::Bsp::lightprobeParentInfos.push_back(info);
     
-    Sys_Printf("     %9d light probe (stub)\n", 1);
+    Sys_Printf("  1 light probe (stub)\n");
     
     // Populate static prop lightprobe indices (all point to single probe)
     const uint32_t numStaticProps = ApexLegends::Bsp::gameLumpPropHeader.numStaticProps;
     if (numStaticProps > 0) {
         ApexLegends::Bsp::staticPropLightprobeIndices.resize(numStaticProps, 0);
-        Sys_FPrintf(SYS_VRB, "     %9u static prop lightprobe indices (all -> probe 0)\n", numStaticProps);
+        Sys_FPrintf(SYS_VRB, "  %u static prop lightprobe indices (all -> probe 0)\n", numStaticProps);
     }
 }
 
@@ -3197,11 +3172,11 @@ void ApexLegends::EmitLightProbes() {
     
     size_t manualProbeCount = probePositions.size();
     if (manualProbeCount > 0) {
-        Sys_Printf("     Found %zu info_lightprobe entities\n", manualProbeCount);
+        Sys_Printf("  %zu manual info_lightprobe entities\n", manualProbeCount);
     }
     
     // Always generate Voronoi-based probes, combining with any manual ones
-    Sys_FPrintf(SYS_VRB, "     Generating Voronoi-based placement...\n");
+    Sys_FPrintf(SYS_VRB, "    Generating Voronoi-based placement...\n");
     std::vector<Vector3> generatedPositions;
     GenerateProbePositionsVoronoi(worldBounds, generatedPositions);
     
@@ -3225,15 +3200,15 @@ void ApexLegends::EmitLightProbes() {
     }
     
     if (manualProbeCount > 0) {
-        Sys_Printf("     Combined %zu manual + %zu generated probes (%zu skipped near manual)\n", 
-                   manualProbeCount, generatedPositions.size() - skippedNearManual, skippedNearManual);
+        Sys_Printf("  %zu manual + %zu generated probes\n", 
+                   manualProbeCount, generatedPositions.size() - skippedNearManual);
     }
     
     // Ensure we have at least one probe
     if (probePositions.empty()) {
         Vector3 center = (worldBounds.mins + worldBounds.maxs) * 0.5f;
         probePositions.push_back(center);
-        Sys_Printf("     Using single probe at world center\n");
+        Sys_Printf("  No probes - using world center fallback\n");
     }
     
     // Create base probe template with correct default values
@@ -3264,7 +3239,7 @@ void ApexLegends::EmitLightProbes() {
     }
     
     // Compute per-probe lighting using batch GPU dispatch
-    Sys_Printf("     Computing lighting for %zu probes (%zu point lights)...\n", probePositions.size(), pointLightIndices.size());
+    Sys_Printf("  Computing lighting for %zu probes (%zu point lights)...\n", probePositions.size(), pointLightIndices.size());
     auto probeLightStart = std::chrono::high_resolution_clock::now();
     
     std::vector<ProbeCandidate> candidates;
@@ -3274,7 +3249,7 @@ void ApexLegends::EmitLightProbes() {
     size_t numPointLights = pointLightIndices.size();
     
     // ===== Phase 1: Batch all 162-direction visibility rays for all probes =====
-    Sys_FPrintf(SYS_VRB, "     Phase 1: Generating %zu direction rays (%zu probes x 162 dirs)...\n",
+    Sys_FPrintf(SYS_VRB, "    Phase 1: Generating %zu direction rays (%zu probes x 162 dirs)...\n",
                numProbes * NUM_SPHERE_NORMALS, numProbes);
     
     size_t totalDirRays = numProbes * NUM_SPHERE_NORMALS;
@@ -3301,7 +3276,7 @@ void ApexLegends::EmitLightProbes() {
     {
         auto now = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(now - probeLightStart).count();
-        Sys_FPrintf(SYS_VRB, "     Phase 1 complete: %zu direction rays dispatched (%.2fs)\n", totalDirRays, elapsed);
+        Sys_FPrintf(SYS_VRB, "    Phase 1 complete: %zu direction rays dispatched (%.2fs)\n", totalDirRays, elapsed);
     }
     
     // ===== Phase 2: Batch closest-hit for rays that hit geometry (need distance) =====
@@ -3312,7 +3287,7 @@ void ApexLegends::EmitLightProbes() {
         if (dirHits[i]) hitRayIndices.push_back(i);
     }
     
-    Sys_FPrintf(SYS_VRB, "     Phase 2: %zu rays hit geometry, getting distances...\n", hitRayIndices.size());
+    Sys_FPrintf(SYS_VRB, "    Phase 2: %zu rays hit geometry, getting distances...\n", hitRayIndices.size());
     
     // Batch closest-hit for hit rays to get distance (for distance falloff)
     std::vector<float> hitDistances(totalDirRays, -1.0f);
@@ -3340,7 +3315,7 @@ void ApexLegends::EmitLightProbes() {
     {
         auto now = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(now - probeLightStart).count();
-        Sys_FPrintf(SYS_VRB, "     Phase 2 complete (%.2fs)\n", elapsed);
+        Sys_FPrintf(SYS_VRB, "    Phase 2 complete (%.2fs)\n", elapsed);
     }
     
     // ===== Phase 3: Batch point light shadow rays for all probes =====
@@ -3359,7 +3334,7 @@ void ApexLegends::EmitLightProbes() {
     std::vector<ProbeLightRayInfo> lightRayInfos;
     
     if (numPointLights > 0) {
-        Sys_FPrintf(SYS_VRB, "     Phase 3: Generating point light shadow rays (%zu probes x %zu lights)...\n",
+        Sys_FPrintf(SYS_VRB, "    Phase 3: Generating point light shadow rays (%zu probes x %zu lights)...\n",
                    numProbes, numPointLights);
         
         lightRayOrigins.reserve(numProbes * numPointLights);
@@ -3436,11 +3411,11 @@ void ApexLegends::EmitLightProbes() {
         {
             auto now = std::chrono::high_resolution_clock::now();
             double elapsed = std::chrono::duration<double>(now - probeLightStart).count();
-            Sys_FPrintf(SYS_VRB, "     Phase 3 complete: %zu light shadow rays (%.2fs)\n", lightRayInfos.size(), elapsed);
+            Sys_FPrintf(SYS_VRB, "    Phase 3 complete: %zu light shadow rays (%.2fs)\n", lightRayInfos.size(), elapsed);
         }
         
         // ===== Phase 4: Assemble final ambient cubes from all data =====
-        Sys_FPrintf(SYS_VRB, "     Phase 4: Assembling %zu probe ambient cubes...\n", numProbes);
+        Sys_FPrintf(SYS_VRB, "    Phase 4: Assembling %zu probe ambient cubes...\n", numProbes);
         
         for (size_t p = 0; p < numProbes; p++) {
             ProbeCandidate candidate;
@@ -3570,7 +3545,7 @@ void ApexLegends::EmitLightProbes() {
     {
         auto now = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(now - probeLightStart).count();
-        Sys_Printf("     Finished computing %zu probe(s) in %.2fs\n", probePositions.size(), elapsed);
+        Sys_Printf("  Computed %zu probes in %.2fs\n", probePositions.size(), elapsed);
     }
     
     // Compress probe list if we have too many (Source SDK style optimization)
@@ -3615,9 +3590,10 @@ void ApexLegends::EmitLightProbes() {
     info.lightProbeRefCount = static_cast<uint32_t>(ApexLegends::Bsp::lightprobeReferences.size());
     ApexLegends::Bsp::lightprobeParentInfos.push_back(info);
     
-    Sys_Printf("     %9zu light probes\n", ApexLegends::Bsp::lightprobes.size());
-    Sys_Printf("     %9zu probe references\n", ApexLegends::Bsp::lightprobeReferences.size());
-    Sys_Printf("     %9zu tree nodes\n", ApexLegends::Bsp::lightprobeTree.size());
+    Sys_Printf("  %zu light probes, %zu refs, %zu tree nodes\n", 
+               ApexLegends::Bsp::lightprobes.size(),
+               ApexLegends::Bsp::lightprobeReferences.size(),
+               ApexLegends::Bsp::lightprobeTree.size());
     
     // Count probes with static lights assigned
     size_t probesWithLights = 0;
@@ -3626,7 +3602,7 @@ void ApexLegends::EmitLightProbes() {
             probesWithLights++;
         }
     }
-    Sys_Printf("     %9zu probes with static lights\n", probesWithLights);
+    Sys_FPrintf(SYS_VRB, "  %zu probes with static lights\n", probesWithLights);
 
     // Populate static prop lightprobe indices (lump 0x66)
     // One entry per static prop, pointing to the nearest light probe
@@ -3651,7 +3627,7 @@ void ApexLegends::EmitLightProbes() {
             }
             ApexLegends::Bsp::staticPropLightprobeIndices[i] = bestIdx;
         }
-        Sys_FPrintf(SYS_VRB, "     %9u static prop lightprobe indices\n", numStaticProps);
+        Sys_FPrintf(SYS_VRB, "  %u static prop lightprobe indices\n", numStaticProps);
     }
     
     // Export probe positions for visualization in Radiant
@@ -3660,7 +3636,7 @@ void ApexLegends::EmitLightProbes() {
         const auto probesFilename = StringStream(source, ".probes");
         FILE *probesFile = fopen(probesFilename, "w");
         if (probesFile) {
-            Sys_FPrintf(SYS_VRB, "     Writing probe positions to %s\n", probesFilename.c_str());
+            Sys_FPrintf(SYS_VRB, "    Writing probe positions to %s\n", probesFilename.c_str());
             
             // Header comment
             fprintf(probesFile, "# Light probe positions exported by remap\n");
@@ -3689,7 +3665,7 @@ void ApexLegends::EmitLightProbes() {
             }
             
             fclose(probesFile);
-            Sys_FPrintf(SYS_VRB, "     Probe positions exported for Radiant visualization\n");
+            Sys_FPrintf(SYS_VRB, "    Probe positions exported for Radiant visualization\n");
         } else {
             Sys_Warning("Could not write probe file: %s\n", probesFilename.c_str());
         }

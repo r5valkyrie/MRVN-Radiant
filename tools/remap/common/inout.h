@@ -40,6 +40,23 @@ void Sys_Printf( const char *text, ... );
 void Sys_FPrintf( int flag, const char *text, ... );
 void Sys_Warning( const char *format, ... );
 [[ noreturn ]] void Error( const char *error, ... );
+
+/* TUI console display.
+   When stdout is a terminal, draws a static REMAP header with in-place
+   updating phase list, progress bar and elapsed time using ANSI escapes.
+   Falls back to plain line-by-line output when piped.
+*/
+void Sys_ConsoleInit( const char *mapName, int totalPhases, const char *phaseNames[] );
+void Sys_ConsoleShutdown( double totalSeconds );
+void Sys_ConsoleRestore();   /* undo TUI mode (called by Error) */
+
+void Sys_PhaseBegin( int phase );   /* 0-based phase index */
+void Sys_PhaseEnd();
+
+void Sys_ProgressBegin( const char *label, int total );
+void Sys_ProgressUpdate( int current );
+void Sys_ProgressEnd();
+
 #define ENSURE( condition ) \
 	(void) \
 	( (!!( condition )) || \

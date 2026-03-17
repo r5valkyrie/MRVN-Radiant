@@ -123,7 +123,7 @@ int main( int argc, char **argv ){
 	/* we print out two versions, q3map's main version (since it evolves a bit out of GtkRadiant)
 	   and we put the GtkRadiant version to make it easy to track with what version of Radiant it was built with */
 
-	Sys_Printf("    ________  ____ ___  ____  ____ \n");
+	/*Sys_Printf("    ________  ____ ___  ____  ____ \n");
 	Sys_Printf("   / ___/ _ \\/ __ `__ \\/ __ `/ __ \\\n");
 	Sys_Printf("  / /  /  __/ / / / / / /_/ / /_/ /\n");
 	Sys_Printf(" /_/   \\___/_/ /_/ /_/\\__,_/ .___/\n");
@@ -132,7 +132,7 @@ int main( int argc, char **argv ){
 	Sys_Printf( "Radiant version: " RADIANT_VERSION "\n" ); // Radiant version with which we were built, may not be the same as the one running us!
 	//Sys_Printf( "%s\n", Q3MAP_MOTD );
 	Sys_Printf( "%s\n", args.getArg0() );
-	Sys_Printf( "\n" );
+	Sys_Printf( "\n" );*/
 
 	/* ydnar: new path initialization */
 	InitPaths( args );
@@ -219,7 +219,9 @@ int main( int argc, char **argv ){
 	}
 
 	/* emit time */
-	Sys_Printf( "%9.0f seconds elapsed\n", timer.elapsed_sec() );
+	if ( !g_compileHandledEndBSP ) {
+		//Sys_Printf( "%9.0f seconds elapsed\n", timer.elapsed_sec() );
+	}
 
 	/* return any error code */
 	return r;

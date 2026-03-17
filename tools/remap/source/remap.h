@@ -1586,6 +1586,7 @@ inline CopiedString  mapShaderFile;
 
 /* can't code */
 inline bool  doingBSP;
+inline bool  g_compileHandledEndBSP;
 
 // for .ase conversion
 inline bool  shadersAsBitmap;

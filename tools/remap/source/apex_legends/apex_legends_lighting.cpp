@@ -85,7 +85,7 @@ void ApexLegends::EmitCubemaps() {
         ApexLegends::Bsp::cubemaps.push_back(sample);
     }
 
-    Sys_Printf("     %9zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
+    Sys_Printf("  %zu cubemap samples\n", ApexLegends::Bsp::cubemaps.size());
 }
 
 /*
@@ -349,10 +349,9 @@ void ApexLegends::EmitWorldLights() {
         }
     }
 
-    Sys_Printf("     %9zu world lights\n", ApexLegends::Bsp::worldLights.size());
-    Sys_Printf("     %9zu light environments\n", skyAmbientLights.size());
-    Sys_Printf("     %9zu point/spot lights\n", otherLights.size());
-    Sys_Printf("     %9zu tweakable lights\n", ApexLegends::Bsp::tweakLights.size());
+    Sys_Printf("  %zu world lights (%zu environments, %zu point/spot, %zu tweakable)\n",
+        ApexLegends::Bsp::worldLights.size(), skyAmbientLights.size(),
+        otherLights.size(), ApexLegends::Bsp::tweakLights.size());
 }
 
 /*
@@ -569,11 +568,9 @@ void ApexLegends::EmitShadowMeshes() {
         ApexLegends::Bsp::csmNumObjRefsTotalForAabb.push_back(objRefCount);
     }
     
-    Sys_Printf("     %9zu shadow meshes\n", ApexLegends::Bsp::shadowMeshes.size());
-    Sys_Printf("     %9u triangles\n", totalTriangles);
-    Sys_Printf("     %9u vertices\n", totalVertices);
-    Sys_Printf("     %9zu CSM AABB nodes\n", ApexLegends::Bsp::csmAABBNodes.size());
-    Sys_Printf("     %9zu CSM obj refs\n", ApexLegends::Bsp::csmObjRefsTotal.size());
+    Sys_Printf("  %zu shadow meshes (%u tris, %u verts, %zu CSM nodes, %zu CSM refs)\n",
+        ApexLegends::Bsp::shadowMeshes.size(), totalTriangles, totalVertices,
+        ApexLegends::Bsp::csmAABBNodes.size(), ApexLegends::Bsp::csmObjRefsTotal.size());
 }
 
 /*
@@ -642,5 +639,5 @@ void ApexLegends::EmitShadowEnvironments() {
         }
     }
 
-    Sys_Printf("     %9zu shadow environments\n", ApexLegends::Bsp::shadowEnvironments.size());
+    Sys_Printf("  %zu shadow environments\n", ApexLegends::Bsp::shadowEnvironments.size());
 }

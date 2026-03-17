@@ -37,9 +37,9 @@
 static bool g_autocaulk = false;
 
 static void autocaulk_write(){
-	Sys_FPrintf( SYS_VRB, "--- autocaulk_write ---\n" );
+	//Sys_FPrintf( SYS_VRB, "--- autocaulk_write ---\n" );
 	const auto filename = StringStream( source, ".caulk" );
-	Sys_Printf( "writing %s\n", filename.c_str() );
+	//Sys_Printf( "writing %s\n", filename.c_str() );
 
 	FILE* file = SafeOpenWrite( filename, "wt" );
 
@@ -231,7 +231,7 @@ static void ProcessWorldModel( entity_t& e ){
 			blockSize[ 1 ] = blockSize[ 2 ] = blockSize[ 0 ];
 		}
 	}
-	Sys_Printf( "block size = { %d %d %d }\n", blockSize[ 0 ], blockSize[ 1 ], blockSize[ 2 ] );
+	//Sys_Printf( "block size = { %d %d %d }\n", blockSize[ 0 ], blockSize[ 1 ], blockSize[ 2 ] );
 
 	/* sof2: ignore leaks? */
 	const bool ignoreLeaks = e.boolForKey( "_ignoreleaks", "ignoreleaks" );
@@ -552,11 +552,11 @@ static void ProcessModels(){
 
 static void OnlyEnts( const char *filename ){
 	/* note it */
-	Sys_Printf( "--- OnlyEnts ---\n" );
+	//Sys_Printf( "--- OnlyEnts ---\n" );
 
 	LoadMapFile( filename, false, false );
 	
-	Sys_Printf( "Writing entities...\n" );
+	//Sys_Printf( "Writing entities...\n" );
 	for( entity_t &entity : entities ) {
 		Titanfall::EmitExtraEntity( entity );
 	}
@@ -576,11 +576,11 @@ int BSPMain( Args& args ){
 	bool onlyents = false;
 
 	if ( args.takeFront( "-bsp" ) ) {
-		Sys_Printf( "-bsp argument unnecessary\n" );
+		//Sys_Printf( "-bsp argument unnecessary\n" );
 	}
 
 	/* note it */
-	Sys_Printf( "--- BSP ---\n" );
+	////Sys_Printf( "--- BSP ---\n" );
 
 	doingBSP = true;
 	mapDrawSurfs = safe_calloc( sizeof( mapDrawSurface_t ) * MAX_MAP_DRAW_SURFS );
@@ -610,223 +610,223 @@ int BSPMain( Args& args ){
 			strcpy( tempSource, args.takeNext() );
 		}
 		while ( args.takeArg( "-nowater" ) ) {
-			Sys_Printf( "Disabling water\n" );
+			//Sys_Printf( "Disabling water\n" );
 			nowater = true;
 		}
 		while ( args.takeArg( "-keeplights" ) ) {
 			keepLights = true;
-			Sys_Printf( "Leaving light entities on map after compile\n" );
+			//Sys_Printf( "Leaving light entities on map after compile\n" );
 		}
 		while ( args.takeArg( "-nodetail" ) ) {
-			Sys_Printf( "Ignoring detail brushes\n" );
+			//Sys_Printf( "Ignoring detail brushes\n" );
 			nodetail = true;
 		}
 		while ( args.takeArg( "-fulldetail" ) ) {
-			Sys_Printf( "Turning detail brushes into structural brushes\n" );
+			//Sys_Printf( "Turning detail brushes into structural brushes\n" );
 			fulldetail = true;
 		}
 		while ( args.takeArg( "-nofog" ) ) {
-			Sys_Printf( "Fog volumes disabled\n" );
+			//Sys_Printf( "Fog volumes disabled\n" );
 			nofog = true;
 		}
 		while ( args.takeArg( "-nosubdivide" ) ) {
-			Sys_Printf( "Disabling brush face subdivision\n" );
+			//Sys_Printf( "Disabling brush face subdivision\n" );
 			nosubdivide = true;
 		}
 		while ( args.takeArg( "-leaktest" ) ) {
-			Sys_Printf( "Leaktest enabled\n" );
+			//Sys_Printf( "Leaktest enabled\n" );
 			leaktest = true;
 		}
 		while ( args.takeArg( "-verboseentities" ) ) {
-			Sys_Printf( "Verbose entities enabled\n" );
+			//Sys_Printf( "Verbose entities enabled\n" );
 			verboseEntities = true;
 		}
 		while ( args.takeArg( "-nocurves" ) ) {
-			Sys_Printf( "Ignoring curved surfaces (patches)\n" );
+			//Sys_Printf( "Ignoring curved surfaces (patches)\n" );
 			noCurveBrushes = true;
 		}
 		while ( args.takeArg( "-notjunc" ) ) {
-			Sys_Printf( "T-junction fixing disabled\n" );
+			//Sys_Printf( "T-junction fixing disabled\n" );
 			notjunc = true;
 		}
 		while ( args.takeArg( "-fakemap" ) ) {
-			Sys_Printf( "Generating fakemap.map\n" );
+			//Sys_Printf( "Generating fakemap.map\n" );
 			fakemap = true;
 		}
 		while ( args.takeArg( "-samplesize" ) ) {
 			sampleSize = std::max( 1, atoi( args.takeNext() ) );
-			Sys_Printf( "Lightmap sample size set to %dx%d units\n", sampleSize, sampleSize );
+			//Sys_Printf( "Lightmap sample size set to %dx%d units\n", sampleSize, sampleSize );
 		}
 		while ( args.takeArg( "-minsamplesize" ) ) {
 			minSampleSize = std::max( 1, atoi( args.takeNext() ) );
-			Sys_Printf( "Minimum lightmap sample size set to %dx%d units\n", minSampleSize, minSampleSize );
+			//Sys_Printf( "Minimum lightmap sample size set to %dx%d units\n", minSampleSize, minSampleSize );
 		}
 		while ( args.takeArg( "-custinfoparms" ) ) {
-			Sys_Printf( "Custom info parms enabled\n" );
+			//Sys_Printf( "Custom info parms enabled\n" );
 			useCustomInfoParms = true;
 		}
 
 		/* sof2 args */
 		while ( args.takeArg( "-rename" ) ) {
-			Sys_Printf( "Appending _bsp suffix to misc_model shaders (SOF2)\n" );
+			//Sys_Printf( "Appending _bsp suffix to misc_model shaders (SOF2)\n" );
 			renameModelShaders = true;
 		}
 
 		/* ydnar args */
 		while ( args.takeArg( "-ne" ) ) {
 			normalEpsilon = atof( args.takeNext() );
-			Sys_Printf( "Normal epsilon set to %f\n", normalEpsilon );
+			//Sys_Printf( "Normal epsilon set to %f\n", normalEpsilon );
 		}
 		while ( args.takeArg( "-de" ) ) {
 			distanceEpsilon = atof( args.takeNext() );
-			Sys_Printf( "Distance epsilon set to %f\n", distanceEpsilon );
+			//Sys_Printf( "Distance epsilon set to %f\n", distanceEpsilon );
 		}
 		while ( args.takeArg( "-mv" ) ) {
 			maxLMSurfaceVerts = std::max( 3, atoi( args.takeNext() ) );
 			value_maximize( maxSurfaceVerts, maxLMSurfaceVerts );
-			Sys_Printf( "Maximum lightmapped surface vertex count set to %d\n", maxLMSurfaceVerts );
+			//Sys_Printf( "Maximum lightmapped surface vertex count set to %d\n", maxLMSurfaceVerts );
 		}
 		while ( args.takeArg( "-mi" ) ) {
 			maxSurfaceIndexes = std::max( 3, atoi( args.takeNext() ) );
-			Sys_Printf( "Maximum per-surface index count set to %d\n", maxSurfaceIndexes );
+			//Sys_Printf( "Maximum per-surface index count set to %d\n", maxSurfaceIndexes );
 		}
 		while ( args.takeArg( "-np" ) ) {
 			npDegrees = std::max( 0.0, atof( args.takeNext() ) );
 			if ( npDegrees > 0.0f ) {
-				Sys_Printf( "Forcing nonplanar surfaces with a breaking angle of %f degrees\n", npDegrees );
+				//Sys_Printf( "Forcing nonplanar surfaces with a breaking angle of %f degrees\n", npDegrees );
 			}
 		}
 		while ( args.takeArg( "-snap" ) ) {
 			bevelSnap = std::max( 0, atoi( args.takeNext() ) );
 			if ( bevelSnap > 0 ) {
-				Sys_Printf( "Snapping brush bevel planes to %d units\n", bevelSnap );
+				//Sys_Printf( "Snapping brush bevel planes to %d units\n", bevelSnap );
 			}
 		}
 		while ( args.takeArg( "-nohint" ) ) {
-			Sys_Printf( "Hint brushes disabled\n" );
+			//Sys_Printf( "Hint brushes disabled\n" );
 			noHint = true;
 		}
 		while ( args.takeArg( "-flat" ) ) {
-			Sys_Printf( "Flatshading enabled\n" );
+			//Sys_Printf( "Flatshading enabled\n" );
 			flat = true;
 		}
 		while ( args.takeArg( "-celshader" ) ) {
 			globalCelShader( "textures/", args.takeNext() );
-			Sys_Printf( "Global cel shader set to \"%s\"\n", globalCelShader.c_str() );
+			//Sys_Printf( "Global cel shader set to \"%s\"\n", globalCelShader.c_str() );
 		}
 		while ( args.takeArg( "-meta" ) ) {
-			Sys_Printf( "Creating meta surfaces from brush faces\n" );
+			//Sys_Printf( "Creating meta surfaces from brush faces\n" );
 			meta = true;
 		}
 		while ( args.takeArg( "-metaadequatescore" ) ) {
 			metaAdequateScore = std::max( -1, atoi( args.takeNext() ) );
 			if ( metaAdequateScore >= 0 ) {
-				Sys_Printf( "Setting ADEQUATE meta score to %d (see surface_meta.c)\n", metaAdequateScore );
+				//Sys_Printf( "Setting ADEQUATE meta score to %d (see surface_meta.c)\n", metaAdequateScore );
 			}
 		}
 		while ( args.takeArg( "-metagoodscore" ) ) {
 			metaGoodScore = std::max( -1, atoi( args.takeNext() ) );
 			if ( metaGoodScore >= 0 ) {
-				Sys_Printf( "Setting GOOD meta score to %d (see surface_meta.c)\n", metaGoodScore );
+				//Sys_Printf( "Setting GOOD meta score to %d (see surface_meta.c)\n", metaGoodScore );
 			}
 		}
 		while ( args.takeArg( "-patchmeta" ) ) {
-			Sys_Printf( "Creating meta surfaces from patches\n" );
+			//Sys_Printf( "Creating meta surfaces from patches\n" );
 			patchMeta = true;
 		}
 		while ( args.takeArg( "-flares" ) ) {
-			Sys_Printf( "Flare surfaces enabled\n" );
+			//Sys_Printf( "Flare surfaces enabled\n" );
 			emitFlares = true;
 		}
 		while ( args.takeArg( "-noflares" ) ) {
-			Sys_Printf( "Flare surfaces disabled\n" );
+			//Sys_Printf( "Flare surfaces disabled\n" );
 			emitFlares = false;
 		}
 		while ( args.takeArg( "-skyfix" ) ) {
-			Sys_Printf( "GL_CLAMP sky fix/hack/workaround enabled\n" );
+			//Sys_Printf( "GL_CLAMP sky fix/hack/workaround enabled\n" );
 			skyFixHack = true;
 		}
 		while ( args.takeArg( "-debugsurfaces" ) ) {
-			Sys_Printf( "emitting debug surfaces\n" );
+			//Sys_Printf( "emitting debug surfaces\n" );
 			debugSurfaces = true;
 		}
 		while ( args.takeArg( "-debuginset" ) ) {
-			Sys_Printf( "Debug surface triangle insetting enabled\n" );
+			//Sys_Printf( "Debug surface triangle insetting enabled\n" );
 			debugInset = true;
 		}
 		while ( args.takeArg( "-debugportals" ) ) {
-			Sys_Printf( "Debug portal surfaces enabled\n" );
+			//Sys_Printf( "Debug portal surfaces enabled\n" );
 			debugPortals = true;
 		}
 		while ( args.takeArg( "-debugclip" ) ) {
-			Sys_Printf( "Debug model clip enabled\n" );
+			//Sys_Printf( "Debug model clip enabled\n" );
 			debugClip = true;
 		}
 		while ( args.takeArg(  "-clipdepth" ) ) {
 			clipDepthGlobal = atof( args.takeNext() );
-			Sys_Printf( "Model autoclip thickness set to %.3f\n", clipDepthGlobal );
+			//Sys_Printf( "Model autoclip thickness set to %.3f\n", clipDepthGlobal );
 		}
 		while ( args.takeArg( "-sRGBtex" ) ) {
 			texturesRGB = true;
-			Sys_Printf( "Textures are in sRGB\n" );
+			//Sys_Printf( "Textures are in sRGB\n" );
 		}
 		while ( args.takeArg( "-nosRGBtex" ) ) {
 			texturesRGB = false;
-			Sys_Printf( "Textures are linear\n" );
+			//Sys_Printf( "Textures are linear\n" );
 		}
 		while ( args.takeArg( "-sRGBcolor" ) ) {
 			colorsRGB = true;
-			Sys_Printf( "Colors are in sRGB\n" );
+			//Sys_Printf( "Colors are in sRGB\n" );
 		}
 		while ( args.takeArg( "-nosRGBcolor" ) ) {
 			colorsRGB = false;
-			Sys_Printf( "Colors are linear\n" );
+			//Sys_Printf( "Colors are linear\n" );
 		}
 		while ( args.takeArg( "-nosRGB" ) ) {
 			texturesRGB = false;
-			Sys_Printf( "Textures are linear\n" );
+			//Sys_Printf( "Textures are linear\n" );
 			colorsRGB = false;
-			Sys_Printf( "Colors are linear\n" );
+			//Sys_Printf( "Colors are linear\n" );
 		}
 		while ( args.takeArg( "-altsplit" ) ) {
-			Sys_Printf( "Alternate BSP splitting (by 27) enabled\n" );
+			//Sys_Printf( "Alternate BSP splitting (by 27) enabled\n" );
 			bspAlternateSplitWeights = true;
 		}
 		while ( args.takeArg( "-deep" ) ) {
-			Sys_Printf( "Deep BSP tree generation enabled\n" );
+			//Sys_Printf( "Deep BSP tree generation enabled\n" );
 			deepBSP = true;
 		}
 		while ( args.takeArg( "-maxarea" ) ) {
-			Sys_Printf( "Max Area face surface generation enabled\n" );
+			//Sys_Printf( "Max Area face surface generation enabled\n" );
 			maxAreaFaceSurface = true;
 		}
 		while ( args.takeArg( "-noob" ) ) {
-			Sys_Printf( "No oBs!\n" );
+			//Sys_Printf( "No oBs!\n" );
 			g_noob = true;
 		}
 		while ( args.takeArg( "-autocaulk" ) ) {
-			Sys_Printf( "\trunning in autocaulk mode\n" );
+			//Sys_Printf( "\trunning in autocaulk mode\n" );
 			g_autocaulk = true;
 		}
 		// Remap args
 		while ( args.takeArg( "-onlyents" ) ) {
-			Sys_Printf( "Running entity-only compile\n" );
+			//Sys_Printf( "Running entity-only compile\n" );
 			onlyents = true;
 		}
 		while ( args.takeArg( "-externalmodels" ) ) {
-			Sys_Printf( "External models enabled\n" );
+			//Sys_Printf( "External models enabled\n" );
 			g_bExternalModels = true;
 		}
 		while ( args.takeArg( "-nolightmaps" ) ) {
-			Sys_Printf( "Lightmaps disabled\n" );
+			//Sys_Printf( "Lightmaps disabled\n" );
 			noLightmaps = true;
 		}
 		while ( args.takeArg( "-nolightprobes" ) ) {
-			Sys_Printf( "Light probes disabled (single stub probe only)\n" );
+			//Sys_Printf( "Light probes disabled (single stub probe only)\n" );
 			noLightProbes = true;
 		}
 		while ( args.takeArg( "-singlelightprobe" ) ) {
-			Sys_Printf( "Single light probe mode enabled\n" );
+			//Sys_Printf( "Single light probe mode enabled\n" );
 			singleLightProbe = true;
 		}
 		// complain if there's args remaning
@@ -892,18 +892,21 @@ int BSPMain( Args& args ){
 
 	/* process world and submodels */
 	//ProcessModels();
-	Sys_FPrintf( SYS_VRB, "--- CompileMap ---\n" );
+	//Sys_FPrintf( SYS_VRB, "--- CompileMap ---\n" );
 	g_game->compile();
-	Sys_Printf("\n" );
 
-	/* set light styles from targetted light entities */
-	//SetLightStyles();
+	if ( !g_compileHandledEndBSP ) {
+		//Sys_Printf("\n" );
 
-	/* process in game advertisements */
-	//ProcessAdvertisements();
+		/* set light styles from targetted light entities */
+		//SetLightStyles();
 
-	/* finish and write bsp */
-	EndBSPFile( true );
+		/* process in game advertisements */
+		//ProcessAdvertisements();
+
+		/* finish and write bsp */
+		EndBSPFile( true );
+	}
 
 	/* remove temp map source file if appropriate */
 	if ( !strEmpty( tempSource ) ) {

@@ -152,7 +152,7 @@ namespace {
         // Get or create contents mask index
         int contentsIdx = ApexLegends::EmitContentsMask(contentFlags);
         if (contentsIdx > 255) {
-            Sys_FPrintf(SYS_WRN, "Warning: Contents mask index %d exceeds uint8_t max, clamping\n", contentsIdx);
+            Sys_Warning("Contents mask index %d exceeds uint8_t max, clamping\n", contentsIdx);
             contentsIdx = 255;
         }
 
@@ -222,7 +222,7 @@ namespace {
         
         // Check if we exceed the 12-bit limit (0-4095, but bit 11 is a flag so 0-2047 safe)
         if (propIdx >= 2048) {
-            Sys_FPrintf(SYS_WRN, "Warning: Surface property index %d exceeds 11-bit limit, clamping\n", propIdx);
+            Sys_Warning("Surface property index %d exceeds 11-bit limit, clamping\n", propIdx);
             return 2047;
         }
 
@@ -1092,8 +1092,6 @@ void ApexLegends::EmitBVHNode() {
     bool hasProps = !g_collisionStaticProps.empty();
 
     if (!hasTris && !hasProps) {
-        Sys_FPrintf(SYS_WRN, "Warning: No collision geometry, emitting empty BVH node\n");
-
         model.origin[0] = model.origin[1] = model.origin[2] = 0.0f;
         model.scale = 1.0f / 65536.0f;
         model.vertexIndex = 0;
@@ -1188,7 +1186,7 @@ void ApexLegends::EmitBVHNode() {
     }
 
     if (rootBuildIndex < 0) {
-        Sys_FPrintf(SYS_WRN, "Warning: BVH build failed, emitting empty node\n");
+        Sys_Warning("BVH build failed, emitting empty node\n");
         ApexLegends::BVHNode_t& node = ApexLegends::Bsp::bvhNodes.emplace_back();
         memset(&node, 0, sizeof(node));
         node.cmIndex = EmitContentsMask(CONTENTS_SOLID);

@@ -1019,11 +1019,11 @@ static void ParseRawBrush( bool onlyLights ){
 			GetToken( false );
 			if ( strEqual( token, "[" ) ){
 				g_brushType = EBrushType::Valve220;
-				Sys_FPrintf( SYS_VRB, "       Detected brushType = VALVE 220\n" );
+				//Sys_FPrintf( SYS_VRB, "       Detected brushType = VALVE 220\n" );
 			}
 			else{
 				g_brushType = EBrushType::Quake;
-				Sys_FPrintf( SYS_VRB, "       Detected brushType = QUAKE (Axial Projection)\n" );
+				//Sys_FPrintf( SYS_VRB, "       Detected brushType = QUAKE (Axial Projection)\n" );
 			}
 			UnGetToken();
 		}
@@ -1519,7 +1519,7 @@ static bool ParseMapEntity( bool onlyLights, bool noCollapseGroups, int mapEntit
 			}
 			else if ( strEqual( token, "brushDef" ) ) {
 				if ( g_brushType == EBrushType::Undefined ) {
-					Sys_FPrintf( SYS_VRB, "       Detected brushType = BRUSH PRIMITIVES\n" );
+					//Sys_FPrintf( SYS_VRB, "       Detected brushType = BRUSH PRIMITIVES\n" );
 					g_brushType = EBrushType::Bp;
 				}
 				ParseBrush( onlyLights, noCollapseGroups, mapEnt, mapPrimitiveNum );
@@ -1663,7 +1663,7 @@ void LoadMapFile( const char *filename, bool onlyLights, bool noCollapseGroups )
 
 
 	/* note it */
-	Sys_FPrintf( SYS_VRB, "--- LoadMapFile ---\n" );
+	//Sys_FPrintf( SYS_VRB, "--- LoadMapFile ---\n" );
 
 	/* load the map file */
 	if( !LoadScriptFile( filename, -1 ) )
@@ -1692,7 +1692,7 @@ void LoadMapFile( const char *filename, bool onlyLights, bool noCollapseGroups )
 	/* light loading */
 	if ( onlyLights ) {
 		/* emit some statistics */
-		Sys_FPrintf( SYS_VRB, "%9zu light entities\n", entities.size() - oldNumEntities );
+		//Sys_FPrintf( SYS_VRB, "%9zu light entities\n", entities.size() - oldNumEntities );
 	}
 	else
 	{
@@ -1706,7 +1706,7 @@ void LoadMapFile( const char *filename, bool onlyLights, bool noCollapseGroups )
 		/* get brush counts */
 		const int numMapBrushes = entities[ 0 ].brushes.size();
 		if ( (float) c_detail / (float) numMapBrushes < 0.10f && numMapBrushes > 500 ) {
-			Sys_Warning( "Over 90 percent structural map detected. Compile time may be adversely affected.\n" );
+			//Sys_Warning( "Over 90 percent structural map detected. Compile time may be adversely affected.\n" );
 		}
 
 		/* emit some statistics */

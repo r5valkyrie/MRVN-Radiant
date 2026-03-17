@@ -301,7 +301,7 @@ void InitPaths( Args& args ){
 
 
 	/* note it */
-	Sys_FPrintf( SYS_VRB, "--- InitPaths ---\n" );
+	//Sys_FPrintf( SYS_VRB, "--- InitPaths ---\n" );
 
 	/* get the install path for backup */
 	LokiInitPaths( args.getArg0(), homePath, installPath );
@@ -374,7 +374,7 @@ void InitPaths( Args& args ){
 		{
 			/* extract the arg */
 			stream( DirectoryCleaned( arg ) );
-			Sys_FPrintf( SYS_VRB, "Searching for \"%s\" in \"%s\"...\n", g_game->magic, stream.c_str() );
+			//Sys_FPrintf( SYS_VRB, "Searching for \"%s\" in \"%s\"...\n", g_game->magic, stream.c_str() );
 			/* check for the game's magic word */
 			char* found = strIstr( stream.c_str(), g_game->magic );
 			if( found ){

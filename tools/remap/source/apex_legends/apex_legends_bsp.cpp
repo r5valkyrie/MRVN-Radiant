@@ -250,9 +250,20 @@ void CompileR5BSPFile() {
     auto compileStart = std::chrono::steady_clock::now();
     ApexLegends::SetupGameLump();
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 1: Static Props ============\n");
-    /* ================================================================ */
+    const char *phaseNames[] = {
+        "Static Props",
+        "Models & Geometry",
+        "Vis Tree",
+        "Entities & Lighting",
+        "GPU Ray Tracing",
+        "Lightmaps",
+        "Light Probes",
+        "Portals & Cells",
+        "Write BSP",
+    };
+    Sys_ConsoleInit( source, 9, phaseNames );
+
+    Sys_PhaseBegin( 0 );
     {
         int propCount = 0;
         for (entity_t &entity : entities) {
@@ -261,12 +272,10 @@ void CompileR5BSPFile() {
                 propCount++;
             }
         }
-        Sys_Printf("     %9d static props\n", propCount);
+        Sys_Printf("  %d static props\n", propCount);
     }
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 2: Models & Geometry ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 1 );
     {
         int modelIndex = 0;
         int brushEntityCount = 0;
@@ -276,7 +285,7 @@ void CompileR5BSPFile() {
             #define ENT_IS(classname) striEqual(pszClassname, classname)
 
             if (ENT_IS("worldspawn")) {
-                Sys_Printf("\n--- Model %d: worldspawn ---\n", modelIndex);
+                Sys_Printf("\n  Model %d: worldspawn\n", modelIndex);
                 ApexLegends::BeginModel(entity);
                 Shared::MakeMeshes(entity);
                 if (!noLightmaps) {
@@ -333,7 +342,7 @@ void CompileR5BSPFile() {
 
             #undef ENT_IS
         }
-        Sys_Printf("     %9d models (%d worldspawn + %d brush entities)\n",
+        Sys_Printf("  %d models (%d worldspawn + %d brush entities)\n",
                     modelIndex, 1, brushEntityCount);
     }
 
@@ -348,9 +357,7 @@ void CompileR5BSPFile() {
     /* Regenerate worldspawn meshes for vis/lighting passes */
     Shared::MakeMeshes(entities[0]);
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 3: Vis Tree ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 2 );
     {
         auto t0 = std::chrono::steady_clock::now();
         Shared::MakeVisReferences();
@@ -358,12 +365,10 @@ void CompileR5BSPFile() {
         Shared::MergeVisTree(Shared::visRoot);
         ApexLegends::EmitVisTree();
         auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        Sys_Printf("     Vis tree built (%.2fs)\n", dt);
+        Sys_Printf("  Vis tree built (%.2fs)\n", dt);
     }
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 4: Entities & Lighting Setup ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 3 );
     Titanfall::EmitEntityPartitions();
     ApexLegends::EmitLevelInfo();
     ApexLegends::EmitWorldLights();
@@ -371,30 +376,24 @@ void CompileR5BSPFile() {
     ApexLegends::EmitShadowMeshes();
     ApexLegends::EmitShadowEnvironments();
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 5: GPU Ray Tracing Init ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 4 );
     if (noLightmaps && (noLightProbes || singleLightProbe)) {
-        Sys_Printf("     Skipped (lightmaps and probes disabled)\n");
+        Sys_Printf("  Skipped (lightmaps and probes disabled)\n");
     } else if (HIPRTTrace::Init()) {
         HIPRTTrace::BuildScene(true);
     }
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 6: Lightmaps ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 5 );
     if (noLightmaps) {
-        Sys_Printf("     Lightmaps disabled by -nolightmaps\n");
+        Sys_Printf("  Lightmaps disabled\n");
     }
     // EmitLightmaps handles the empty-surfaces case and creates a minimal stub.
     // When noLightmaps is set, SetupSurfaceLightmaps was skipped so surfaces are empty.
     ApexLegends::EmitLightmaps();
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 7: Light Probes ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 6 );
     if (noLightProbes || singleLightProbe) {
-        Sys_Printf("     Light probes %s, generating single stub probe\n",
+        Sys_Printf("  Light probes %s, generating stub\n",
                    noLightProbes ? "disabled by -nolightprobes" : "limited by -singlelightprobe");
         ApexLegends::EmitSingleLightProbe();
     } else {
@@ -403,12 +402,15 @@ void CompileR5BSPFile() {
 
     HIPRTTrace::Shutdown();
 
-    /* ================================================================ */
-    Sys_Printf("\n============ Phase 8: Portals & Cells ============\n");
-    /* ================================================================ */
+    Sys_PhaseBegin( 7 );
     ApexLegends::EmitPortals();
     ApexLegends::EmitCells();
 
+    Sys_PhaseBegin( 8 );
+    EndBSPFile( true );
+    g_compileHandledEndBSP = true;
+    Sys_PhaseEnd();
+
     auto totalTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - compileStart).count();
-    Sys_Printf("\n============ Compile Complete (%.2fs) ============\n\n", totalTime);
+    Sys_ConsoleShutdown( totalTime );
 }

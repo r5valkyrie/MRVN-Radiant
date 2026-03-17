@@ -353,7 +353,7 @@ void WriteMapShaderFile() {
 
             /* print it to the file */
             fprintf(file, "%s%s\n", si.shader.c_str(), si.shaderText);
-            // Sys_Printf("%s%s\n", si.shader.c_str(), si.shaderText);
+            // //Sys_Printf("%s%s\n", si.shader.c_str(), si.shaderText);
             /* FIXME: remove debugging code */
 
             Sys_FPrintf(SYS_VRB, ".");
@@ -367,7 +367,7 @@ void WriteMapShaderFile() {
     Sys_FPrintf(SYS_VRB, "\n");
 
     /* print some stats */
-    Sys_Printf("%9d custom shaders emitted\n", num);
+    //Sys_Printf("%9d custom shaders emitted\n", num);
 }
 
 
@@ -835,7 +835,7 @@ static void ParseShaderFile(const char *filename) {
     /* load the shader */
     LoadScriptFile(filename);
 
-    Sys_Printf( "Parsing shader file: \"%s\"\n", filename );
+    //Sys_Printf( "Parsing shader file: \"%s\"\n", filename );
 
     /* tokenize it */
     while (GetToken(true)) {  /* test for end of file */
@@ -906,7 +906,7 @@ static void ParseShaderFile(const char *filename) {
         text.text << '\n';
         si->shaderText = copystring(text.text);
         //% if (vector3_length(si->vecs[0])) {
-        //%     Sys_Printf("%s\n", si->shaderText);
+        //%     //Sys_Printf("%s\n", si->shaderText);
         //% }
 
         /* ydnar: clear shader text buffer */
@@ -1012,7 +1012,7 @@ void LoadShaderInfo() {
     }
 
     if ( shaderFiles.empty() ) {
-        Sys_Printf( "%s", "No shaderlist.txt found: loading all shaders\n" );
+        //Sys_Printf( "%s", "No shaderlist.txt found: loading all shaders\n" );
         shaderFiles = vfsListShaderFiles( g_game->shaderPath );
     }
 
@@ -1022,7 +1022,7 @@ void LoadShaderInfo() {
     }
 
     /* emit some statistics */
-    Sys_FPrintf( SYS_VRB, "%9d shaderInfo\n", numShaderInfo );
+    //Sys_FPrintf( SYS_VRB, "%9d shaderInfo\n", numShaderInfo );
 
     if ( numShaderInfo == 0 )
             Sys_FPrintf( SYS_WRN, "WARNING: 0 shaders loaded! Make sure you setup your shader directory and shader definitions properly!\n" );
