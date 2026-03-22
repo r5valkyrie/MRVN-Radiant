@@ -73,7 +73,7 @@
 #include "string/string.h"
 
 #include <QMainWindow>
-#include <QOpenGLWidget>
+#include "gtkutil/vulkanwidget.h"
 
 #include <QApplication>
 #include <QDragEnterEvent>
@@ -937,15 +937,15 @@ public:
 				colorarr1[count + 2] = colorarr1[count + 3] = Colour4b( 255, 255, 255, alpha2 * 255 );
 				coord += grid;
 				edgearr[count] =
-				edgearr[count + 2] = GL_FALSE;
+				edgearr[count + 2] = 0;
 				edgearr[count + 1] =
-				edgearr[count + 3] = GL_TRUE;
+				edgearr[count + 3] = 1;
 			}
 
 			if( points.size() == 1 ){
 				points.push_back( points[0] + g_vector3_axes[i2] * 8 );
 				for( std::size_t k = 0; k < count; k += 4 ){
-					edgearr[k + 1] = GL_FALSE;
+					edgearr[k + 1] = 0;
 				}
 			}
 
@@ -1698,7 +1698,7 @@ void CamWnd_Remove_Handlers_FreeMove( CamWnd& camwnd ){
 	KeyEvent_disconnect( "CameraFreeFocus" );
 }
 
-class CamGLWidget : public QOpenGLWidget
+class CamGLWidget : public VulkanWidget
 {
 	CamWnd& m_camwnd;
 	FBO *m_fbo{};
@@ -1710,7 +1710,7 @@ class CamGLWidget : public QOpenGLWidget
 	std::vector<scene::Instance*> m_presetPreviewInstances;
 	std::vector<Entity*> m_presetPreviewEntities;
 public:
-	CamGLWidget( CamWnd& camwnd ) : QOpenGLWidget(), m_camwnd( camwnd ) {
+	CamGLWidget( CamWnd& camwnd ) : VulkanWidget(), m_camwnd( camwnd ) {
 		setMouseTracking( true );
 		setAcceptDrops( true );
 	}
@@ -1723,9 +1723,6 @@ public:
 protected:
 	void initializeGL() override
 	{
-		// Phase 6: pass the native QWindow* to create the Vulkan surface.
-		if ( QWindow* w = this->windowHandle() )
-			glwidget_context_created( w );
 	}
 	void resizeGL( int w, int h ) override
 	{
@@ -1742,6 +1739,8 @@ protected:
 	}
 	void paintGL() override
 	{
+		if( !m_fbo )
+			return;
 		if( m_fbo->m_samples != g_camwindow_globals_private.m_MSAA ){
 			delete m_fbo;
 			m_fbo = new FBO( m_camwnd.getCamera().width, m_camwnd.getCamera().height, true, g_camwindow_globals_private.m_MSAA );
@@ -1835,7 +1834,7 @@ protected:
 			event->ignore();
 			return;
 		}
-		QOpenGLWidget::dragEnterEvent( event );
+		QWidget::dragEnterEvent( event );
 	}
 	void dragMoveEvent( QDragMoveEvent* event ) override {
 		if( hasSpawnPreviewMimeData( event->mimeData() ) ){
@@ -1846,15 +1845,15 @@ protected:
 			event->ignore();
 			return;
 		}
-		QOpenGLWidget::dragMoveEvent( event );
+		QWidget::dragMoveEvent( event );
 	}
 	void dragLeaveEvent( QDragLeaveEvent* event ) override {
 		cancelPresetPreview();
-		QOpenGLWidget::dragLeaveEvent( event );
+		QWidget::dragLeaveEvent( event );
 	}
 	void dropEvent( QDropEvent* event ) override {
 		if( !hasSpawnPreviewMimeData( event->mimeData() ) ){
-			QOpenGLWidget::dropEvent( event );
+			QWidget::dropEvent( event );
 			return;
 		}
 

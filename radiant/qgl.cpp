@@ -11,6 +11,9 @@
  */
 
 #include "igl.h"            // VulkanBinding, GlobalVulkan()
+#include "ivkcontext.h"     // VKContext_beginTransferCmd / VKContext_endTransferCmd
+#include "vktexture.h"      // VKTexture_destroy
+#include <vk_mem_alloc.h>   // vmaCreateBuffer / vmaDestroyBuffer
 #include "debugging/debugging.h"
 
 // ── Shutdown helper ───────────────────────────────────────────────────────────
@@ -48,7 +51,14 @@ public:
 
 	VkAPI()
 	{
-		m_vk.assertNoErrors = &VK_assertNoErrors;
+		m_vk.assertNoErrors     = &VK_assertNoErrors;
+		// Populate plugin-accessible function pointers so that DLLs that
+		// include render.h don't need to link against the radiant executable.
+		m_vk.pfnVmaCreateBuffer  = vmaCreateBuffer;
+		m_vk.pfnVmaDestroyBuffer = vmaDestroyBuffer;
+		m_vk.pfnBeginTransferCmd = VKContext_beginTransferCmd;
+		m_vk.pfnEndTransferCmd   = VKContext_endTransferCmd;
+		m_vk.pfnDestroyTexture   = VKTexture_destroy;
 	}
 	~VkAPI()
 	{

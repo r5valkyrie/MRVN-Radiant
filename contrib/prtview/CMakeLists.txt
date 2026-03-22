@@ -15,6 +15,7 @@ add_library(prtview MODULE
 target_include_directories(prtview PRIVATE .
                            ${GLIB_INCLUDE_DIRS}
                            ${QT5_INCLUDE_DIRS}
+                           ${Vulkan_INCLUDE_DIRS}
                           )
 
 target_link_libraries(prtview

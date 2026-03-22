@@ -11,10 +11,12 @@ add_library(assmodel MODULE
 target_include_directories(assmodel PRIVATE
                            assimp
                            ${QT5_INCLUDE_DIRS}
+                           ${Vulkan_INCLUDE_DIRS}
                           )
 target_link_libraries(assmodel PRIVATE
                       assimp
                       Qt5::Gui
+                      Vulkan::Vulkan
                      )
 
 if(NOT ${MSVC})

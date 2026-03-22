@@ -59,7 +59,7 @@
 #include <QHeaderView>
 #include <QStandardItemModel>
 #include <QScrollBar>
-#include <QOpenGLWidget>
+#include "gtkutil/vulkanwidget.h"
 
 #include "mainframe.h"
 #include "camwindow.h"
@@ -551,7 +551,7 @@ public:
 	const int m_MSAA = 8;
 
 	QWidget* m_parent = nullptr;
-	QOpenGLWidget* m_gl_widget = nullptr;
+	VulkanWidget* m_gl_widget = nullptr;
 	QScrollBar* m_gl_scroll = nullptr;
 	QTreeView* m_treeView = nullptr;
 
@@ -916,7 +916,7 @@ void ModelBrowser_render(){
 }
 
 
-class ModelBrowserGLWidget : public QOpenGLWidget
+class ModelBrowserGLWidget : public VulkanWidget
 {
 	ModelBrowser& m_modBro;
 	FBO *m_fbo{};
@@ -925,7 +925,7 @@ class ModelBrowserGLWidget : public QOpenGLWidget
 	QPoint m_dragStartPos;
 	bool m_leftPressActive = false;
 public:
-	ModelBrowserGLWidget( ModelBrowser& modelBrowser ) : QOpenGLWidget(), m_modBro( modelBrowser )
+	ModelBrowserGLWidget( ModelBrowser& modelBrowser ) : VulkanWidget(), m_modBro( modelBrowser )
 	{
 	}
 
@@ -936,9 +936,6 @@ public:
 protected:
 	void initializeGL() override
 	{
-		// Phase 6: pass the native QWindow* to create the Vulkan surface.
-		if ( QWindow* w = this->windowHandle() )
-			glwidget_context_created( w );
 	}
 	void resizeGL( int w, int h ) override
 	{
@@ -953,6 +950,8 @@ protected:
 	}
 	void paintGL() override
 	{
+		if( !m_fbo )
+			return;
 		if( ScreenUpdates_Enabled() && m_fbo->bind() ){
 			GlobalOpenGL_debugAssertNoErrors();
 			ModelBrowser_render();
@@ -995,7 +994,7 @@ protected:
 			return;
 		}
 
-		QOpenGLWidget::mouseMoveEvent( event );
+		VulkanWidget::mouseMoveEvent( event );
 	}
 	void mouseDoubleClick(){
 		/* create misc_model */

@@ -52,7 +52,7 @@
 #include <QMetaProperty>
 #include <QScrollBar>
 #include <QSplitter>
-#include <QOpenGLWidget>
+#include "gtkutil/vulkanwidget.h"
 #include <QTabWidget>
 #include <QLabel>
 #include <QToolBar>
@@ -183,7 +183,7 @@ public:
 	CopiedString m_shader;    // current shader
 
 	QWidget* m_parent;
-	QOpenGLWidget* m_gl_widget;
+	VulkanWidget* m_gl_widget;
 	QScrollBar* m_texture_scroll;
 	QTabWidget* m_tabs;
 	QTreeView* m_treeView;
@@ -1550,13 +1550,13 @@ void TextureBrowser_filterSetModeIcon( QAction *action ){
 
 #include "timer.h"
 
-class TexWndGLWidget : public QOpenGLWidget
+class TexWndGLWidget : public VulkanWidget
 {
 	TextureBrowser& m_texBro;
 	qreal m_scale;
 	MousePresses m_mouse;
 public:
-	TexWndGLWidget( TextureBrowser& textureBrowser ) : QOpenGLWidget(), m_texBro( textureBrowser )
+	TexWndGLWidget( TextureBrowser& textureBrowser ) : VulkanWidget(), m_texBro( textureBrowser )
 	{
 	}
 
@@ -1566,8 +1566,7 @@ public:
 protected:
 	void initializeGL() override
 	{
-		glwidget_context_created( this->windowHandle() );
-		// show definitely after gl init, otherwise crash
+		// show definitely after Vulkan context init, otherwise crash
 		TextureBrowser_ShowStartupShaders();
 	}
 	void resizeGL( int w, int h ) override

@@ -50,7 +50,9 @@ add_library(entity MODULE
 
 target_include_directories(entity PRIVATE
                            ${QT5_INCLUDE_DIRS}
+                           ${Vulkan_INCLUDE_DIRS}
                           )
 target_link_libraries(entity PRIVATE
                       Qt5::Gui
+                      Vulkan::Vulkan
                      )

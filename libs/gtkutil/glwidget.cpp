@@ -53,9 +53,6 @@ void glwidget_setDefaultFormat()
 		ASSERT_MESSAGE( ok, "Failed to create QVulkanInstance" );
 	}
 
-	// Store our VkInstance reference before any window is created
-	GlobalVulkan().instance = g_vkInstance->vkInstance();
-
 	globalOutputStream() << "Vulkan instance created (API "
 	                     << g_vkInstance->apiVersion().majorVersion() << '.'
 	                     << g_vkInstance->apiVersion().minorVersion() << ")\n";
@@ -69,6 +66,9 @@ void glwidget_context_created( QWindow* window )
 		VkSurfaceKHR surface = g_vkInstance->surfaceForWindow( window );
 		ASSERT_MESSAGE( surface != VK_NULL_HANDLE,
 		                "glwidget_context_created: surfaceForWindow returned VK_NULL_HANDLE" );
+
+		// Module system is now up — populate the VkInstance handle before calling VKContext_create.
+		GlobalVulkan().instance = g_vkInstance->vkInstance();
 
 		VKContext_create( surface,
 		                  static_cast<uint32_t>( window->width()  ),

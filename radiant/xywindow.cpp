@@ -39,7 +39,7 @@
 #include "image.h"
 #include "gtkutil/messagebox.h"
 
-#include <QOpenGLWidget>
+#include "gtkutil/vulkanwidget.h"
 #include <QMouseEvent>
 #include <QTimer>
 #include <cmath>
@@ -446,14 +446,14 @@ void xy_update_xor_rectangle( XYWnd& self, rect_t area ){
 }
 
 
-class XYGLWidget : public QOpenGLWidget
+class XYGLWidget : public VulkanWidget
 {
 	XYWnd& m_xywnd;
 	DeferredMotion m_deferred_motion;
 	FBO *m_fbo{};
 	qreal m_scale;
 public:
-	XYGLWidget( XYWnd& xywnd ) : QOpenGLWidget(), m_xywnd( xywnd ),
+	XYGLWidget( XYWnd& xywnd ) : VulkanWidget(), m_xywnd( xywnd ),
 		m_deferred_motion( [this]( const QMouseEvent& event ){
 				if ( m_xywnd.chaseMouseMotion( event.x() * m_scale, event.y() * m_scale ) ) {
 					return;
@@ -472,7 +472,6 @@ public:
 protected:
 	void initializeGL() override
 	{
-		glwidget_context_created( this->windowHandle() );
 	}
 	void resizeGL( int w, int h ) override
 	{
@@ -489,6 +488,8 @@ protected:
 	}
 	void paintGL() override
 	{
+		if( !m_fbo )
+			return;
 		if( m_fbo->m_samples != g_xywindow_globals_private.m_MSAA ){
 			delete m_fbo;
 			m_fbo = new FBO( m_xywnd.Width(), m_xywnd.Height(), false, g_xywindow_globals_private.m_MSAA );

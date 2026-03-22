@@ -36,8 +36,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compile flags
-set(CMAKE_CXX_FLAGS_RELEASE "-Os")
-set(CMAKE_C_FLAGS_RELEASE "")
+if(MSVC)
+    # MSVC: optimize for size; keep default /MD and other flags
+    string(REPLACE "/O2" "/O1" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string(REPLACE "/O2" "/O1" CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}")
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-Os")
+    set(CMAKE_C_FLAGS_RELEASE "")
+endif()
 
 if(UNIX)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
@@ -121,7 +127,7 @@ FetchContent_MakeAvailable(VulkanMemoryAllocator)
 # ── Build-time GLSL → SPIR-V compilation ─────────────────────────────────────
 find_program(GLSLC_EXECUTABLE
     NAMES glslc
-    HINTS "${Vulkan_GLSLC_EXECUTABLE}" ENV VULKAN_SDK
+    HINTS "${CMAKE_SOURCE_DIR}/windeps/vulkan/bin" ENV VULKAN_SDK
     PATH_SUFFIXES bin
 )
 
@@ -164,7 +170,7 @@ endif()
 # VMA is FetchContent-populated — expose its include dir globally so ivk.h
 # (in include/) can find <vk_mem_alloc.h> from any target.
 FetchContent_GetProperties(VulkanMemoryAllocator SOURCE_DIR _VMA_SRC)
-include_directories(include libs ${_VMA_SRC}/include ${CMAKE_SOURCE_DIR})
+include_directories(include libs ${_VMA_SRC}/include ${Vulkan_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR})
 
 
 # Libs

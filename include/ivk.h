@@ -92,6 +92,26 @@ struct VulkanBinding
 
 	// ── Debug / error checking ─────────────────────────────────────────────
 	void ( *assertNoErrors )( const char* file, int line ) = nullptr;
+
+	// ── Plugin-accessible callbacks ────────────────────────────────────────
+	// These are populated by radiant at startup (radiant/qgl.cpp) so that
+	// plugins can call Vulkan/VMA/vkcontext functions without linking to the
+	// radiant executable directly.
+
+	// VMA buffer operations (implementation compiled only into radiant/vma_impl.cpp)
+	VkResult (*pfnVmaCreateBuffer )(VmaAllocator,
+	                                const VkBufferCreateInfo*,
+	                                const VmaAllocationCreateInfo*,
+	                                VkBuffer*, VmaAllocation*,
+	                                VmaAllocationInfo*) = nullptr;
+	void     (*pfnVmaDestroyBuffer)(VmaAllocator, VkBuffer, VmaAllocation) = nullptr;
+
+	// Single-shot transfer commands (radiant/vkcontext.cpp)
+	VkCommandBuffer (*pfnBeginTransferCmd)()                = nullptr;
+	void            (*pfnEndTransferCmd  )(VkCommandBuffer) = nullptr;
+
+	// Texture lifetime (radiant/vktexture.cpp)
+	void            (*pfnDestroyTexture  )(uint32_t index)  = nullptr;
 };
 
 // ── Module-system integration ─────────────────────────────────────────────────

@@ -51,7 +51,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
-#include <QOpenGLWidget>
+#include "gtkutil/vulkanwidget.h"
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QShortcut>
@@ -1427,13 +1427,13 @@ struct PresetPreviewModel
 	Vector3 modelRotation;
 };
 
-class PresetModelPreviewWidget : public QOpenGLWidget
+class PresetModelPreviewWidget : public VulkanWidget
 {
 	PresetModelPreview& m_preview;
 	QPoint m_lastPos;
 	bool m_dragging = false;
 public:
-	PresetModelPreviewWidget( PresetModelPreview& preview ) : m_preview( preview ){
+	PresetModelPreviewWidget( PresetModelPreview& preview ) : VulkanWidget(), m_preview( preview ){
 	}
 	~PresetModelPreviewWidget() override;
 protected:
@@ -1685,7 +1685,6 @@ PresetModelPreviewWidget::~PresetModelPreviewWidget(){
 }
 
 void PresetModelPreviewWidget::initializeGL(){
-	glwidget_context_created( this->windowHandle() );
 	m_preview.onContextCreated();
 }
 

@@ -416,9 +416,8 @@ int main( int argc, char* argv[] ){
 	_setmaxstdio(2048);
 #endif
 
-	glwidget_setDefaultFormat(); // must go before QApplication instantiation
-
 	QApplication qapplication( argc, argv );
+	glwidget_setDefaultFormat(); // QVulkanInstance::create() requires QGuiApplication to exist first
 	setlocale( LC_NUMERIC, "C" );
 	qInstallMessageHandler( qute_messageHandler );
 	QCoreApplication::setOrganizationName( "QtRadiant" );

@@ -32,8 +32,6 @@
 
 #include "irender.h"
 #include "igl.h"            // VulkanBinding, GlobalVulkan()
-#include "ivkcontext.h"     // VKContext_beginTransferCmd / VKContext_endTransferCmd
-#include "radiant/vktexture.h"  // VKTexture_destroy
 
 #include "container/array.h"
 #include "math/vector.h"
@@ -96,7 +94,7 @@ class StaticVBO
 		// Create / replace the GPU-side buffer
 		if ( outBuf != VK_NULL_HANDLE )
 		{
-			vmaDestroyBuffer( vk.allocator, outBuf, outAlloc );
+			GlobalVulkan().pfnVmaDestroyBuffer( vk.allocator, outBuf, outAlloc );
 		}
 
 		// Create staging buffer (CPU-visible)
@@ -113,7 +111,7 @@ class StaticVBO
 		VkBuffer      stageBuf;
 		VmaAllocation stageAlloc;
 		VmaAllocationInfo stageInfo;
-		vmaCreateBuffer( vk.allocator, &stageCI, &stageAllocCI, &stageBuf, &stageAlloc, &stageInfo );
+		GlobalVulkan().pfnVmaCreateBuffer( vk.allocator, &stageCI, &stageAllocCI, &stageBuf, &stageAlloc, &stageInfo );
 		std::memcpy( stageInfo.pMappedData, data, sizeBytes );
 
 		// Create GPU-only destination buffer
@@ -124,15 +122,15 @@ class StaticVBO
 
 		VmaAllocationCreateInfo dstAllocCI = {};
 		dstAllocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-		vmaCreateBuffer( vk.allocator, &dstCI, &dstAllocCI, &outBuf, &outAlloc, nullptr );
+		GlobalVulkan().pfnVmaCreateBuffer( vk.allocator, &dstCI, &dstAllocCI, &outBuf, &outAlloc, nullptr );
 
 		// Copy via single-shot command buffer
-		VkCommandBuffer cmd = VKContext_beginTransferCmd();
+		VkCommandBuffer cmd = GlobalVulkan().pfnBeginTransferCmd();
 		VkBufferCopy region = { 0, 0, sizeBytes };
 		vkCmdCopyBuffer( cmd, stageBuf, outBuf, 1, &region );
-		VKContext_endTransferCmd( cmd );
+		GlobalVulkan().pfnEndTransferCmd( cmd );
 
-		vmaDestroyBuffer( vk.allocator, stageBuf, stageAlloc );
+		GlobalVulkan().pfnVmaDestroyBuffer( vk.allocator, stageBuf, stageAlloc );
 	}
 
 public:
@@ -186,8 +184,8 @@ public:
 	{
 		if ( !GlobalVulkan().contextValid ) { m_vbo = m_ibo = VK_NULL_HANDLE; m_vboAlloc = m_iboAlloc = VK_NULL_HANDLE; return; }
 		VmaAllocator alloc = GlobalVulkan().allocator;
-		if ( m_vbo ) { vmaDestroyBuffer( alloc, m_vbo, m_vboAlloc ); m_vbo = VK_NULL_HANDLE; }
-		if ( m_ibo ) { vmaDestroyBuffer( alloc, m_ibo, m_iboAlloc ); m_ibo = VK_NULL_HANDLE; }
+		if ( m_vbo ) { GlobalVulkan().pfnVmaDestroyBuffer( alloc, m_vbo, m_vboAlloc ); m_vbo = VK_NULL_HANDLE; }
+		if ( m_ibo ) { GlobalVulkan().pfnVmaDestroyBuffer( alloc, m_ibo, m_iboAlloc ); m_ibo = VK_NULL_HANDLE; }
 		m_vboDirty = m_iboDirty = true;
 	}
 };
@@ -1386,14 +1384,14 @@ public:
 		texFree();
 	}
 	void texAlloc( const char* text, const Vector3& color01 ){
-		if( tex != 0 ) VKTexture_destroy( tex );
+		if( tex != 0 ) GlobalVulkan().pfnDestroyTexture( tex );
 		tex = 0;
 		const BasicVector3<unsigned char> colour = color01 * 255.f;
 		GlobalOpenGL().m_font->renderString( text, tex, colour.data(), width, height );
 	}
 	void texFree(){
 		if( tex != 0 ){
-			VKTexture_destroy( tex );
+			GlobalVulkan().pfnDestroyTexture( tex );
 			tex = 0;
 		}
 	}
