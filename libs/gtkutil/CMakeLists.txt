@@ -42,8 +42,11 @@ add_library(gtkutil STATIC
             xorrectangle.h
            )
 
+target_include_directories(gtkutil PRIVATE ${Vulkan_INCLUDE_DIRS})
+
 target_link_libraries(gtkutil PRIVATE Qt5::Gui
                       Qt5::Widgets
                       Qt5::Core
+                      Vulkan::Vulkan
                       ${GLIB_LIBRARIES}
                      )

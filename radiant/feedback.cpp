@@ -129,18 +129,8 @@ void CPointMsg::DropHighlight(){
 }
 
 void CPointMsg::Draw2D( VIEWTYPE vt ){
-	NDIM1NDIM2( vt )
-	gl().glPointSize( 4 );
-	gl().glColor3f( 1.0f,0.0f,0.0f );
-	gl().glBegin( GL_POINTS );
-	gl().glVertex2f( pt[nDim1], pt[nDim2] );
-	gl().glEnd();
-	gl().glBegin( GL_LINE_LOOP );
-	gl().glVertex2f( pt[nDim1] - 8, pt[nDim2] - 8 );
-	gl().glVertex2f( pt[nDim1] + 8, pt[nDim2] - 8 );
-	gl().glVertex2f( pt[nDim1] + 8, pt[nDim2] + 8 );
-	gl().glVertex2f( pt[nDim1] - 8, pt[nDim2] + 8 );
-	gl().glEnd();
+	// Phase 6: Draw2D for point messages will be implemented as a Qt QPainter overlay.
+	(void)vt;
 }
 
 void CWindingMsg::saxStartElement( message_info_t *ctx, const xmlChar *name, const xmlChar **attrs ){
@@ -199,27 +189,8 @@ void CWindingMsg::DropHighlight(){
 }
 
 void CWindingMsg::Draw2D( VIEWTYPE vt ){
-	int i;
-
-	NDIM1NDIM2( vt )
-	gl().glColor3f( 1.0f,0.f,0.0f );
-
-	gl().glPointSize( 4 );
-	gl().glBegin( GL_POINTS );
-	for ( i = 0; i < numpoints; i++ )
-		gl().glVertex2f( wt[i][nDim1], wt[i][nDim2] );
-	gl().glEnd();
-	gl().glPointSize( 1 );
-
-	gl().glEnable( GL_BLEND );
-	gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-	gl().glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-	gl().glColor4f( 0.133f,0.4f,1.0f,0.5f );
-	gl().glBegin( GL_POLYGON );
-	for ( i = 0; i < numpoints; i++ )
-		gl().glVertex2f( wt[i][nDim1], wt[i][nDim2] );
-	gl().glEnd();
-	gl().glDisable( GL_BLEND );
+	// Phase 6: Draw2D for winding messages will be implemented as a Qt QPainter overlay.
+	(void)vt;
 }
 
 // triggered when the user selects an entry in the feedback box

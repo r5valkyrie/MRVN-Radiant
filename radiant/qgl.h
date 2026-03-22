@@ -21,7 +21,8 @@
 
 #pragma once
 
-struct OpenGLBinding;
+#include "igl.h"  // OpenGLBinding = VulkanBinding
+
 void QGL_sharedContextCreated( OpenGLBinding& table );
 void QGL_sharedContextDestroyed( OpenGLBinding& table );
 

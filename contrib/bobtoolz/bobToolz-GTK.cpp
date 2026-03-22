@@ -284,6 +284,7 @@ const IToolbarButton* GetToolbarButton( std::size_t index ){
 #include "ipatch.h"
 #include "ibrush.h"
 #include "ientity.h"
+#include "igl.h"
 #include "ieclass.h"
 #include "iglrender.h"
 #include "iplugin.h"

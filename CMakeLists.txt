@@ -103,8 +103,68 @@ else() # Msys / Linux
     find_package(Threads REQUIRED)
 endif()
 
-# Global include dirs
-include_directories(include libs)
+# ── Vulkan ────────────────────────────────────────────────────────────────────
+find_package(Vulkan REQUIRED)
+
+# ── VulkanMemoryAllocator (header-only, fetched automatically) ────────────────
+include(FetchContent)
+FetchContent_Declare(
+    VulkanMemoryAllocator
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG        v3.1.0
+    GIT_SHALLOW    TRUE
+)
+set(VMA_STATIC_VULKAN_FUNCTIONS  OFF CACHE BOOL "" FORCE)
+set(VMA_DYNAMIC_VULKAN_FUNCTIONS ON  CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(VulkanMemoryAllocator)
+
+# ── Build-time GLSL → SPIR-V compilation ─────────────────────────────────────
+find_program(GLSLC_EXECUTABLE
+    NAMES glslc
+    HINTS "${Vulkan_GLSLC_EXECUTABLE}" ENV VULKAN_SDK
+    PATH_SUFFIXES bin
+)
+
+if(NOT GLSLC_EXECUTABLE)
+    message(WARNING "glslc not found — shaders won't be compiled automatically.  "
+                    "Install the Vulkan SDK or set VULKAN_SDK.")
+endif()
+
+set(SHADER_SRC_DIR  "${CMAKE_SOURCE_DIR}/install/shaders")
+set(SHADER_SPV_DIR  "${CMAKE_SOURCE_DIR}/install/shaders/spv")
+file(MAKE_DIRECTORY "${SHADER_SPV_DIR}")
+
+set(_SHADER_SOURCES
+    "${SHADER_SRC_DIR}/lighting_dbs_omni.vert"
+    "${SHADER_SRC_DIR}/lighting_dbs_omni.frag"
+    "${SHADER_SRC_DIR}/zfill.vert"
+    "${SHADER_SRC_DIR}/zfill.frag"
+    "${SHADER_SRC_DIR}/skybox.vert"
+    "${SHADER_SRC_DIR}/skybox.frag"
+)
+
+set(SHADER_SPIRV_OUTPUTS)
+if(GLSLC_EXECUTABLE)
+    foreach(_SHADER ${_SHADER_SOURCES})
+        get_filename_component(_NAME "${_SHADER}" NAME)
+        set(_SPV "${SHADER_SPV_DIR}/${_NAME}.spv")
+        add_custom_command(
+            OUTPUT  "${_SPV}"
+            COMMAND "${GLSLC_EXECUTABLE}" "${_SHADER}" -o "${_SPV}"
+            DEPENDS "${_SHADER}"
+            COMMENT "Compiling SPIR-V: ${_NAME}"
+            VERBATIM
+        )
+        list(APPEND SHADER_SPIRV_OUTPUTS "${_SPV}")
+    endforeach()
+    add_custom_target(radiant_shaders ALL DEPENDS ${SHADER_SPIRV_OUTPUTS})
+endif()
+
+# ── Global include dirs ────────────────────────────────────────────────────────
+# VMA is FetchContent-populated — expose its include dir globally so ivk.h
+# (in include/) can find <vk_mem_alloc.h> from any target.
+FetchContent_GetProperties(VulkanMemoryAllocator SOURCE_DIR _VMA_SRC)
+include_directories(include libs ${_VMA_SRC}/include ${CMAKE_SOURCE_DIR})
 
 
 # Libs

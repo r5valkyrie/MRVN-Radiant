@@ -37,6 +37,7 @@
         4. Call HIPRTTrace::Shutdown() when done
 */
 
+#include <cstdint>
 #include "math/vector.h"
 
 namespace HIPRTTrace {

@@ -55,7 +55,7 @@ inline const char* ViewType_getTitle( VIEWTYPE viewtype ){
 
 class BackgroundImage
 {
-	GLuint _tex;
+	uint32_t _tex; // was GLuint, now plain integer texture handle
 	const float _alpha;
 	float _xmin, _ymin, _xmax, _ymax;
 	VIEWTYPE _viewtype;

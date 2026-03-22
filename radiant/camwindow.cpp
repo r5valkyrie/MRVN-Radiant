@@ -884,8 +884,7 @@ class RenderableCamWorkzone : public OpenGLRenderable
 	mutable std::array<Colour4b, 9999> m_colorarr1[3];
 public:
 	void render( RenderStateFlags state ) const {
-		gl().glEnableClientState( GL_EDGE_FLAG_ARRAY );
-
+		// Phase 6: workzone overlay will be rendered as a Vulkan debug overlay.
 		const AABB bounds = GlobalSelectionSystem().getBoundsSelected();
 
 		for( std::size_t i = 0; i < 3; ++i ){
@@ -950,11 +949,7 @@ public:
 				}
 			}
 
-			// Workzone geometry uses stack/member arrays, so clear GL_ARRAY_BUFFER
-			// to keep these pointers in client memory and avoid VBO offset crashes
-			gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), verticesarr.data()->data() );
-			gl().glEdgeFlagPointer( sizeof( GLboolean ), edgearr.data() );
+			// Phase 6: draw workzone quads via Vulkan vertex/colour buffer.
 			for( std::vector<Vector3>::const_iterator j = points.begin(); j != points.end(); ++++j ){
 				const std::vector<Vector3>::const_iterator jj = j + 1;
 				for( std::size_t k = 0; k < count; k += 4 ){
@@ -967,19 +962,9 @@ public:
 					verticesarr[k + 3][i2] = ( *j )[i2];
 					verticesarr[k + 3][i3] = ( *j )[i3];
 				}
-
-				gl().glPolygonOffset( -2, 2 );
-				gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( Colour4b ), colorarr0.data() );
-				gl().glDrawArrays( GL_QUADS, start0? 0 : 2, GLsizei( count - ( start0? 4 : 2 ) ) );
-
-				gl().glPolygonOffset( 1, -1 );
-				gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( Colour4b ), colorarr1.data() );
-				gl().glDrawArrays( GL_QUADS, start0? 2 : 0, GLsizei( count - ( start0? 2 : 4 ) ) );
-				gl().glPolygonOffset( -1, 1 ); // restore default
+				// Phase 6: vkCmdDraw for each sub-region
 			}
 		}
-
-		gl().glDisableClientState( GL_EDGE_FLAG_ARRAY );
 	}
 
 	void render( Renderer& renderer, Shader* shader ) const {
@@ -1290,28 +1275,7 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 		return;
 	}
 
-	// Reset shader / client state left over from 3D scene rendering
-	gl().glActiveTexture( GL_TEXTURE0 );
-	gl().glClientActiveTexture( GL_TEXTURE0 );
-	gl().glUseProgram( 0 );
-	gl().glDisableClientState( GL_COLOR_ARRAY );
-	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-	gl().glDisableClientState( GL_NORMAL_ARRAY );
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_TEXTURE_1D );
-	gl().glDisable( GL_TEXTURE_CUBE_MAP );
-	gl().glDisable( GL_LIGHTING );
-	gl().glDisable( GL_COLOR_MATERIAL );
-	gl().glDisable( GL_DEPTH_TEST );
-
-	gl().glMatrixMode( GL_PROJECTION );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &camwnd.getCamera().projection ) );
-	gl().glMatrixMode( GL_MODELVIEW );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &camwnd.getCamera().modelview ) );
-	gl().glEnable( GL_BLEND );
-	gl().glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-	gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.95f );
-	gl().glLineWidth( 1.5f );
+	// Phase 6: state reset and matrix upload handled by Vulkan pipeline state / push constants.
 
 	auto drawCircle = [&]( int a, int b ){
 		constexpr int steps = 32;
@@ -1324,8 +1288,7 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 			circleVerts[i] = v;
 		}
 		vbo_upload( circleVerts.data(), sizeof( circleVerts ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-		gl().glDrawArrays( GL_LINE_LOOP, 0, steps );
+		// Phase 6: vkCmdDraw( cmdBuf, steps, 1, 0, 0 ) — GL_LINE_LOOP circle
 	};
 	drawCircle( 0, 1 );
 	drawCircle( 0, 2 );
@@ -1334,7 +1297,6 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 	// Draw inner radius circles (hardness boundary)
 	const float ir = Patch_TerrainTool_GetBrushInnerRadius();
 	if ( ir > 0.f && ir < r ) {
-		gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.4f );
 		auto drawInnerCircle = [&]( int a, int b ){
 			constexpr int steps = 32;
 			std::array<Vector3, 32> circleVerts;
@@ -1346,8 +1308,7 @@ static void camera_draw_terrain_brush_preview( CamWnd& camwnd ){
 				circleVerts[i] = v;
 			}
 			vbo_upload( circleVerts.data(), sizeof( circleVerts ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-			gl().glDrawArrays( GL_LINE_LOOP, 0, steps );
+			// Phase 6: vkCmdDraw inner circle
 		};
 		drawInnerCircle( 0, 1 );
 		drawInnerCircle( 0, 2 );
@@ -1762,7 +1723,9 @@ public:
 protected:
 	void initializeGL() override
 	{
-		glwidget_context_created( *this );
+		// Phase 6: pass the native QWindow* to create the Vulkan surface.
+		if ( QWindow* w = this->windowHandle() )
+			glwidget_context_created( w );
 	}
 	void resizeGL( int w, int h ) override
 	{
@@ -2378,23 +2341,14 @@ static void collect_selected_shaders( std::set<CopiedString>& shaders ){
 void CamWnd::Cam_Draw(){
 //		globalOutputStream() << "Cam_Draw()\n";
 
-	gl().glViewport( 0, 0, m_Camera.width, m_Camera.height );
-#if 0
-	GLint viewprt[4];
-	gl().glGetIntegerv( GL_VIEWPORT, viewprt );
-#endif
-
-	// enable depth buffer writes
-	gl().glDepthMask( GL_TRUE );
-	gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+	// Phase 6: viewport + clear via Vulkan render pass (VkRenderPassBeginInfo clearValues).
+	// gl().glViewport / glClearColor / glClear removed.
 
 	Vector3 clearColour( 0, 0, 0 );
 	if ( m_Camera.draw_mode != cd_lighting ) {
 		clearColour = g_camwindow_globals.color_cameraback;
 	}
-
-	gl().glClearColor( clearColour[0], clearColour[1], clearColour[2], 0 );
-	gl().glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+	(void)clearColour; // Phase 6: used as clear value in render pass
 
 	extern void Renderer_ResetStats();
 	extern void Renderer_SetStatsEnabled( bool );
@@ -2403,35 +2357,18 @@ void CamWnd::Cam_Draw(){
 	extern void Cull_ResetStats();
 	Cull_ResetStats();
 
-	gl().glMatrixMode( GL_PROJECTION );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_Camera.projection ) );
+	// Phase 6: MVP matrices uploaded as push constants / UBO.
+	// gl().glMatrixMode / glLoadMatrixf removed.
 
-	gl().glMatrixMode( GL_MODELVIEW );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_Camera.modelview ) );
-
-
-	// one directional light source directly behind the viewer
+	// Phase 6: directional light (GL_LIGHT0) replaced by push-constant light direction.
 	{
-		GLfloat inverse_cam_dir[4], ambient[4], diffuse[4]; //, material[4];
-
-		ambient[0] = ambient[1] = ambient[2] = 0.4f;
-		ambient[3] = 1.0f;
-		diffuse[0] = diffuse[1] = diffuse[2] = 0.4f;
-		diffuse[3] = 1.0f;
-		//material[0] = material[1] = material[2] = 0.8f;
-		//material[3] = 1.0f;
-
+		// Preserve the light direction calculation for Phase 6 use.
+		float inverse_cam_dir[4];
 		inverse_cam_dir[0] = m_Camera.vpn[0];
 		inverse_cam_dir[1] = m_Camera.vpn[1];
 		inverse_cam_dir[2] = m_Camera.vpn[2];
 		inverse_cam_dir[3] = 0;
-
-		gl().glLightfv( GL_LIGHT0, GL_POSITION, inverse_cam_dir );
-
-		gl().glLightfv( GL_LIGHT0, GL_AMBIENT, ambient );
-		gl().glLightfv( GL_LIGHT0, GL_DIFFUSE, diffuse );
-
-		gl().glEnable( GL_LIGHT0 );
+		(void)inverse_cam_dir;
 	}
 
 
@@ -2507,29 +2444,9 @@ void CamWnd::Cam_Draw(){
 
 	camera_draw_terrain_brush_preview( *this );
 
-	// prepare for 2d stuff
-	gl().glColor4f( 1, 1, 1, 1 );
-	gl().glDisable( GL_BLEND );
-	gl().glMatrixMode( GL_PROJECTION );
-	gl().glLoadIdentity();
-	gl().glOrtho( 0, (float)m_Camera.width, 0, (float)m_Camera.height, -100, 100 );
-	gl().glScalef( 1, -1, 1 );
-	gl().glTranslatef( 0, -(float)m_Camera.height, 0 );
-	gl().glMatrixMode( GL_MODELVIEW );
-	gl().glLoadIdentity();
-
-	gl().glClientActiveTexture( GL_TEXTURE0 );
-	gl().glActiveTexture( GL_TEXTURE0 );
-
-	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-	gl().glDisableClientState( GL_NORMAL_ARRAY );
-	gl().glDisableClientState( GL_COLOR_ARRAY );
-
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_LIGHTING );
-	gl().glDisable( GL_COLOR_MATERIAL );
-	gl().glDisable( GL_DEPTH_TEST );
-	gl().glLineWidth( 1 );
+	// Phase 6: 2D HUD overlay (crosshair, stats, debug coordinates) will be
+	// rendered via QPainter on top of the Vulkan swapchain image.
+	// All gl() matrix / state / draw calls below are removed.
 
 	// draw the crosshair
 	if ( m_bFreeMove ) {
@@ -2542,19 +2459,17 @@ void CamWnd::Cam_Draw(){
 			cx - 6, cy, cx - 2, cy,
 		};
 		vbo_upload( crosshair, sizeof( crosshair ) );
-		gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-		gl().glDrawArrays( GL_LINES, 0, 8 );
+		// Phase 6: vkCmdDraw crosshair lines
 	}
 
 	if ( g_camwindow_globals.m_showStats ) {
-		gl().glRasterPos3f( 1.0f, static_cast<float>( m_Camera.height ), 0.0f );
 		extern const char* Renderer_GetStats( int frame2frame );
-		GlobalOpenGL().drawString( Renderer_GetStats( m_render_time.elapsed_msec() ) );
+		const char* stats = Renderer_GetStats( m_render_time.elapsed_msec() );
 		m_render_time.start();
-
-		gl().glRasterPos3f( 1.0f, static_cast<float>( m_Camera.height ) - GlobalOpenGL().m_font->getPixelHeight(), 0.0f );
 		extern const char* Cull_GetStats();
-		GlobalOpenGL().drawString( Cull_GetStats() );
+		const char* cullStats = Cull_GetStats();
+		// Phase 6: render stats text via QPainter / Vulkan text pass
+		(void)stats; (void)cullStats;
 	}
 
 	// FPS counter update
@@ -2574,13 +2489,11 @@ void CamWnd::Cam_Draw(){
 		const float start_y = static_cast<float>( debug_overlay_top_inset( *this ) )
 			+ ( g_camwindow_globals.m_showStats ? line_height * 2 : 0 );
 		int line = 0;
-		const float bold_offset = 1.0f;
+		(void)start_x; (void)start_y; (void)line;
 
 		const auto draw_line = [&]( const char* text ){
-			gl().glRasterPos3f( start_x, start_y + line_height * line, 0.0f );
-			GlobalOpenGL().drawString( text );
-			gl().glRasterPos3f( start_x + bold_offset, start_y + line_height * line, 0.0f );
-			GlobalOpenGL().drawString( text );
+			// Phase 6: render debug text via QPainter
+			(void)text;
 			++line;
 		};
 
@@ -2631,10 +2544,7 @@ void CamWnd::Cam_Draw(){
 			}
 		}
 	}
-
-	// bind back to the default texture so that we don't have problems
-	// elsewhere using/modifying texture maps between contexts
-	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+	// Phase 6: no glBindTexture to reset needed in Vulkan
 }
 
 void CamWnd::draw(){

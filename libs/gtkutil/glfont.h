@@ -21,7 +21,7 @@
 
 #pragma once
 
-typedef unsigned int GLuint;
+#include <cstdint>
 
 class GLFont
 {
@@ -30,7 +30,7 @@ public:
 	virtual int getPixelAscent() const = 0;
 	virtual int getPixelDescent() const = 0;
 	virtual void printString( const char *s ) = 0;
-	virtual void renderString( const char *s, const GLuint& tex, const unsigned char colour[3], unsigned int& out_wid, unsigned int& out_hei ) = 0;
+	virtual void renderString( const char *s, const uint32_t& tex, const unsigned char colour[3], unsigned int& out_wid, unsigned int& out_hei ) = 0;
 	virtual ~GLFont(){
 	}
 };

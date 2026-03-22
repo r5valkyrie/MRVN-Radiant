@@ -218,7 +218,6 @@ class RenderablePatchWireframe : public OpenGLRenderable
 		if ( width < 2 || height < 2 ) {
 			return;
 		}
-		gl().glLineWidth( 0.5f );
 		std::vector<Vertex3f> lineVerts;
 		lineVerts.reserve( ( height - 1 ) * ( width - 1 ) * 2 );
 		for ( std::size_t y = 0; y + 1 < height; ++y )
@@ -231,24 +230,16 @@ class RenderablePatchWireframe : public OpenGLRenderable
 		}
 		if ( !lineVerts.empty() ) {
 			vbo_upload( lineVerts.data(), lineVerts.size() * sizeof( Vertex3f ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
-			gl().glDrawArrays( GL_LINES, 0, GLsizei( lineVerts.size() ) );
+			// Phase 6: vkCmdDraw GL_LINES
 		}
-		gl().glLineWidth( 1.0f );
 	}
 public:
 	RenderablePatchWireframe( PatchTesselation& tess ) : m_tess( tess ){
 	}
 	void render( RenderStateFlags state ) const {
 		m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
-		                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
 		m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
-		for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
-		{
-			gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID,
-			                     reinterpret_cast<const void*>( i * m_tess.m_lenStrips * sizeof( RenderIndex ) ) );
-		}
+		// Phase 6: vkCmdDrawIndexed for each strip (GL_QUAD_STRIP topology)
 		renderTriSplitLines();
 	}
 };
@@ -265,7 +256,6 @@ class RenderablePatchFixedWireframe : public OpenGLRenderable
 		if ( width < 2 || height < 2 ) {
 			return;
 		}
-		gl().glLineWidth( 0.5f );
 		std::vector<Vertex3f> lineVerts;
 		lineVerts.reserve( ( height - 1 ) * ( width - 1 ) * 2 );
 		for ( std::size_t y = 0; y + 1 < height; ++y )
@@ -278,24 +268,16 @@ class RenderablePatchFixedWireframe : public OpenGLRenderable
 		}
 		if ( !lineVerts.empty() ) {
 			vbo_upload( lineVerts.data(), lineVerts.size() * sizeof( Vertex3f ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
-			gl().glDrawArrays( GL_LINES, 0, GLsizei( lineVerts.size() ) );
+			// Phase 6: vkCmdDraw GL_LINES
 		}
-		gl().glLineWidth( 1.0f );
 	}
 public:
 	RenderablePatchFixedWireframe( PatchTesselation& tess ) : m_tess( tess ){
 	}
 	void render( RenderStateFlags state ) const {
 		m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
-		                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
 		m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
-		for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
-		{
-			gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID,
-			                     reinterpret_cast<const void*>( i * m_tess.m_lenStrips * sizeof( RenderIndex ) ) );
-		}
+		// Phase 6: vkCmdDrawIndexed for each strip
 		renderTriSplitLines();
 	}
 };
@@ -324,8 +306,7 @@ class RenderablePatchSolid : public OpenGLRenderable
 		}
 		if ( !lineVerts.empty() ) {
 			vbo_upload( lineVerts.data(), lineVerts.size() * sizeof( Vertex3f ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
-			gl().glDrawArrays( GL_LINES, 0, GLsizei( lineVerts.size() ) );
+			// Phase 6: gl().glVertexPointer/glDrawArrays(GL_LINES) removed
 		}
 	}
 public:
@@ -333,41 +314,11 @@ public:
 	}
 	void RenderNormals() const;
 	void render( RenderStateFlags state ) const {
-#if 0
-		if ( ( state & RENDER_FILL ) == 0 ) {
-			RenderablePatchWireframe( m_tess ).render( state );
-		}
-		else
-#endif
-		{
-			m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
-			if ( ( state & RENDER_BUMP ) != 0 ) {
-				gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ),
-				                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
-				gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ),
-				                            reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
-				gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ),
-				                            reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, tangent ) ) );
-				gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ),
-				                            reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, bitangent ) ) );
-			}
-			else
-			{
-				gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ),
-				                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
-				gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
-				                        reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
-			}
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ),
-			                      reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
-			m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
-			for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
-			{
-				gl().glDrawElements( GL_QUAD_STRIP, GLsizei( m_tess.m_lenStrips ), RenderIndexTypeID,
-				                     reinterpret_cast<const void*>( i * m_tess.m_lenStrips * sizeof( RenderIndex ) ) );
-			}
-			renderTriSplitLines();
-		}
+		m_tess.m_staticVBO.uploadVertices( m_tess.m_vertices.data(), m_tess.m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
+		m_tess.m_staticVBO.uploadIndices( m_tess.m_indices.data(), m_tess.m_indices.size() * sizeof( RenderIndex ) );
+		// Phase 6: bind vertex attributes (position, normal, texcoord, tangent, bitangent)
+		// and vkCmdDrawIndexed for each strip.
+		renderTriSplitLines();
 
 #if defined( _DEBUG ) && !defined( _DEBUG_QUICKER )
 		RenderNormals();

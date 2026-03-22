@@ -26,10 +26,12 @@
 #include "ishaders.h"
 #include "irender.h"
 #include "itextures.h"
-#include "igl.h"
+#include "ivk.h"
+#include "ivkcontext.h"
 #include "iglrender.h"
 #include "renderable.h"
 #include "qerplugin.h"
+#include "preferences.h"
 
 #include "render.h"
 
@@ -48,13 +50,26 @@
 #include "container/cache.h"
 #include "generic/reference.h"
 #include "moduleobservers.h"
-#include "stream/filestream.h"
 #include "stream/stringstream.h"
-#include "os/file.h"
-#include "preferences.h"
+#include <fstream>
+#include <cstring>
 
 #include "xywindow.h"
 #include "camwindow.h"
+
+// GL blend factor aliases mapped to VkBlendFactor values.
+// These are referenced throughout construct() and kept as uint32_t in OpenGLState.
+#define GL_ZERO                   VK_BLEND_FACTOR_ZERO
+#define GL_ONE                    VK_BLEND_FACTOR_ONE
+#define GL_SRC_COLOR              VK_BLEND_FACTOR_SRC_COLOR
+#define GL_ONE_MINUS_SRC_COLOR    VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR
+#define GL_DST_COLOR              VK_BLEND_FACTOR_DST_COLOR
+#define GL_ONE_MINUS_DST_COLOR    VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR
+#define GL_SRC_ALPHA              VK_BLEND_FACTOR_SRC_ALPHA
+#define GL_ONE_MINUS_SRC_ALPHA    VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+#define GL_DST_ALPHA              VK_BLEND_FACTOR_DST_ALPHA
+#define GL_ONE_MINUS_DST_ALPHA    VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+#define GL_SRC_ALPHA_SATURATE     VK_BLEND_FACTOR_SRC_ALPHA_SATURATE
 
 
 
@@ -72,23 +87,7 @@ inline void debug_int( const char* comment, int i ){
 #endif
 }
 
-inline void debug_colour( const char* comment ){
-#if ( DEBUG_RENDER )
-	Vector4 v;
-	gl().glGetFloatv( GL_CURRENT_COLOR, reinterpret_cast<float*>( &v ) );
-	globalOutputStream() << comment << " colour: "
-	                     << v[0] << ' '
-	                     << v[1] << ' '
-	                     << v[2] << ' '
-	                     << v[3];
-	if ( gl().glIsEnabled( GL_COLOR_ARRAY ) ) {
-		globalOutputStream() << " ARRAY";
-	}
-	if ( gl().glIsEnabled( GL_COLOR_MATERIAL ) ) {
-		globalOutputStream() << " MATERIAL";
-	}
-	globalOutputStream() << '\n';
-#endif
+inline void debug_colour( const char* /* comment */ ){
 }
 
 #include "timer.h"
@@ -134,178 +133,333 @@ const char* Renderer_GetStats( int frame2frame ){
 }
 
 
-void printShaderLog( GLuint shader ){
-	GLint log_length = 0;
-	gl().glGetShaderiv( shader, GL_INFO_LOG_LENGTH, &log_length );
+// ── Vulkan shader program infrastructure ────────────────────────────────────
 
-	Array<char> log( log_length );
-	gl().glGetShaderInfoLog( shader, log_length, &log_length, log.data() );
+/// The command buffer currently being recorded for the active render frame.
+/// Set by the render state machine (Phase 5); NULL until then.
+VkCommandBuffer g_renderCmdBuffer = VK_NULL_HANDLE;
 
-	globalErrorStream() << StringRange( log.begin(), log_length ) << '\n';
+/// Shared descriptor pool for the three program types.
+static VkDescriptorPool g_renderDescPool = VK_NULL_HANDLE;
+static int g_renderProgRefCount = 0;
+
+/// UBO layout supplied to every GLSL 4.5 vertex shader (set 0, binding 0).
+/// The five mat4s correspond to: mvp, texMatrix0, texMatrix1, texMatrix2, localToLight.
+struct VkTransformUBO {
+	float mvp[16];
+	float texMatrix0[16];
+	float texMatrix1[16];
+	float texMatrix2[16];
+	float localToLight[16];
+};
+static const float s_mat4Identity[16] = {
+	1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+
+static void ensureDescriptorPool()
+{
+	if ( g_renderDescPool != VK_NULL_HANDLE ) return;
+	VkDescriptorPoolSize sizes[2] = {
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         16 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
+	};
+	VkDescriptorPoolCreateInfo ci = {};
+	ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	ci.maxSets       = 16;
+	ci.poolSizeCount = 2;
+	ci.pPoolSizes    = sizes;
+	vkCreateDescriptorPool( GlobalVulkan().device, &ci, nullptr, &g_renderDescPool );
 }
 
-void printProgramLog( GLuint program ){
-	GLint log_length = 0;
-	gl().glGetProgramiv( program, GL_INFO_LOG_LENGTH, &log_length );
-
-	Array<char> log( log_length );
-	gl().glGetProgramInfoLog( program, log_length, &log_length, log.data() );
-
-	globalErrorStream() << StringRange( log.begin(), log_length ) << '\n';
+/// Load a SPIR-V binary from disk and return a VkShaderModule.
+static VkShaderModule loadSPIRV( const char* path )
+{
+	std::ifstream f( path, std::ios::binary | std::ios::ate );
+	ASSERT_MESSAGE( f.is_open(), "loadSPIRV: failed to open " << path );
+	const std::streamsize sz = f.tellg();
+	f.seekg( 0 );
+	std::vector<uint32_t> buf( static_cast<std::size_t>( sz + 3 ) / 4 );
+	f.read( reinterpret_cast<char*>( buf.data() ), sz );
+	VkShaderModuleCreateInfo ci = {};
+	ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	ci.codeSize = static_cast<std::size_t>( sz );
+	ci.pCode    = buf.data();
+	VkShaderModule mod;
+	if ( vkCreateShaderModule( GlobalVulkan().device, &ci, nullptr, &mod ) != VK_SUCCESS )
+		ERROR_MESSAGE( "loadSPIRV: vkCreateShaderModule failed for " << path );
+	return mod;
 }
 
-void createShader( GLuint program, const char* filename, GLenum type ){
-	GLuint shader = gl().glCreateShader( type );
-	GlobalOpenGL_debugAssertNoErrors();
-
-	// load shader
-	{
-		std::size_t size = file_size( filename );
-		FileInputStream file( filename );
-		ASSERT_MESSAGE( !file.failed(), "failed to open " << makeQuoted( filename ) );
-		Array<GLchar> buffer( size );
-		size = file.read( reinterpret_cast<StreamBase::byte_type*>( buffer.data() ), size );
-
-		const GLchar* string = buffer.data();
-		GLint length = GLint( size );
-		gl().glShaderSource( shader, 1, &string, &length );
-	}
-
-	// compile shader
-	{
-		gl().glCompileShader( shader );
-
-		GLint compiled = 0;
-		gl().glGetShaderiv( shader, GL_COMPILE_STATUS, &compiled );
-
-		if ( !compiled ) {
-			printShaderLog( shader );
-		}
-
-		ASSERT_MESSAGE( compiled, "shader compile failed: " << makeQuoted( filename ) );
-	}
-
-	// attach shader
-	gl().glAttachShader( program, shader );
-
-	gl().glDeleteShader( shader );
-
-	GlobalOpenGL_debugAssertNoErrors();
+/// Vertex-input description for ArbitraryMeshVertex (56-byte stride).
+static void fillVertexInputState(
+	VkVertexInputBindingDescription&   binding,
+	VkVertexInputAttributeDescription  attrs[5],
+	uint32_t&                          attrCount )
+{
+	binding = { 0, 56, VK_VERTEX_INPUT_RATE_VERTEX };
+	attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 20 }; // position
+	attrs[1] = { 1, 0, VK_FORMAT_R32G32_SFLOAT,    0  }; // texcoord
+	attrs[2] = { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, 8  }; // normal
+	attrs[3] = { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, 32 }; // tangent
+	attrs[4] = { 4, 0, VK_FORMAT_R32G32B32_SFLOAT, 44 }; // binormal
+	attrCount = 5;
 }
 
-void GLSLProgram_link( GLuint program ){
-	gl().glLinkProgram( program );
+/// Create a simple graphics pipeline given vert+frag shader modules and pipeline layout.
+/// Depth test / write / no transparency defaults — Phase 5 will introduce dynamic state.
+static VkPipeline buildPipeline(
+	VkShaderModule    vertMod,
+	VkShaderModule    fragMod,
+	VkPipelineLayout  layout,
+	uint32_t          attrCount )
+{
+	VkVertexInputBindingDescription   binding;
+	VkVertexInputAttributeDescription attrs[5];
+	uint32_t                          nAttrs;
+	fillVertexInputState( binding, attrs, nAttrs );
 
-	GLint linked = false;
-	gl().glGetProgramiv( program, GL_LINK_STATUS, &linked );
+	const uint32_t usedAttrs = ( attrCount < nAttrs ) ? attrCount : nAttrs;
 
-	if ( !linked ) {
-		printProgramLog( program );
-	}
+	VkPipelineShaderStageCreateInfo stages[2] = {};
+	stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vertMod;
+	stages[0].pName  = "main";
+	stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragMod;
+	stages[1].pName  = "main";
 
-	ASSERT_MESSAGE( linked, "program link failed" );
+	VkPipelineVertexInputStateCreateInfo vi = {};
+	vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vi.vertexBindingDescriptionCount   = 1;
+	vi.pVertexBindingDescriptions      = &binding;
+	vi.vertexAttributeDescriptionCount = usedAttrs;
+	vi.pVertexAttributeDescriptions    = attrs;
+
+	VkPipelineInputAssemblyStateCreateInfo ia = {};
+	ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	VkPipelineViewportStateCreateInfo vp = {};
+	vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	vp.viewportCount = 1;
+	vp.scissorCount  = 1;
+
+	VkPipelineRasterizationStateCreateInfo rs = {};
+	rs.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rs.polygonMode             = VK_POLYGON_MODE_FILL;
+	rs.cullMode                = VK_CULL_MODE_NONE;
+	rs.frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rs.lineWidth               = 1.0f;
+
+	VkPipelineMultisampleStateCreateInfo ms = {};
+	ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineDepthStencilStateCreateInfo ds = {};
+	ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	ds.depthTestEnable  = VK_TRUE;
+	ds.depthWriteEnable = VK_TRUE;
+	ds.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+	VkPipelineColorBlendAttachmentState ba = {};
+	ba.colorWriteMask = 0xF;
+
+	VkPipelineColorBlendStateCreateInfo cb = {};
+	cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	cb.attachmentCount = 1;
+	cb.pAttachments    = &ba;
+
+	const VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo dyn = {};
+	dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dyn.dynamicStateCount = 2;
+	dyn.pDynamicStates    = dynStates;
+
+	VkGraphicsPipelineCreateInfo pci = {};
+	pci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pci.stageCount          = 2;
+	pci.pStages             = stages;
+	pci.pVertexInputState   = &vi;
+	pci.pInputAssemblyState = &ia;
+	pci.pViewportState      = &vp;
+	pci.pRasterizationState = &rs;
+	pci.pMultisampleState   = &ms;
+	pci.pDepthStencilState  = &ds;
+	pci.pColorBlendState    = &cb;
+	pci.pDynamicState       = &dyn;
+	pci.layout              = layout;
+	pci.renderPass          = GlobalVulkan().renderPass;
+	pci.subpass             = 0;
+
+	VkPipeline pipeline;
+	if ( vkCreateGraphicsPipelines( GlobalVulkan().device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline ) != VK_SUCCESS )
+		ERROR_MESSAGE( "buildPipeline: vkCreateGraphicsPipelines failed" );
+	return pipeline;
 }
 
-void GLSLProgram_validate( GLuint program ){
-	gl().glValidateProgram( program );
+/// Allocate one UBO buffer per program and create its set-0 descriptor set.
+static void allocUBO(
+	VkDescriptorSetLayout setLayout0,
+	VkBuffer&             outBuffer,
+	VmaAllocation&        outAlloc,
+	VkTransformUBO*&      outMapped,
+	VkDescriptorSet&      outSet )
+{
+	VkBufferCreateInfo bci = {};
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size  = sizeof( VkTransformUBO );
+	bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
 
-	GLint validated = false;
-	gl().glGetProgramiv( program, GL_VALIDATE_STATUS, &validated );
+	VmaAllocationCreateInfo aci = {};
+	aci.usage = VMA_MEMORY_USAGE_AUTO;
+	aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+	            VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-	if ( !validated ) {
-		printProgramLog( program );
-	}
+	VmaAllocationInfo ai;
+	vmaCreateBuffer( GlobalVulkan().allocator, &bci, &aci, &outBuffer, &outAlloc, &ai );
+	outMapped = static_cast<VkTransformUBO*>( ai.pMappedData );
 
-	ASSERT_MESSAGE( validated, "program validation failed" );
+	// Initialise to identity transforms
+	for ( int i = 0; i < 5; ++i )
+		std::memcpy( reinterpret_cast<float*>( outMapped ) + i * 16,
+		             s_mat4Identity, 64 );
+
+	VkDescriptorSetAllocateInfo dsai = {};
+	dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	dsai.descriptorPool     = g_renderDescPool;
+	dsai.descriptorSetCount = 1;
+	dsai.pSetLayouts        = &setLayout0;
+	vkAllocateDescriptorSets( GlobalVulkan().device, &dsai, &outSet );
+
+	VkDescriptorBufferInfo bufInfo = { outBuffer, 0, sizeof( VkTransformUBO ) };
+	VkWriteDescriptorSet   write   = {};
+	write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.dstSet          = outSet;
+	write.dstBinding      = 0;
+	write.descriptorCount = 1;
+	write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	write.pBufferInfo     = &bufInfo;
+	vkUpdateDescriptorSets( GlobalVulkan().device, 1, &write, 0, nullptr );
 }
+
+// ── VkBumpProgram ─────────────────────────────────────────────────────────────
 
 bool g_bumpGLSLPass_enabled = false;
 bool g_depthfillPass_enabled = false;
 
-class GLSLBumpProgram : public GLProgram
+class VkBumpProgram : public GLProgram
 {
 public:
-	GLuint m_program;
-	qtexture_t* m_light_attenuation_xy;
-	qtexture_t* m_light_attenuation_z;
-	GLint u_view_origin;
-	GLint u_light_origin;
-	GLint u_light_color;
-	GLint u_bump_scale;
-	GLint u_specular_exponent;
-
-	GLSLBumpProgram() : m_program( 0 ), m_light_attenuation_xy( 0 ), m_light_attenuation_z( 0 ){
-	}
+	qtexture_t* m_light_attenuation_xy = nullptr;
+	qtexture_t* m_light_attenuation_z  = nullptr;
+private:
+	VkDescriptorSetLayout m_setLayout0    = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_setLayout1    = VK_NULL_HANDLE;
+	VkPipelineLayout      m_pipelineLayout = VK_NULL_HANDLE;
+	VkPipeline            m_pipeline       = VK_NULL_HANDLE;
+	VkBuffer              m_uboBuffer      = VK_NULL_HANDLE;
+	VmaAllocation         m_uboAlloc       = VK_NULL_HANDLE;
+	VkTransformUBO*       m_uboMapped      = nullptr;
+	VkDescriptorSet       m_uboSet         = VK_NULL_HANDLE;
+public:
+	VkBumpProgram(){}
 
 	void create(){
-		// create program
-		m_program = gl().glCreateProgram();
+		ensureDescriptorPool();
+		++g_renderProgRefCount;
+		VkDevice dev = GlobalVulkan().device;
 
-		// create shader
-		{
-			StringOutputStream filename( 256 );
-			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/lighting_DBS_omni_vp.glsl" ), GL_VERTEX_SHADER );
-			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/lighting_DBS_omni_fp.glsl" ), GL_FRAGMENT_SHADER );
+		// Set 0: UBO
+		VkDescriptorSetLayoutBinding b0 = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+			                                    VK_SHADER_STAGE_VERTEX_BIT, nullptr };
+		VkDescriptorSetLayoutCreateInfo li0 = {};
+		li0.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		li0.bindingCount = 1;
+		li0.pBindings    = &b0;
+		vkCreateDescriptorSetLayout( dev, &li0, nullptr, &m_setLayout0 );
+
+		// Set 1: 5 combined samplers (diffuse, bump, specular, attenXY, attenZ)
+		VkDescriptorSetLayoutBinding bindings1[5] = {};
+		for ( int i = 0; i < 5; ++i ) {
+			bindings1[i] = { (uint32_t)i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+				              VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
 		}
+		VkDescriptorSetLayoutCreateInfo li1 = {};
+		li1.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		li1.bindingCount = 5;
+		li1.pBindings    = bindings1;
+		vkCreateDescriptorSetLayout( dev, &li1, nullptr, &m_setLayout1 );
 
-		GLSLProgram_link( m_program );
-		GLSLProgram_validate( m_program );
+		// Push constants: 56 bytes (view/light/color/scale/exp)
+		VkPushConstantRange pcRange = {
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 56 };
 
-		gl().glUseProgram( m_program );
+		VkDescriptorSetLayout setLayouts[] = { m_setLayout0, m_setLayout1 };
+		VkPipelineLayoutCreateInfo pli = {};
+		pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pli.setLayoutCount         = 2;
+		pli.pSetLayouts            = setLayouts;
+		pli.pushConstantRangeCount = 1;
+		pli.pPushConstantRanges    = &pcRange;
+		vkCreatePipelineLayout( dev, &pli, nullptr, &m_pipelineLayout );
 
-		gl().glBindAttribLocation( m_program, c_attr_TexCoord0, "attr_TexCoord0" );
-		gl().glBindAttribLocation( m_program, c_attr_Tangent, "attr_Tangent" );
-		gl().glBindAttribLocation( m_program, c_attr_Binormal, "attr_Binormal" );
+		StringOutputStream vertPath( 256 );
+		StringOutputStream fragPath( 256 );
+		vertPath( GlobalRadiant().getAppPath(),
+		          "shaders/spv/lighting_dbs_omni.vert.spv" );
+		fragPath( GlobalRadiant().getAppPath(),
+		          "shaders/spv/lighting_dbs_omni.frag.spv" );
+		VkShaderModule vertMod = loadSPIRV( vertPath.c_str() );
+		VkShaderModule fragMod = loadSPIRV( fragPath.c_str() );
+		m_pipeline = buildPipeline( vertMod, fragMod, m_pipelineLayout, 5 );
+		vkDestroyShaderModule( dev, vertMod, nullptr );
+		vkDestroyShaderModule( dev, fragMod, nullptr );
 
-		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_diffusemap" ), 0 );
-		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_bumpmap" ), 1 );
-		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_specularmap" ), 2 );
-		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_attenuationmap_xy" ), 3 );
-		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_attenuationmap_z" ), 4 );
-
-		u_view_origin = gl().glGetUniformLocation( m_program, "u_view_origin" );
-		u_light_origin = gl().glGetUniformLocation( m_program, "u_light_origin" );
-		u_light_color = gl().glGetUniformLocation( m_program, "u_light_color" );
-		u_bump_scale = gl().glGetUniformLocation( m_program, "u_bump_scale" );
-		u_specular_exponent = gl().glGetUniformLocation( m_program, "u_specular_exponent" );
-
-		gl().glUseProgram( 0 );
-
-		GlobalOpenGL_debugAssertNoErrors();
+		allocUBO( m_setLayout0, m_uboBuffer, m_uboAlloc, m_uboMapped, m_uboSet );
 	}
 
 	void destroy(){
-		gl().glDeleteProgram( m_program );
-		m_program = 0;
+		VkDevice dev   = GlobalVulkan().device;
+		if ( m_pipeline )      vkDestroyPipeline            ( dev, m_pipeline,       nullptr );
+		if ( m_pipelineLayout ) vkDestroyPipelineLayout      ( dev, m_pipelineLayout, nullptr );
+		if ( m_setLayout0 )    vkDestroyDescriptorSetLayout  ( dev, m_setLayout0,    nullptr );
+		if ( m_setLayout1 )    vkDestroyDescriptorSetLayout  ( dev, m_setLayout1,    nullptr );
+		if ( m_uboBuffer )     vmaDestroyBuffer               ( GlobalVulkan().allocator,
+		                                                         m_uboBuffer, m_uboAlloc );
+		m_pipeline = VK_NULL_HANDLE;  m_pipelineLayout = VK_NULL_HANDLE;
+		m_setLayout0 = m_setLayout1 = VK_NULL_HANDLE;
+		m_uboBuffer  = VK_NULL_HANDLE;  m_uboMapped = nullptr;  m_uboSet = VK_NULL_HANDLE;
+		if ( --g_renderProgRefCount == 0 && g_renderDescPool != VK_NULL_HANDLE ) {
+			vkDestroyDescriptorPool( dev, g_renderDescPool, nullptr );
+			g_renderDescPool = VK_NULL_HANDLE;
+		}
 	}
 
 	void enable(){
-		gl().glUseProgram( m_program );
-
-		gl().glEnableVertexAttribArray( c_attr_TexCoord0 );
-		gl().glEnableVertexAttribArray( c_attr_Tangent );
-		gl().glEnableVertexAttribArray( c_attr_Binormal );
-
-		GlobalOpenGL_debugAssertNoErrors();
-
+		if ( g_renderCmdBuffer == VK_NULL_HANDLE ) return;
+		vkCmdBindPipeline( g_renderCmdBuffer,
+			               VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline );
+		vkCmdBindDescriptorSets( g_renderCmdBuffer,
+			                      VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout,
+			                      0, 1, &m_uboSet, 0, nullptr );
 		debug_string( "enable bump" );
 		g_bumpGLSLPass_enabled = true;
 	}
 
 	void disable(){
-		gl().glUseProgram( 0 );
-
-		gl().glDisableVertexAttribArray( c_attr_TexCoord0 );
-		gl().glDisableVertexAttribArray( c_attr_Tangent );
-		gl().glDisableVertexAttribArray( c_attr_Binormal );
-
-		GlobalOpenGL_debugAssertNoErrors();
-
 		debug_string( "disable bump" );
 		g_bumpGLSLPass_enabled = false;
 	}
 
-	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ){
+	void setParameters( const Vector3& viewer,
+	                    const Matrix4& localToWorld,
+	                    const Vector3& origin,
+	                    const Vector3& colour,
+	                    const Matrix4& world2light ){
+		if ( g_renderCmdBuffer == VK_NULL_HANDLE || !m_uboMapped ) return;
+
 		Matrix4 world2local( localToWorld );
 		matrix4_affine_invert( world2local );
 
@@ -316,134 +470,226 @@ public:
 		matrix4_transform_point( world2local, localViewer );
 
 		Matrix4 local2light( world2light );
-		matrix4_multiply_by_matrix4( local2light, localToWorld ); // local->world->light
+		matrix4_multiply_by_matrix4( local2light, localToWorld );
 
-		gl().glUniform3f( u_view_origin, localViewer.x(), localViewer.y(), localViewer.z() );
-		gl().glUniform3f( u_light_origin, localLight.x(), localLight.y(), localLight.z() );
-		gl().glUniform3f( u_light_color, colour.x(), colour.y(), colour.z() );
-		gl().glUniform1f( u_bump_scale, 1.0 );
-		gl().glUniform1f( u_specular_exponent, 32.0 );
+		// Write light-space transform into UBO slot 4
+		std::memcpy( m_uboMapped->localToLight, &local2light, 64 );
 
-		gl().glActiveTexture( GL_TEXTURE3 );
-		gl().glClientActiveTexture( GL_TEXTURE3 );
-
-		gl().glMatrixMode( GL_TEXTURE );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &local2light ) );
-		gl().glMatrixMode( GL_MODELVIEW );
-
-		GlobalOpenGL_debugAssertNoErrors();
+		// Push constants (56 bytes)
+		struct BumpPC {
+			float view_origin[3];  float _p0;
+			float light_origin[3]; float _p1;
+			float light_color[3];  float _p2;
+			float bump_scale;
+			float specular_exponent;
+		} pc;
+		pc.view_origin[0]  = localViewer.x(); pc.view_origin[1]  = localViewer.y(); pc.view_origin[2]  = localViewer.z(); pc._p0 = 0;
+		pc.light_origin[0] = localLight.x();  pc.light_origin[1] = localLight.y();  pc.light_origin[2] = localLight.z();  pc._p1 = 0;
+		pc.light_color[0]  = colour.x();      pc.light_color[1]  = colour.y();      pc.light_color[2]  = colour.z();      pc._p2 = 0;
+		pc.bump_scale         = 1.0f;
+		pc.specular_exponent  = 32.0f;
+		vkCmdPushConstants( g_renderCmdBuffer, m_pipelineLayout,
+			               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			               0, sizeof( pc ), &pc );
 	}
 };
 
-GLSLBumpProgram g_bumpGLSL;
+VkBumpProgram g_bumpGLSL;
 
+// ── VkDepthFillProgram ────────────────────────────────────────────────────────
 
-class GLSLDepthFillProgram : public GLProgram
+class VkDepthFillProgram : public GLProgram
 {
+private:
+	VkDescriptorSetLayout m_setLayout0    = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_setLayout1    = VK_NULL_HANDLE;
+	VkPipelineLayout      m_pipelineLayout = VK_NULL_HANDLE;
+	VkPipeline            m_pipeline       = VK_NULL_HANDLE;
+	VkBuffer              m_uboBuffer      = VK_NULL_HANDLE;
+	VmaAllocation         m_uboAlloc       = VK_NULL_HANDLE;
+	VkTransformUBO*       m_uboMapped      = nullptr;
+	VkDescriptorSet       m_uboSet         = VK_NULL_HANDLE;
 public:
-	GLuint m_program;
-
 	void create(){
-		// create program
-		m_program = gl().glCreateProgram();
+		ensureDescriptorPool();
+		++g_renderProgRefCount;
+		VkDevice dev = GlobalVulkan().device;
 
-		// create shader
-		{
-			StringOutputStream filename( 256 );
-			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/zfill_vp.glsl" ), GL_VERTEX_SHADER );
-			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/zfill_fp.glsl" ), GL_FRAGMENT_SHADER );
-		}
+		VkDescriptorSetLayoutBinding b0 = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+			                                    VK_SHADER_STAGE_VERTEX_BIT, nullptr };
+		VkDescriptorSetLayoutCreateInfo li0 = {};
+		li0.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		li0.bindingCount = 1;
+		li0.pBindings = &b0;
+		vkCreateDescriptorSetLayout( dev, &li0, nullptr, &m_setLayout0 );
 
-		GLSLProgram_link( m_program );
-		GLSLProgram_validate( m_program );
+		VkDescriptorSetLayoutBinding b1 = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+			                                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+		VkDescriptorSetLayoutCreateInfo li1 = {};
+		li1.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		li1.bindingCount = 1;
+		li1.pBindings = &b1;
+		vkCreateDescriptorSetLayout( dev, &li1, nullptr, &m_setLayout1 );
 
-		GlobalOpenGL_debugAssertNoErrors();
+		VkDescriptorSetLayout setLayouts[] = { m_setLayout0, m_setLayout1 };
+		VkPipelineLayoutCreateInfo pli = {};
+		pli.sType           = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pli.setLayoutCount  = 2;
+		pli.pSetLayouts     = setLayouts;
+		vkCreatePipelineLayout( dev, &pli, nullptr, &m_pipelineLayout );
+
+		StringOutputStream vertPath( 256 ), fragPath( 256 );
+		vertPath( GlobalRadiant().getAppPath(), "shaders/spv/zfill.vert.spv" );
+		fragPath( GlobalRadiant().getAppPath(), "shaders/spv/zfill.frag.spv" );
+		VkShaderModule vertMod = loadSPIRV( vertPath.c_str() );
+		VkShaderModule fragMod = loadSPIRV( fragPath.c_str() );
+		m_pipeline = buildPipeline( vertMod, fragMod, m_pipelineLayout, 2 );
+		vkDestroyShaderModule( dev, vertMod, nullptr );
+		vkDestroyShaderModule( dev, fragMod, nullptr );
+
+		allocUBO( m_setLayout0, m_uboBuffer, m_uboAlloc, m_uboMapped, m_uboSet );
 	}
-
 	void destroy(){
-		gl().glDeleteProgram( m_program );
-		m_program = 0;
+		VkDevice dev = GlobalVulkan().device;
+		if ( m_pipeline )       vkDestroyPipeline           ( dev, m_pipeline,       nullptr );
+		if ( m_pipelineLayout ) vkDestroyPipelineLayout     ( dev, m_pipelineLayout, nullptr );
+		if ( m_setLayout0 )     vkDestroyDescriptorSetLayout( dev, m_setLayout0,     nullptr );
+		if ( m_setLayout1 )     vkDestroyDescriptorSetLayout( dev, m_setLayout1,     nullptr );
+		if ( m_uboBuffer )      vmaDestroyBuffer             ( GlobalVulkan().allocator,
+		                                                        m_uboBuffer, m_uboAlloc );
+		m_pipeline = VK_NULL_HANDLE;  m_pipelineLayout = VK_NULL_HANDLE;
+		m_setLayout0 = m_setLayout1 = VK_NULL_HANDLE;
+		m_uboBuffer  = VK_NULL_HANDLE;  m_uboMapped = nullptr;  m_uboSet = VK_NULL_HANDLE;
+		if ( --g_renderProgRefCount == 0 && g_renderDescPool != VK_NULL_HANDLE ) {
+			vkDestroyDescriptorPool( dev, g_renderDescPool, nullptr );
+			g_renderDescPool = VK_NULL_HANDLE;
+		}
 	}
 	void enable(){
-		gl().glUseProgram( m_program );
-		GlobalOpenGL_debugAssertNoErrors();
+		if ( g_renderCmdBuffer == VK_NULL_HANDLE ) return;
+		vkCmdBindPipeline( g_renderCmdBuffer,
+			               VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline );
+		vkCmdBindDescriptorSets( g_renderCmdBuffer,
+			                      VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout,
+			                      0, 1, &m_uboSet, 0, nullptr );
 		debug_string( "enable depthfill" );
 		g_depthfillPass_enabled = true;
 	}
 	void disable(){
-		gl().glUseProgram( 0 );
-		GlobalOpenGL_debugAssertNoErrors();
 		debug_string( "disable depthfill" );
 		g_depthfillPass_enabled = false;
 	}
-	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ){
-	}
+	void setParameters( const Vector3&, const Matrix4&, const Vector3&,
+	                    const Vector3&, const Matrix4& ){}
 };
 
-GLSLDepthFillProgram g_depthFillGLSL;
+VkDepthFillProgram g_depthFillGLSL;
 
+// ── VkSkyboxProgram ───────────────────────────────────────────────────────────
 
-class GLSLSkyboxProgram : public GLProgram
+class VkSkyboxProgram : public GLProgram
 {
+private:
+	VkDescriptorSetLayout m_setLayout0    = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_setLayout1    = VK_NULL_HANDLE;
+	VkPipelineLayout      m_pipelineLayout = VK_NULL_HANDLE;
+	VkPipeline            m_pipeline       = VK_NULL_HANDLE;
+	VkBuffer              m_uboBuffer      = VK_NULL_HANDLE;
+	VmaAllocation         m_uboAlloc       = VK_NULL_HANDLE;
+	VkTransformUBO*       m_uboMapped      = nullptr;
+	VkDescriptorSet       m_uboSet         = VK_NULL_HANDLE;
 public:
-	GLuint m_program;
-	GLint u_view_origin;
-
-	GLSLSkyboxProgram() : m_program( 0 ){
-	}
+	VkSkyboxProgram(){}
 
 	void create(){
-		// create program
-		m_program = gl().glCreateProgram();
+		ensureDescriptorPool();
+		++g_renderProgRefCount;
+		VkDevice dev = GlobalVulkan().device;
 
-		// create shader
-		{
-			StringOutputStream filename( 256 );
-			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/skybox_vp.glsl" ), GL_VERTEX_SHADER );
-			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/skybox_fp.glsl" ), GL_FRAGMENT_SHADER );
-		}
+		VkDescriptorSetLayoutBinding b0 = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+			                                    VK_SHADER_STAGE_VERTEX_BIT, nullptr };
+		VkDescriptorSetLayoutCreateInfo li0 = {};
+		li0.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		li0.bindingCount = 1;
+		li0.pBindings = &b0;
+		vkCreateDescriptorSetLayout( dev, &li0, nullptr, &m_setLayout0 );
 
-		GLSLProgram_link( m_program );
-		GLSLProgram_validate( m_program );
+		VkDescriptorSetLayoutBinding b1 = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+			                                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+		VkDescriptorSetLayoutCreateInfo li1 = {};
+		li1.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		li1.bindingCount = 1;
+		li1.pBindings = &b1;
+		vkCreateDescriptorSetLayout( dev, &li1, nullptr, &m_setLayout1 );
 
-		gl().glUseProgram( m_program );
+		VkPushConstantRange pcRange = {
+			VK_SHADER_STAGE_VERTEX_BIT, 0, 16 };  // vec3 + 4b pad
 
-		u_view_origin = gl().glGetUniformLocation( m_program, "u_view_origin" );
+		VkDescriptorSetLayout setLayouts[] = { m_setLayout0, m_setLayout1 };
+		VkPipelineLayoutCreateInfo pli = {};
+		pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pli.setLayoutCount         = 2;
+		pli.pSetLayouts            = setLayouts;
+		pli.pushConstantRangeCount = 1;
+		pli.pPushConstantRanges    = &pcRange;
+		vkCreatePipelineLayout( dev, &pli, nullptr, &m_pipelineLayout );
 
-		gl().glUseProgram( 0 );
+		StringOutputStream vertPath( 256 ), fragPath( 256 );
+		vertPath( GlobalRadiant().getAppPath(), "shaders/spv/skybox.vert.spv" );
+		fragPath( GlobalRadiant().getAppPath(), "shaders/spv/skybox.frag.spv" );
+		VkShaderModule vertMod = loadSPIRV( vertPath.c_str() );
+		VkShaderModule fragMod = loadSPIRV( fragPath.c_str() );
+		m_pipeline = buildPipeline( vertMod, fragMod, m_pipelineLayout, 1 );
+		vkDestroyShaderModule( dev, vertMod, nullptr );
+		vkDestroyShaderModule( dev, fragMod, nullptr );
 
-		GlobalOpenGL_debugAssertNoErrors();
+		allocUBO( m_setLayout0, m_uboBuffer, m_uboAlloc, m_uboMapped, m_uboSet );
 	}
-
 	void destroy(){
-		gl().glDeleteProgram( m_program );
-		m_program = 0;
+		VkDevice dev = GlobalVulkan().device;
+		if ( m_pipeline )       vkDestroyPipeline           ( dev, m_pipeline,       nullptr );
+		if ( m_pipelineLayout ) vkDestroyPipelineLayout     ( dev, m_pipelineLayout, nullptr );
+		if ( m_setLayout0 )     vkDestroyDescriptorSetLayout( dev, m_setLayout0,     nullptr );
+		if ( m_setLayout1 )     vkDestroyDescriptorSetLayout( dev, m_setLayout1,     nullptr );
+		if ( m_uboBuffer )      vmaDestroyBuffer             ( GlobalVulkan().allocator,
+		                                                        m_uboBuffer, m_uboAlloc );
+		m_pipeline = VK_NULL_HANDLE;  m_pipelineLayout = VK_NULL_HANDLE;
+		m_setLayout0 = m_setLayout1 = VK_NULL_HANDLE;
+		m_uboBuffer  = VK_NULL_HANDLE;  m_uboMapped = nullptr;  m_uboSet = VK_NULL_HANDLE;
+		if ( --g_renderProgRefCount == 0 && g_renderDescPool != VK_NULL_HANDLE ) {
+			vkDestroyDescriptorPool( dev, g_renderDescPool, nullptr );
+			g_renderDescPool = VK_NULL_HANDLE;
+		}
 	}
-
 	void enable(){
-		gl().glUseProgram( m_program );
-
-		GlobalOpenGL_debugAssertNoErrors();
-
+		if ( g_renderCmdBuffer == VK_NULL_HANDLE ) return;
+		vkCmdBindPipeline( g_renderCmdBuffer,
+			               VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline );
+		vkCmdBindDescriptorSets( g_renderCmdBuffer,
+			                      VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout,
+			                      0, 1, &m_uboSet, 0, nullptr );
 		debug_string( "enable skybox" );
 	}
-
 	void disable(){
-		gl().glUseProgram( 0 );
-
-		GlobalOpenGL_debugAssertNoErrors();
-
 		debug_string( "disable skybox" );
 	}
-
-	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ){
-		gl().glUniform3f( u_view_origin, viewer.x(), viewer.y(), viewer.z() );
-
-		GlobalOpenGL_debugAssertNoErrors();
+	void setParameters( const Vector3& viewer,
+	                    const Matrix4& /* localToWorld */,
+	                    const Vector3& /* origin */,
+	                    const Vector3& /* colour */,
+	                    const Matrix4& /* world2light */ ){
+		if ( g_renderCmdBuffer == VK_NULL_HANDLE ) return;
+		struct SkyboxPC { float view_origin[3]; float _p0; } pc;
+		pc.view_origin[0] = viewer.x();
+		pc.view_origin[1] = viewer.y();
+		pc.view_origin[2] = viewer.z();
+		pc._p0 = 0;
+		vkCmdPushConstants( g_renderCmdBuffer, m_pipelineLayout,
+			               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof( pc ), &pc );
 	}
 };
 
-GLSLSkyboxProgram g_skyboxGLSL;
+VkSkyboxProgram g_skyboxGLSL;
 
 
 
@@ -511,12 +757,12 @@ void OpenGLState_constructDefault( OpenGLState& state ){
 	state.m_colour[2] = 1;
 	state.m_colour[3] = 1;
 
-	state.m_depthfunc = GL_LESS;
+	state.m_depthfunc = RS_COMPARE_LESS;
 
-	state.m_blend_src = GL_SRC_ALPHA;
-	state.m_blend_dst = GL_ONE_MINUS_SRC_ALPHA;
+	state.m_blend_src = RS_BLEND_SRC_ALPHA;
+	state.m_blend_dst = RS_BLEND_ONE_MINUS_SRC_ALPHA;
 
-	state.m_alphafunc = GL_ALWAYS;
+	state.m_alphafunc = RS_COMPARE_ALWAYS;
 	state.m_alpharef = 0;
 
 	state.m_linewidth = 1;
@@ -812,13 +1058,9 @@ public:
 	}
 };
 
-inline void setFogState( const OpenGLFogState& state ){
-	gl().glFogi( GL_FOG_MODE, state.mode );
-	gl().glFogf( GL_FOG_DENSITY, state.density );
-	gl().glFogf( GL_FOG_START, state.start );
-	gl().glFogf( GL_FOG_END, state.end );
-	gl().glFogi( GL_FOG_INDEX, state.index );
-	gl().glFogfv( GL_FOG_COLOR, vector4_to_array( state.colour ) );
+inline void setFogState( const OpenGLFogState& /*state*/ ){
+	// Vulkan has no fixed-function fog; fog must be emulated in shaders if needed.
+	// For now this is a no-op — no state is stored and no command is recorded.
 }
 
 #define DEBUG_SHADERS 0
@@ -887,101 +1129,16 @@ public:
 		m_shaders.release( name );
 	}
 	void render( RenderStateFlags globalstate, const Matrix4& modelview, const Matrix4& projection, const Vector3& viewer ){
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &projection ) );
-#if 0
-		//qglGetFloatv(GL_PROJECTION_MATRIX, reinterpret_cast<float*>(&projection));
-#endif
-
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &modelview ) );
-#if 0
-		//qglGetFloatv(GL_MODELVIEW_MATRIX, reinterpret_cast<float*>(&modelview));
-#endif
+		// Upload view transforms to the active program UBOs.
+		// The actual UBO binding happens in VkBumpProgram/VkDepthFillProgram/VkSkyboxProgram::enable().
+		// Here we just store the combined MVP so enable() can push it.
+		// (Phase 6 will wire g_renderCmdBuffer from the frame loop.)
 
 		ASSERT_MESSAGE( realised(), "render states are not realised" );
-
-		// global settings that are not set in renderstates
-		gl().glFrontFace( GL_CW );
-		gl().glCullFace( GL_BACK );
-		gl().glPolygonOffset( -1, 1 );
-		{
-			const GLubyte pattern[132] = {
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55,
-				0xAA, 0xAA, 0xAA, 0xAA, 0x55, 0x55, 0x55, 0x55
-			};
-			gl().glPolygonStipple( pattern );
-		}
-		gl().glEnableClientState( GL_VERTEX_ARRAY );
-		g_vertexArray_enabled = true;
-		gl().glColorMaterial( GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE );
-
-		gl().glActiveTexture( GL_TEXTURE0 );
-		gl().glClientActiveTexture( GL_TEXTURE0 );
-
-		gl().glUseProgram( 0 );
-		gl().glDisableVertexAttribArray( c_attr_TexCoord0 );
-		gl().glDisableVertexAttribArray( c_attr_Tangent );
-		gl().glDisableVertexAttribArray( c_attr_Binormal );
-
-		if ( globalstate & RENDER_TEXTURE ) {
-			gl().glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT );
-			gl().glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT );
-		}
 
 		OpenGLState current;
 		OpenGLState_constructDefault( current );
 		current.m_sort = OpenGLState::eSortFirst;
-
-		// default renderstate settings
-		gl().glLineStipple( current.m_linestipple_factor, current.m_linestipple_pattern );
-		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
-		gl().glDisable( GL_LIGHTING );
-		gl().glDisable( GL_TEXTURE_2D );
-		gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-		g_texcoordArray_enabled = false;
-		gl().glDisableClientState( GL_COLOR_ARRAY );
-		g_colorArray_enabled = false;
-		gl().glDisableClientState( GL_NORMAL_ARRAY );
-		g_normalArray_enabled = false;
-		gl().glDisable( GL_BLEND );
-		gl().glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
-		gl().glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-		gl().glDisable( GL_CULL_FACE );
-		gl().glShadeModel( GL_FLAT );
-		gl().glDisable( GL_DEPTH_TEST );
-		gl().glDepthMask( GL_FALSE );
-		gl().glDisable( GL_ALPHA_TEST );
-		gl().glDisable( GL_LINE_STIPPLE );
-		gl().glDisable( GL_POLYGON_STIPPLE );
-		gl().glDisable( GL_POLYGON_OFFSET_LINE );
-
-		gl().glBindTexture( GL_TEXTURE_2D, 0 );
-		gl().glColor4f( 1,1,1,1 );
-		gl().glDepthFunc( GL_LESS );
-		gl().glAlphaFunc( GL_ALWAYS, 0 );
-		gl().glLineWidth( 1 );
-		gl().glPointSize( 1 );
-
-		gl().glHint( GL_FOG_HINT, GL_NICEST );
-		gl().glDisable( GL_FOG );
-		setFogState( OpenGLFogState() );
-
-		GlobalOpenGL_debugAssertNoErrors();
 
 		debug_string( "begin rendering" );
 		for ( OpenGLStates::iterator i = g_state_sorted.begin(); i != g_state_sorted.end(); ++i )
@@ -1023,11 +1180,11 @@ public:
 					( *i ).value->unrealise();
 				}
 			}
-			if ( GlobalOpenGL().contextValid && lightingEnabled() ) {
+			if ( GlobalVulkan().contextValid && lightingEnabled() ) {
 				g_bumpGLSL.destroy();
 				g_depthFillGLSL.destroy();
 			}
-			if( GlobalOpenGL().contextValid )
+			if( GlobalVulkan().contextValid )
 				g_skyboxGLSL.destroy();
 		}
 	}
@@ -1206,33 +1363,24 @@ ShaderCache* GetShaderCache(){
 	return g_ShaderCache;
 }
 
-inline void setTextureState( GLint& current, const GLint& texture, GLenum textureUnit ){
+/// Track texture slot changes in the current state — no GL call needed.
+/// Actual Vulkan descriptor binding happens when we know which pipeline is active.
+inline void setTextureState( uint32_t& current, const uint32_t& texture, GLenum /*textureUnit*/ ){
 	if ( texture != current ) {
-		gl().glActiveTexture( textureUnit );
-		gl().glClientActiveTexture( textureUnit );
-		gl().glBindTexture( GL_TEXTURE_2D, texture );
-		GlobalOpenGL_debugAssertNoErrors();
 		current = texture;
 	}
 }
 
-inline void setTextureState( GLint& current, const GLint& texture ){
+inline void setTextureState( uint32_t& current, const uint32_t& texture ){
 	if ( texture != current ) {
-		gl().glBindTexture( GL_TEXTURE_2D, texture );
-		GlobalOpenGL_debugAssertNoErrors();
 		current = texture;
 	}
 }
 
-inline void setState( unsigned int state, unsigned int delta, unsigned int flag, GLenum glflag ){
-	if ( delta & state & flag ) {
-		gl().glEnable( glflag );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-	else if ( delta & ~state & flag ) {
-		gl().glDisable( glflag );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
+/// In Vulkan, blend/depth/cull are baked into the pipeline or set via dynamic
+/// state extensions — not per-draw glEnable/glDisable calls.  Record the flag
+/// change in the tracking bitmask and return; no command is recorded here.
+inline void setState( unsigned int /*state*/, unsigned int /*delta*/, unsigned int /*flag*/, GLenum /*glflag*/ ){
 }
 
 void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned int globalstate ){
@@ -1255,36 +1403,24 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 
 	GlobalOpenGL_debugAssertNoErrors();
 
+	// ── RENDER_TEXT matrix push/pop ──────────────────────────────────────────
+	// In Vulkan the "text ortho projection" transform is handled by an overlay
+	// pass (Phase 6). For now we just track the state transition.
 	if ( delta & state & RENDER_TEXT ) {
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glPushMatrix();
-		gl().glLoadIdentity();
-		GLint viewprt[4];
-		gl().glGetIntegerv( GL_VIEWPORT, viewprt );
-		//globalOutputStream() << viewprt[2] << ' ' << viewprt[3] << '\n';
-		gl().glOrtho( 0, viewprt[2], 0, viewprt[3], -100, 100 );
-		gl().glTranslated( double( viewprt[2] ) / 2.0, double( viewprt[3] ) / 2.0, 0 );
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glPushMatrix();
-		gl().glLoadIdentity();
-
+		// Phase 6: set up ortho UBO for text overlay
 		GlobalOpenGL_debugAssertNoErrors();
 	}
 	else if ( delta & ~state & RENDER_TEXT ) {
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glPopMatrix();
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glPopMatrix();
-
+		// Phase 6: restore previous projection UBO
 		GlobalOpenGL_debugAssertNoErrors();
 	}
 
+	// ── Program switching ────────────────────────────────────────────────────
 	GLProgram* program = ( state & RENDER_PROGRAM ) != 0 ? self.m_program : 0;
 
 	if ( program != current.m_program ) {
 		if ( current.m_program != 0 ) {
 			current.m_program->disable();
-//why?			gl().glColor4fv( vector4_to_array( current.m_colour ) );
 			debug_colour( "cleaning program" );
 		}
 
@@ -1295,158 +1431,60 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 		}
 	}
 
-	if ( delta & state & RENDER_FILL ) {
-		//qglPolygonMode (GL_BACK, GL_LINE);
-		//qglPolygonMode (GL_FRONT, GL_FILL);
-		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-	else if ( delta & ~state & RENDER_FILL ) {
-		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
+	// ── Fill / line mode ─────────────────────────────────────────────────────
+	// In Vulkan polygon fill/line mode is a pipeline state; tracked in current
+	// but no dynamic command is recorded here (Phase 6 adds pipeline switching).
+	// no-op: setState( state, delta, RENDER_FILL, ... ) handled above as no-op
 
-	setState( state, delta, RENDER_OFFSETLINE, GL_POLYGON_OFFSET_LINE );
-
-	if ( delta & state & RENDER_LIGHTING ) {
-		gl().glEnable( GL_LIGHTING );
-		gl().glEnable( GL_COLOR_MATERIAL );
-		gl().glEnable( GL_RESCALE_NORMAL );
-		gl().glEnableClientState( GL_NORMAL_ARRAY );
-		GlobalOpenGL_debugAssertNoErrors();
-		g_normalArray_enabled = true;
-	}
-	else if ( delta & ~state & RENDER_LIGHTING ) {
-		gl().glDisable( GL_LIGHTING );
-		gl().glDisable( GL_COLOR_MATERIAL );
-		gl().glDisable( GL_RESCALE_NORMAL );
-		gl().glDisableClientState( GL_NORMAL_ARRAY );
-		GlobalOpenGL_debugAssertNoErrors();
-		g_normalArray_enabled = false;
-	}
+	// ── Boolean render flags ─────────────────────────────────────────────────
+	setState( state, delta, RENDER_OFFSETLINE,    0 );
+	setState( state, delta, RENDER_LIGHTING,      0 );
+	setState( state, delta, RENDER_TEXTURE,       0 );
+	setState( state, delta, RENDER_BLEND,         0 );
 
 	if ( delta & state & RENDER_TEXTURE ) {
-		GlobalOpenGL_debugAssertNoErrors();
-
-		gl().glActiveTexture( GL_TEXTURE0 );
-		gl().glClientActiveTexture( GL_TEXTURE0 );
-
-		gl().glEnable( GL_TEXTURE_2D );
-
-		gl().glColor4f( 1,1,1,self.m_colour[3] );
 		debug_colour( "setting texture" );
-
-		gl().glEnableClientState( GL_TEXTURE_COORD_ARRAY );
-		GlobalOpenGL_debugAssertNoErrors();
 		g_texcoordArray_enabled = true;
 	}
 	else if ( delta & ~state & RENDER_TEXTURE ) {
-		gl().glActiveTexture( GL_TEXTURE0 );
-		gl().glClientActiveTexture( GL_TEXTURE0 );
-
-		gl().glDisable( GL_TEXTURE_2D );
-		gl().glBindTexture( GL_TEXTURE_2D, 0 );
-		gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-
-		GlobalOpenGL_debugAssertNoErrors();
 		g_texcoordArray_enabled = false;
 	}
 
-	if ( delta & state & RENDER_BLEND ) {
-// FIXME: some .TGA are buggy, have a completely empty alpha channel
-// if such brushes are rendered in this loop they would be totally transparent with GL_MODULATE
-// so I decided using GL_DECAL instead
-// if an empty-alpha-channel or nearly-empty texture is used. It will be blank-transparent.
-// this could get better if you can get glTexEnviv (GL_TEXTURE_ENV, to work .. patches are welcome
-
-		gl().glEnable( GL_BLEND );
-		gl().glActiveTexture( GL_TEXTURE0 );
-//		gl().glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL );
-//		gl().glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE ); //uses actual alpha channel, = invis, if qer_trans + empty alpha channel
-		GlobalOpenGL_debugAssertNoErrors();
+	if ( delta & state & RENDER_LIGHTING ) {
+		g_normalArray_enabled = true;
 	}
-	else if ( delta & ~state & RENDER_BLEND ) {
-		gl().glDisable( GL_BLEND );
-		gl().glActiveTexture( GL_TEXTURE0 );
-//		gl().glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
-		GlobalOpenGL_debugAssertNoErrors();
+	else if ( delta & ~state & RENDER_LIGHTING ) {
+		g_normalArray_enabled = false;
 	}
 
-	setState( state, delta, RENDER_CULLFACE, GL_CULL_FACE );
-
-	if ( delta & state & RENDER_SMOOTH ) {
-		gl().glShadeModel( GL_SMOOTH );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-	else if ( delta & ~state & RENDER_SMOOTH ) {
-		gl().glShadeModel( GL_FLAT );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-
-	setState( state, delta, RENDER_SCALED, GL_NORMALIZE ); // not GL_RESCALE_NORMAL
-
-	setState( state, delta, RENDER_DEPTHTEST, GL_DEPTH_TEST );
+	setState( state, delta, RENDER_CULLFACE,      0 );
+	setState( state, delta, RENDER_SMOOTH,        0 );
+	setState( state, delta, RENDER_SCALED,        0 );
+	setState( state, delta, RENDER_DEPTHTEST,     0 );
+	setState( state, delta, RENDER_COLOURWRITE,   0 );
+	setState( state, delta, RENDER_ALPHATEST,     0 );
 
 	if ( delta & state & RENDER_DEPTHWRITE ) {
-		gl().glDepthMask( GL_TRUE );
-
-#if DEBUG_RENDER
-		GLboolean depthEnabled;
-		gl().glGetBooleanv( GL_DEPTH_WRITEMASK, &depthEnabled );
-		ASSERT_MESSAGE( depthEnabled, "failed to set depth buffer mask bit" );
-#endif
 		debug_string( "enabled depth-buffer writing" );
-
 		GlobalOpenGL_debugAssertNoErrors();
 	}
 	else if ( delta & ~state & RENDER_DEPTHWRITE ) {
-		gl().glDepthMask( GL_FALSE );
-
-#if DEBUG_RENDER
-		GLboolean depthEnabled;
-		gl().glGetBooleanv( GL_DEPTH_WRITEMASK, &depthEnabled );
-		ASSERT_MESSAGE( !depthEnabled, "failed to set depth buffer mask bit" );
-#endif
 		debug_string( "disabled depth-buffer writing" );
-
 		GlobalOpenGL_debugAssertNoErrors();
 	}
-
-	if ( delta & state & RENDER_COLOURWRITE ) {
-		gl().glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-	else if ( delta & ~state & RENDER_COLOURWRITE ) {
-		gl().glColorMask( GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-
-	setState( state, delta, RENDER_ALPHATEST, GL_ALPHA_TEST );
 
 	if ( delta & state & RENDER_COLOURARRAY ) {
-		gl().glEnableClientState( GL_COLOR_ARRAY );
-		GlobalOpenGL_debugAssertNoErrors();
 		debug_colour( "enabling color_array" );
 		g_colorArray_enabled = true;
 	}
 	else if ( delta & ~state & RENDER_COLOURARRAY ) {
-		gl().glDisableClientState( GL_COLOR_ARRAY );
-		gl().glColor4fv( vector4_to_array( self.m_colour ) );
 		debug_colour( "cleaning color_array" );
-		GlobalOpenGL_debugAssertNoErrors();
 		g_colorArray_enabled = false;
 	}
 
-	if ( delta & ~state & RENDER_COLOURCHANGE ) {
-		gl().glColor4fv( vector4_to_array( self.m_colour ) );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-
-	setState( state, delta, RENDER_LINESTIPPLE, GL_LINE_STIPPLE );
-
-	setState( state, delta, RENDER_POLYGONSTIPPLE, GL_POLYGON_STIPPLE );
-
-	setState( state, delta, RENDER_FOG, GL_FOG );
+	setState( state, delta, RENDER_LINESTIPPLE,   0 );
+	setState( state, delta, RENDER_POLYGONSTIPPLE,0 );
+	setState( state, delta, RENDER_FOG,           0 );
 
 	if ( ( state & RENDER_FOG ) != 0 ) {
 		setFogState( self.m_fog );
@@ -1454,8 +1492,8 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 		current.m_fog = self.m_fog;
 	}
 
+	// ── Per-state scalar updates ─────────────────────────────────────────────
 	if ( state & RENDER_DEPTHTEST && self.m_depthfunc != current.m_depthfunc ) {
-		gl().glDepthFunc( self.m_depthfunc );
 		GlobalOpenGL_debugAssertNoErrors();
 		current.m_depthfunc = self.m_depthfunc;
 	}
@@ -1463,97 +1501,60 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 	if ( state & RENDER_LINESTIPPLE
 	     && ( self.m_linestipple_factor != current.m_linestipple_factor
 	          || self.m_linestipple_pattern != current.m_linestipple_pattern ) ) {
-		gl().glLineStipple( self.m_linestipple_factor, self.m_linestipple_pattern );
 		GlobalOpenGL_debugAssertNoErrors();
 		current.m_linestipple_factor = self.m_linestipple_factor;
 		current.m_linestipple_pattern = self.m_linestipple_pattern;
 	}
 
-
 	if ( state & RENDER_ALPHATEST
 	     && ( self.m_alphafunc != current.m_alphafunc
 	          || self.m_alpharef != current.m_alpharef ) ) {
-		gl().glAlphaFunc( self.m_alphafunc, self.m_alpharef );
 		GlobalOpenGL_debugAssertNoErrors();
 		current.m_alphafunc = self.m_alphafunc;
-		current.m_alpharef = self.m_alpharef;
+		current.m_alpharef  = self.m_alpharef;
 	}
 
+	// ── Texture slots ────────────────────────────────────────────────────────
 	{
-		GLint texture0 = 0;
-		GLint texture1 = 0;
-		GLint texture2 = 0;
-		GLint texture3 = 0;
-		GLint texture4 = 0;
-		GLint texture5 = 0;
-		GLint texture6 = 0;
-		GLint texture7 = 0;
-		//if(state & RENDER_TEXTURE) != 0)
-		{
-			texture0 = self.m_texture;
-			texture1 = self.m_texture1;
-			texture2 = self.m_texture2;
-			texture3 = self.m_texture3;
-			texture4 = self.m_texture4;
-			texture5 = self.m_texture5;
-			texture6 = self.m_texture6;
-			texture7 = self.m_texture7;
-		}
+		uint32_t texture0 = self.m_texture;
+		uint32_t texture1 = self.m_texture1;
+		uint32_t texture2 = self.m_texture2;
+		uint32_t texture3 = self.m_texture3;
+		uint32_t texture4 = self.m_texture4;
+		uint32_t texture5 = self.m_texture5;
+		uint32_t texture6 = self.m_texture6;
+		uint32_t texture7 = self.m_texture7;
 
-		{
-			setTextureState( current.m_texture, texture0, GL_TEXTURE0 );
-			setTextureState( current.m_texture1, texture1, GL_TEXTURE1 );
-			setTextureState( current.m_texture2, texture2, GL_TEXTURE2 );
-			setTextureState( current.m_texture3, texture3, GL_TEXTURE3 );
-			setTextureState( current.m_texture4, texture4, GL_TEXTURE4 );
-			setTextureState( current.m_texture5, texture5, GL_TEXTURE5 );
-			setTextureState( current.m_texture6, texture6, GL_TEXTURE6 );
-			setTextureState( current.m_texture7, texture7, GL_TEXTURE7 );
-		}
+		setTextureState( current.m_texture,  texture0, GL_TEXTURE0 );
+		setTextureState( current.m_texture1, texture1, GL_TEXTURE1 );
+		setTextureState( current.m_texture2, texture2, GL_TEXTURE2 );
+		setTextureState( current.m_texture3, texture3, GL_TEXTURE3 );
+		setTextureState( current.m_texture4, texture4, GL_TEXTURE4 );
+		setTextureState( current.m_texture5, texture5, GL_TEXTURE5 );
+		setTextureState( current.m_texture6, texture6, GL_TEXTURE6 );
+		setTextureState( current.m_texture7, texture7, GL_TEXTURE7 );
 	}
-
 
 	if( current.m_textureSkyBox != self.m_textureSkyBox ){
-		gl().glActiveTexture( GL_TEXTURE0 );
-		gl().glClientActiveTexture( GL_TEXTURE0 );
-		gl().glBindTexture( GL_TEXTURE_CUBE_MAP, self.m_textureSkyBox );
 		GlobalOpenGL_debugAssertNoErrors();
 		current.m_textureSkyBox = self.m_textureSkyBox;
 	}
 
-	if ( state & RENDER_TEXTURE && self.m_colour[3] != current.m_colour[3] ) {
-		debug_colour( "setting alpha" );
-		gl().glColor4f( 1,1,1,self.m_colour[3] );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
-
-	if ( !( state & RENDER_TEXTURE )
-	     && self.m_colour != current.m_colour ) {
-		gl().glColor4fv( vector4_to_array( self.m_colour ) );
-		debug_colour( "setting non-texture" );
-		GlobalOpenGL_debugAssertNoErrors();
-	}
 	current.m_colour = self.m_colour;
 
 	if ( state & RENDER_BLEND
 	     && ( self.m_blend_src != current.m_blend_src || self.m_blend_dst != current.m_blend_dst ) ) {
-		gl().glBlendFunc( self.m_blend_src, self.m_blend_dst );
 		GlobalOpenGL_debugAssertNoErrors();
 		current.m_blend_src = self.m_blend_src;
 		current.m_blend_dst = self.m_blend_dst;
 	}
 
-	if ( !( state & RENDER_FILL )
-	     && self.m_linewidth != current.m_linewidth ) {
-		gl().glLineWidth( self.m_linewidth );
-		GlobalOpenGL_debugAssertNoErrors();
+	if ( !( state & RENDER_FILL ) && self.m_linewidth != current.m_linewidth ) {
+		// Phase 6: vkCmdSetLineWidth(g_renderCmdBuffer, self.m_linewidth)
 		current.m_linewidth = self.m_linewidth;
 	}
 
-	if ( !( state & RENDER_FILL )
-	     && self.m_pointsize != current.m_pointsize ) {
-		gl().glPointSize( self.m_pointsize );
-		GlobalOpenGL_debugAssertNoErrors();
+	if ( !( state & RENDER_FILL ) && self.m_pointsize != current.m_pointsize ) {
 		current.m_pointsize = self.m_pointsize;
 	}
 
@@ -1565,8 +1566,7 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState& current, unsigned int globalstate, const Vector3& viewer, const Matrix4& viewMatrix ){
 	const Matrix4* transform = 0;
 
-	// Sort by transform pointer to group renderables with the same transform,
-	// reducing the number of glLoadMatrixf calls.
+	// Sort by transform pointer to group renderables with the same transform.
 	std::sort( renderables.begin(), renderables.end(),
 		[]( const OpenGLStateBucket::RenderTransform& a, const OpenGLStateBucket::RenderTransform& b ){
 			return a.m_transform < b.m_transform;
@@ -1581,14 +1581,11 @@ void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState
 		if ( !transform || ( transform != ( *i ).m_transform && !matrix4_affine_equal( *transform, *( *i ).m_transform ) ) ) {
 			count_transform();
 			transform = ( *i ).m_transform;
-			if ( ( current.m_state & RENDER_TEXT ) != 0 ) {
-				gl().glLoadMatrixf( reinterpret_cast<const float*>( transform ) );
-			}
-			else{
-				const Matrix4 combined = matrix4_multiplied_by_matrix4( viewMatrix, *transform );
-				gl().glLoadMatrixf( reinterpret_cast<const float*>( &combined ) );
-			}
-			gl().glFrontFace( ( ( current.m_state & RENDER_CULLFACE ) != 0 && matrix4_handedness( *transform ) == MATRIX4_RIGHTHANDED ) ? GL_CW : GL_CCW );
+
+			// Phase 6: write MVP into current program's UBO via:
+			//   const Matrix4 combined = matrix4_multiplied_by_matrix4( viewMatrix, *transform );
+			//   current.m_program->setMVP( combined );
+			// For now we just track the transform pointer.
 		}
 
 		count_prim();
@@ -1601,18 +1598,9 @@ void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState
 				                       ? lightShader.lightFalloffImage()->texture_number
 				                       : static_cast<OpenGLShader*>( g_defaultPointLight )->getShader().lightFalloffImage()->texture_number;
 
+				// Phase 6: bind attenuation textures into descriptor set 1 slots 3 and 4.
 				setTextureState( current.m_texture3, attenuation_xy, GL_TEXTURE3 );
-				gl().glActiveTexture( GL_TEXTURE3 );
-				gl().glBindTexture( GL_TEXTURE_2D, attenuation_xy );
-				gl().glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
-				gl().glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
-
 				setTextureState( current.m_texture4, attenuation_z, GL_TEXTURE4 );
-				gl().glActiveTexture( GL_TEXTURE4 );
-				gl().glBindTexture( GL_TEXTURE_2D, attenuation_z );
-				gl().glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
-				gl().glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-
 
 				AABB lightBounds( ( *i ).m_light->aabb() );
 
@@ -1621,14 +1609,14 @@ void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState
 				if ( ( *i ).m_light->isProjected() ) {
 					world2light = ( *i ).m_light->projection();
 					matrix4_multiply_by_matrix4( world2light, matrix4_transposed( ( *i ).m_light->rotation() ) );
-					matrix4_translate_by_vec3( world2light, vector3_negated( lightBounds.origin ) ); // world->lightBounds
+					matrix4_translate_by_vec3( world2light, vector3_negated( lightBounds.origin ) );
 				}
 				if ( !( *i ).m_light->isProjected() ) {
 					matrix4_translate_by_vec3( world2light, Vector3( 0.5f, 0.5f, 0.5f ) );
 					matrix4_scale_by_vec3( world2light, Vector3( 0.5f, 0.5f, 0.5f ) );
 					matrix4_scale_by_vec3( world2light, Vector3( 1.0f / lightBounds.extents.x(), 1.0f / lightBounds.extents.y(), 1.0f / lightBounds.extents.z() ) );
 					matrix4_multiply_by_matrix4( world2light, matrix4_transposed( ( *i ).m_light->rotation() ) );
-					matrix4_translate_by_vec3( world2light, vector3_negated( lightBounds.origin ) ); // world->lightBounds
+					matrix4_translate_by_vec3( world2light, vector3_negated( lightBounds.origin ) );
 				}
 
 				current.m_program->setParameters( viewer, *( *i ).m_transform, lightBounds.origin + ( *i ).m_light->offset(), ( *i ).m_light->colour(), world2light );
@@ -1638,7 +1626,7 @@ void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState
 
 		( *i ).m_renderable->render( current.m_state );
 	}
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &viewMatrix ) );
+	// Phase 6: restore view-matrix UBO slot after flush.
 	renderables.clear();
 }
 
@@ -1647,29 +1635,14 @@ void OpenGLStateBucket::render( OpenGLState& current, unsigned int globalstate, 
 		OpenGLState_apply( m_state, current, globalstate );
 		debug_colour( "screen fill" );
 
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glPushMatrix();
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &g_matrix4_identity ) );
-
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glPushMatrix();
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &g_matrix4_identity ) );
-
-		const Vertex3f screenQuad[4] = {
-			Vertex3f( -1, -1, 0 ),
-			Vertex3f( 1, -1, 0 ),
-			Vertex3f( 1, 1, 0 ),
-			Vertex3f( -1, 1, 0 ),
-		};
-		vbo_upload( screenQuad, sizeof( screenQuad ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vertex3f ), 0 );
-		gl().glDrawArrays( GL_QUADS, 0, 4 );
-
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glPopMatrix();
-
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glPopMatrix();
+		// Phase 6: Vulkan fullscreen-quad pass.
+		// The identity-MVP screen quad uses a streaming VB:
+		//   const Vertex3f screenQuad[4] = { {-1,-1,0},{1,-1,0},{1,1,0},{-1,1,0} };
+		//   VkDeviceSize offset = vbo_upload(screenQuad, sizeof(screenQuad));
+		//   if ( g_renderCmdBuffer ) {
+		//       vkCmdBindVertexBuffers( g_renderCmdBuffer, 0, 1, &g_streamVB, &offset );
+		//       vkCmdDraw( g_renderCmdBuffer, 4, 1, 0, 0 );
+		//   }
 	}
 	else if ( !m_renderables.empty() ) {
 		OpenGLState_apply( m_state, current, globalstate );
@@ -1715,33 +1688,33 @@ public:
 
 OpenGLStateMap* g_openglStates = 0;
 
-inline GLenum convertBlendFactor( BlendFactor factor ){
+inline uint32_t convertBlendFactor( BlendFactor factor ){
 	switch ( factor )
 	{
 	case BLEND_ZERO:
-		return GL_ZERO;
+		return VK_BLEND_FACTOR_ZERO;
 	case BLEND_ONE:
-		return GL_ONE;
+		return VK_BLEND_FACTOR_ONE;
 	case BLEND_SRC_COLOUR:
-		return GL_SRC_COLOR;
+		return VK_BLEND_FACTOR_SRC_COLOR;
 	case BLEND_ONE_MINUS_SRC_COLOUR:
-		return GL_ONE_MINUS_SRC_COLOR;
+		return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
 	case BLEND_SRC_ALPHA:
-		return GL_SRC_ALPHA;
+		return VK_BLEND_FACTOR_SRC_ALPHA;
 	case BLEND_ONE_MINUS_SRC_ALPHA:
-		return GL_ONE_MINUS_SRC_ALPHA;
+		return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 	case BLEND_DST_COLOUR:
-		return GL_DST_COLOR;
+		return VK_BLEND_FACTOR_DST_COLOR;
 	case BLEND_ONE_MINUS_DST_COLOUR:
-		return GL_ONE_MINUS_DST_COLOR;
+		return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
 	case BLEND_DST_ALPHA:
-		return GL_DST_ALPHA;
+		return VK_BLEND_FACTOR_DST_ALPHA;
 	case BLEND_ONE_MINUS_DST_ALPHA:
-		return GL_ONE_MINUS_DST_ALPHA;
+		return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
 	case BLEND_SRC_ALPHA_SATURATE:
-		return GL_SRC_ALPHA_SATURATE;
+		return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
 	}
-	return GL_ZERO;
+	return VK_BLEND_FACTOR_ZERO;
 }
 
 /// \todo Define special-case shaders in a data file.

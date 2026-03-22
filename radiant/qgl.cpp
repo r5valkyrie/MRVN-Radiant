@@ -1,196 +1,83 @@
 /*
-   Copyright (C) 1999-2006 Id Software, Inc. and contributors.
-   For a list of contributors, see the accompanying CONTRIBUTORS file.
+   qgl.cpp — Vulkan module registration (replaces the old OpenGL module).
 
-   This file is part of GtkRadiant.
+   Registers the VulkanBinding singleton with the module system under the
+   legacy name "qgl" so that all existing module lookups continue to work.
 
-   GtkRadiant is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
+   Copyright (C) 1999-2006, Id Software Inc. — original file.
+   Vulkan port — MRVN-Radiant contributors.
 
-   GtkRadiant is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with GtkRadiant; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+   Licensed under the GNU General Public License v2 or later.
  */
 
-
-#include "qgl.h"
-
+#include "igl.h"            // VulkanBinding, GlobalVulkan()
 #include "debugging/debugging.h"
 
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+// ── Shutdown helper ───────────────────────────────────────────────────────────
 
-
-#include "igl.h"
-
-
-
-void QGL_Shutdown( OpenGLBinding& table ){
-	globalOutputStream() << "Shutting down OpenGL module...";
-
-	globalOutputStream() << "Done.\n";
-}
-
-
-typedef struct glu_error_struct
+void QGL_Shutdown( VulkanBinding& )
 {
-	GLenum errnum;
-	const char *errstr;
-} GLU_ERROR_STRUCT;
-
-GLU_ERROR_STRUCT glu_errlist[] = {
-	{GL_NO_ERROR, "GL_NO_ERROR - no error"},
-	{GL_INVALID_ENUM, "GL_INVALID_ENUM - An unacceptable value is specified for an enumerated argument."},
-	{GL_INVALID_VALUE, "GL_INVALID_VALUE - A numeric argument is out of range."},
-	{GL_INVALID_OPERATION, "GL_INVALID_OPERATION - The specified operation is not allowed in the current state."},
-	{GL_STACK_OVERFLOW, "GL_STACK_OVERFLOW - Function would cause a stack overflow."},
-	{GL_STACK_UNDERFLOW, "GL_STACK_UNDERFLOW - Function would cause a stack underflow."},
-	{GL_OUT_OF_MEMORY, "GL_OUT_OF_MEMORY - There is not enough memory left to execute the function."},
-	{0, 0}
-};
-
-const GLubyte* qgluErrorString( GLenum errCode ){
-	int search = 0;
-	for ( search = 0; glu_errlist[search].errstr; search++ )
-	{
-		if ( errCode == glu_errlist[search].errnum ) {
-			return (const GLubyte *)glu_errlist[search].errstr;
-		}
-	}
-	return (const GLubyte *)"Unknown error";
+	globalOutputStream() << "Shutting down Vulkan module...\n";
 }
 
+// ── Error assertion ───────────────────────────────────────────────────────────
 
-void glInvalidFunction(){
-	ERROR_MESSAGE( "calling an invalid OpenGL function" );
-}
-
-
-void QGL_clear( OpenGLBinding& table ){
-}
-
-int QGL_Init( OpenGLBinding& table ){
-	QGL_clear( table );
-	return 1;
-}
-
-int g_qglMajorVersion = 0;
-int g_qglMinorVersion = 0;
-
-// requires a valid gl context
-void QGL_InitVersion(){
-#if EXTENSIONS_ENABLED
-	const std::size_t versionSize = 256;
-	char version[versionSize];
-	strncpy( version, reinterpret_cast<const char*>( gl().glGetString( GL_VERSION ) ), versionSize - 1 );
-	version[versionSize - 1] = '\0';
-	char* firstDot = strchr( version, '.' );
-	ASSERT_NOTNULL( firstDot );
-	*firstDot = '\0';
-	g_qglMajorVersion = atoi( version );
-	char* secondDot = strchr( firstDot + 1, '.' );
-	if ( secondDot != 0 ) {
-		*secondDot = '\0';
-	}
-	g_qglMinorVersion = atoi( firstDot + 1 );
-#else
-	g_qglMajorVersion = 1;
-	g_qglMinorVersion = 1;
-#endif
-}
-
-
-inline void extension_not_implemented( const char* extension ){
-	globalWarningStream() << "WARNING: OpenGL driver reports support for " << extension << " but does not implement it\n";
-}
-
-float g_maxTextureAnisotropy;
-
-float QGL_maxTextureAnisotropy(){
-	return g_maxTextureAnisotropy;
-}
-
-void QGL_sharedContextCreated( OpenGLBinding& table ){
-	QGL_InitVersion();
-
-	table.major_version = g_qglMajorVersion;
-	table.minor_version = g_qglMinorVersion;
-
-
-	if ( QOpenGLContext::currentContext()->hasExtension( "GL_EXT_texture_filter_anisotropic" ) ) {
-		gl().glGetFloatv( GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &g_maxTextureAnisotropy );
-		globalOutputStream() << "Anisotropic filtering possible (max " << g_maxTextureAnisotropy << "x)\n";
-	}
-	else
-	{
-		globalOutputStream() << "No Anisotropic filtering available\n";
-		g_maxTextureAnisotropy = 0;
-	}
-
-	table.support_ARB_texture_compression = QOpenGLContext::currentContext()->hasExtension( "GL_ARB_texture_compression" );
-	table.support_EXT_texture_compression_s3tc = QOpenGLContext::currentContext()->hasExtension( "GL_EXT_texture_compression_s3tc" );
-
-	// Create streaming VBOs for efficient per-frame vertex/index upload
-	gl().glGenBuffers( 1, &table.m_streamVBO );
-	gl().glGenBuffers( 1, &table.m_streamIBO );
-}
-
-void QGL_sharedContextDestroyed( OpenGLBinding& table ){
-	// Reset streaming VBO handles (actual GL resources freed by context destruction)
-	table.m_streamVBO = 0;
-	table.m_streamIBO = 0;
-	QGL_clear( table );
-}
-
-
-void QGL_assertNoErrors( const char *file, int line ){
-	GLenum error = gl().glGetError();
-	while ( error != GL_NO_ERROR )
-	{
-		const char* errorString = reinterpret_cast<const char*>( qgluErrorString( error ) );
-		if ( error == GL_OUT_OF_MEMORY ) {
-			ERROR_MESSAGE( "OpenGL out of memory error at " << file << ':' << line << ": " << errorString );
-		}
-		else
-		{
-			ERROR_MESSAGE( "OpenGL error at " << file << ':' << line << ": " << errorString );
-		}
-		error = gl().glGetError();
-	}
-}
-
-
-class QglAPI
+void VK_assertNoErrors( const char* file, int line )
 {
-	OpenGLBinding m_qgl;
+	// In Vulkan, all errors are returned as VkResult from API calls.
+	// Any error that was not checked at call-site will have already triggered
+	// ERROR_MESSAGE via VK_CHECK() in vkcontext / vktexture.  Nothing to poll.
+	(void)file; (void)line;
+}
+
+// ── Anisotropy query (replaces QGL_maxTextureAnisotropy) ─────────────────────
+
+float QGL_maxTextureAnisotropy()
+{
+	return GlobalVulkan().maxAnisotropy;
+}
+
+// ── Module registration ───────────────────────────────────────────────────────
+
+class VkAPI
+{
+	VulkanBinding m_vk;
 public:
-	typedef OpenGLBinding Type;
+	typedef VulkanBinding Type;
 	STRING_CONSTANT( Name, "*" );
 
-	QglAPI(){
-		QGL_Init( m_qgl );
-
-		m_qgl.assertNoErrors = &QGL_assertNoErrors;
+	VkAPI()
+	{
+		m_vk.assertNoErrors = &VK_assertNoErrors;
 	}
-	~QglAPI(){
-		QGL_Shutdown( m_qgl );
+	~VkAPI()
+	{
+		QGL_Shutdown( m_vk );
 	}
-	OpenGLBinding* getTable(){
-		return &m_qgl;
+	VulkanBinding* getTable()
+	{
+		return &m_vk;
 	}
 };
 
 #include "modulesystem/singletonmodule.h"
 #include "modulesystem/moduleregistry.h"
 
-typedef SingletonModule<QglAPI> QglModule;
-typedef Static<QglModule> StaticQglModule;
-StaticRegisterModule staticRegisterQgl( StaticQglModule::instance() );
+typedef SingletonModule<VkAPI> VkModule;
+typedef Static<VkModule> StaticVkModule;
+StaticRegisterModule staticRegisterVk( StaticVkModule::instance() );
+
+// ── QGL_sharedContext stubs (called from mainframe.cpp) ───────────────────────
+// In the Vulkan port these are no-ops — context lifecycle is handled by
+// glwidget_context_created / glwidget_context_destroyed in glwidget.cpp.
+
+void QGL_sharedContextCreated( OpenGLBinding& )
+{
+	// Phase 6: Vulkan resources already initialised in glwidget_context_created()
+}
+
+void QGL_sharedContextDestroyed( OpenGLBinding& )
+{
+	// Phase 6: Vulkan teardown handled in glwidget_context_destroyed()
+}
+

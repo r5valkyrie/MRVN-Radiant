@@ -60,6 +60,9 @@ add_executable(radiant
                preferences.cpp
                qe3.cpp
                qgl.cpp
+               vkcontext.cpp
+               vma_impl.cpp
+               vktexture.cpp
                referencecache.cpp
                renderer.cpp
                renderstate.cpp
@@ -91,6 +94,7 @@ target_include_directories(radiant PRIVATE .
                            ${LIBXML2_INCLUDE_DIRS}
                            ${GLIB_INCLUDE_DIRS}
                            ${QT5_INCLUDE_DIRS}
+                           ${Vulkan_INCLUDE_DIRS}
                           )
 
 target_link_libraries(radiant
@@ -103,10 +107,16 @@ target_link_libraries(radiant
                       Qt5::Gui
                       Qt5::Widgets
                       Qt5::Core
+                      Vulkan::Vulkan
+                      GPUOpen::VulkanMemoryAllocator
                       ${GLIB_LIBRARIES}
                       ${LIBXML2_LIBRARIES}
                       ${CMAKE_DL_LIBS}
                      )
+
+if(TARGET radiant_shaders)
+    add_dependencies(radiant radiant_shaders)
+endif()
 
 if(WIN32)
     if(${MSVC})

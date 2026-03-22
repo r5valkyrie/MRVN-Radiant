@@ -271,7 +271,7 @@ public:
 		}
 		else
 		{
-			const std::string fullPath = StringStream( "models/", key.c_str() );
+			const std::string fullPath = std::string( "models/" ) + key.c_str();
 			if ( const auto i = m_overrides.find( fullPath ); i != m_overrides.end() ) {
 				rotation = i->second;
 				return true;

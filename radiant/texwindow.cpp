@@ -929,29 +929,9 @@ void TextureBrowser::draw(){
 	const int fontDescent = GlobalOpenGL().m_font->getPixelDescent();
 	const int originy = getOriginY();
 
-	gl().glClearColor( m_color_textureback[0],
-	                   m_color_textureback[1],
-	                   m_color_textureback[2],
-	                   0 );
-	gl().glViewport( 0, 0, m_width, m_height );
-	gl().glMatrixMode( GL_PROJECTION );
-	gl().glLoadIdentity();
-
-	gl().glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-	gl().glDisable( GL_DEPTH_TEST );
-	gl().glDisable( GL_MULTISAMPLE );
-	if ( g_TextureBrowser_enableAlpha ) {
-		gl().glEnable( GL_BLEND );
-		gl().glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-	}
-	else {
-		gl().glDisable( GL_BLEND );
-	}
-
-	gl().glOrtho( 0, m_width, originy - m_height, originy, -100, 100 );
-	gl().glEnable( GL_TEXTURE_2D );
-
-	gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+	// Phase 6: Vulkan render pass setup (clear, viewport, ortho projection)
+	// gl().glClearColor/glViewport/glMatrixMode/glLoadIdentity/glClear/glDisable(GL_DEPTH_TEST)
+	// gl().glOrtho/glPolygonMode removed
 
 	TextureLayout layout;
 	for ( QERApp_ActiveShaders_IteratorBegin(); !QERApp_ActiveShaders_IteratorAtEnd(); QERApp_ActiveShaders_IteratorIncrement() )
@@ -978,125 +958,26 @@ void TextureBrowser::draw(){
 		// Is this texture visible?
 		if ( ( y - nHeight - fontHeight < originy )
 		  && ( y > originy - m_height ) ) {
-			gl().glLineWidth( 1 );
-			gl().glDisable( GL_TEXTURE_2D );
-			const float xf = x;
-			const float yf = y - fontHeight;
-			float xfMax = xf + 1.5 + nWidth;
-			float xfMin = xf - 1.5;
-			float yfMax = yf + 1.5;
-			float yfMin = yf - nHeight - 1.5;
-			#define TEXBRO_RENDER_BORDER \
-				gl().glBegin( GL_LINE_LOOP ); \
-				gl().glVertex2f( xfMin, yfMax ); \
-				gl().glVertex2f( xfMin, yfMin ); \
-				gl().glVertex2f( xfMax, yfMin ); \
-				gl().glVertex2f( xfMax, yfMax ); \
-				gl().glEnd();
-
-			//selected texture - Modern blue accent (#569CD6)
-			if ( shader_equal( m_shader.c_str(), shader->getName() ) ) {
-				gl().glLineWidth( 2 );
-				gl().glColor3f( 0.337f, 0.612f, 0.839f );
-				xfMax += .5;
-				xfMin -= .5;
-				yfMax += .5;
-				yfMin -= .5;
-				TEXBRO_RENDER_BORDER
-			}
-			// highlight in-use textures - Modern green (#98C379)
-			else if ( !m_hideUnused && shader->IsInUse() ) {
-				gl().glColor3f( 0.596f, 0.765f, 0.475f );
-				TEXBRO_RENDER_BORDER
-			}
-			// shader border - subtle gray (#606570)
-			else if ( !shader->IsDefault() ) {
-				gl().glColor3f( 0.376f, 0.396f, 0.439f );
-				TEXBRO_RENDER_BORDER
-			}
-
-			// shader stipple - darker gray (#303540)
-			if ( !shader->IsDefault() ) {
-				gl().glEnable( GL_LINE_STIPPLE );
-				gl().glLineStipple( 1, 0xF000 );
-				gl().glColor3f( 0.188f, 0.208f, 0.251f );
-				TEXBRO_RENDER_BORDER
-				gl().glDisable( GL_LINE_STIPPLE );
-			}
-
-			// draw checkerboard for transparent textures - Modern dark tones
-			if ( g_TextureBrowser_enableAlpha )
-			{
-				gl().glBegin( GL_QUADS );
-				for ( int i = 0; i < nHeight; i += 8 )
-					for ( int j = 0; j < nWidth; j += 8 )
-					{
-						const unsigned char color = ( i + j ) / 8 % 2 ? 0x28 : 0x35;
-						gl().glColor3ub( color, color, color );
-						const int left = j;
-						const int right = std::min( j + 8, nWidth );
-						const int top = i;
-						const int bottom = std::min( i + 8, nHeight );
-						gl().glVertex2i( x + right, y - nHeight - fontHeight + top );
-						gl().glVertex2i( x + left,  y - nHeight - fontHeight + top );
-						gl().glVertex2i( x + left,  y - nHeight - fontHeight + bottom );
-						gl().glVertex2i( x + right, y - nHeight - fontHeight + bottom );
-					}
-				gl().glEnd();
-			}
-
-			// Draw the texture
-			gl().glEnable( GL_TEXTURE_2D );
-			// Texture 1
-			gl().glBindTexture( GL_TEXTURE_2D, texture->texture_number );
-			GlobalOpenGL_debugAssertNoErrors();
-			gl().glColor3f( 1, 1, 1 );
-
-			gl().glBegin( GL_TRIANGLES );
-			// Triangle 1
-			gl().glTexCoord2i( 0, 0 );
-			gl().glVertex2i( x, y - fontHeight );
-			gl().glTexCoord2i( 1, 0 );
-			gl().glVertex2i( x + nWidth, y - fontHeight );
-			gl().glTexCoord2i( 0, 1 );
-			gl().glVertex2i( x, y - fontHeight - nHeight );
-
-			gl().glEnd();
-			// Texture 2
-			gl().glBindTexture( GL_TEXTURE_2D, texture2->texture_number );
-			GlobalOpenGL_debugAssertNoErrors();
-			gl().glColor3f( 1, 1, 1 );
-			gl().glBegin( GL_TRIANGLES );
-
-			// Triangle 2
-			gl().glTexCoord2i( 1, 0 );
-			gl().glVertex2i( x + nWidth, y - fontHeight );
-			gl().glTexCoord2i( 0, 1 );
-			gl().glVertex2i( x, y - fontHeight - nHeight );
-			gl().glTexCoord2i( 1, 1 );
-			gl().glVertex2i( x + nWidth, y - fontHeight - nHeight );
-			gl().glEnd();
+			// Phase 6: draw texture border quads + texture quad via Vulkan
+			// gl().glLineWidth/glDisable(GL_TEXTURE_2D)/glBegin(GL_LINE_LOOP)/glVertex2f/glEnd removed
+			// gl().glColor3f/glLineStipple/glBindTexture/glBegin(GL_TRIANGLES)/glTexCoord/glVertex2i/glEnd removed
+			// Coordinate data preserved for Phase 6:
+			(void)x; (void)y; (void)nWidth; (void)nHeight;
+			(void)fontHeight; (void)fontDescent;
 
 			// draw the texture name
-//			glDisable( GL_TEXTURE_2D );
-//			glColor3f( 1, 1, 1 ); //already set
-
-			gl().glRasterPos2i( x, y - fontHeight - fontDescent + 3 );//+5
-
-			// don't draw the directory name
+			// Phase 6: gl().glRasterPos2i replaced with Vulkan text render
 			const char* name = shader->getName();
 			name += strlen( name );
 			while ( name != shader->getName() && *( name - 1 ) != '/' && *( name - 1 ) != '\\' )
 				name--;
 
-			GlobalOpenGL().drawString( name );
+			// Phase 6: GlobalOpenGL().drawString( name ) -> Vulkan text
+			(void)name;
 		}
 	}
 
-	// reset the current texture
-	gl().glBindTexture( GL_TEXTURE_2D, 0 );
-	gl().glDisable( GL_BLEND );
-	//qglFinish();
+	// Phase 6: gl().glBindTexture(0)/glDisable(GL_BLEND) removed
 }
 
 
@@ -1685,7 +1566,7 @@ public:
 protected:
 	void initializeGL() override
 	{
-		glwidget_context_created( *this );
+		glwidget_context_created( this->windowHandle() );
 		// show definitely after gl init, otherwise crash
 		TextureBrowser_ShowStartupShaders();
 	}

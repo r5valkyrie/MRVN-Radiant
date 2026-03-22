@@ -311,7 +311,7 @@ void Portals_constructShaders(){
 	if ( portals.fog ) {
 		state.m_state |= RENDER_FOG;
 
-		state.m_fog.mode = GL_EXP;
+		state.m_fog.mode = RS_FOG_EXP;
 		state.m_fog.density = 0.001f;
 		state.m_fog.start = 10.0f;
 		state.m_fog.end = 10000.0f;
@@ -348,7 +348,7 @@ void Portals_constructShaders(){
 	if ( portals.fog ) {
 		state.m_state |= RENDER_FOG;
 
-		state.m_fog.mode = GL_EXP;
+		state.m_fog.mode = RS_FOG_EXP;
 		state.m_fog.density = 0.001f;
 		state.m_fog.start = 10.0f;
 		state.m_fog.end = 10000.0f;
@@ -411,12 +411,11 @@ void CPortalsRender::renderWireframe( Renderer& renderer, const VolumeTest& volu
 void CPortalsDrawWireframe::render( RenderStateFlags state ) const {
 	for ( const auto& prt : portals.portal )
 	{
-		gl().glBegin( GL_LINE_LOOP );
-
 		for ( const auto& p : prt.point )
-			gl().glVertex3fv( p.data() );
-
-		gl().glEnd();
+		{
+			// Phase 6: vbo upload + Vulkan draw (was glBegin/glVertex/glEnd)
+			(void)p;
+		}
 	}
 }
 
@@ -489,14 +488,13 @@ void CPortalsDrawSolid::render( RenderStateFlags state ) const {
 					) continue;
 				}
 
-				gl().glColor4f( prt->fp_color_random[0], prt->fp_color_random[1], prt->fp_color_random[2], opacity );
 
-				gl().glBegin( GL_POLYGON );
 
 				for ( const auto& p : prt->point )
-					gl().glVertex3fv( p.data() );
-
-				gl().glEnd();
+				{
+					// Phase 6: vbo upload + Vulkan draw
+					(void)p;
+				}
 			}
 		}
 	}
@@ -517,14 +515,13 @@ void CPortalsDrawSolid::render( RenderStateFlags state ) const {
 					) continue;
 				}
 
-				gl().glColor4f( prt.fp_color_random[0], prt.fp_color_random[1], prt.fp_color_random[2], opacity );
 
-				gl().glBegin( GL_POLYGON );
 
 				for ( const auto& p : prt.point )
-					gl().glVertex3fv( p.data() );
-
-				gl().glEnd();
+				{
+					// Phase 6: vbo upload + Vulkan draw
+					(void)p;
+				}
 			}
 		}
 	}
@@ -546,12 +543,12 @@ void CPortalsDrawSolidOutline::render( RenderStateFlags state ) const {
 				) continue;
 			}
 
-			gl().glBegin( GL_LINE_LOOP );
 
 			for ( const auto& p : prt.inner_point )
-				gl().glVertex3fv( p.data() );
-
-			gl().glEnd();
+			{
+				// Phase 6: vbo upload + Vulkan draw
+				(void)p;
+			}
 		}
 	}
 }

@@ -585,7 +585,9 @@ public:
 		if( !hasCurrentModel() ){
 			return "";
 		}
-		return StringStream<128>( m_currentFolderPath, std::next( m_currentFolder->m_files.begin(), m_currentModelId )->c_str() );
+		StringOutputStream path( 512 );
+		path << m_currentFolderPath.c_str() << std::next( m_currentFolder->m_files.begin(), m_currentModelId )->c_str();
+		return path.c_str();
 	}
 	bool createModelAtOrigin( const char* modelPath, const Vector3& origin ) const {
 		if( string_empty( modelPath ) ){
@@ -818,14 +820,7 @@ void ModelBrowser_render(){
 
 	const int W = g_ModelBrowser.m_width;
 	const int H = g_ModelBrowser.m_height;
-	gl().glViewport( 0, 0, W, H );
-
-	// enable depth buffer writes
-	gl().glDepthMask( GL_TRUE );
-	gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-
-	gl().glClearColor( .25f, .25f, .25f, 0 );
-	gl().glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+	// Phase 6: viewport/clear via Vulkan render pass
 
 	const unsigned int globalstate = RENDER_DEPTHTEST
 	                               | RENDER_COLOURWRITE
@@ -867,7 +862,6 @@ void ModelBrowser_render(){
 	m_modelview[14] = 9999;
 
 	// axis base
-	//XZ:
 	m_modelview[0]  =  1;
 	m_modelview[1]  =  0;
 	m_modelview[2]  =  0;
@@ -880,84 +874,19 @@ void ModelBrowser_render(){
 	m_modelview[9]  =  1;
 	m_modelview[10] =  0;
 
-
 	m_modelview[3] = m_modelview[7] = m_modelview[11] = 0;
 	m_modelview[15] = 1;
-
 
 
 	View m_view( true );
 	m_view.Construct( m_projection, m_modelview, W, H );
 
-
-	gl().glMatrixMode( GL_PROJECTION );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_projection ) );
-
-	gl().glMatrixMode( GL_MODELVIEW );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_modelview ) );
-
+	// Phase 6: upload MVP as push constants / UBO
 
 	if( g_ModelBrowser.m_currentFolder != nullptr ){
-		{	// prepare for 2d stuff
-			gl().glDisable( GL_BLEND );
+		// Phase 6: draw cell background quads via Vulkan
 
-			gl().glClientActiveTexture( GL_TEXTURE0 );
-			gl().glActiveTexture( GL_TEXTURE0 );
-
-			gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-			gl().glDisableClientState( GL_NORMAL_ARRAY );
-			gl().glDisableClientState( GL_COLOR_ARRAY );
-
-			gl().glDisable( GL_TEXTURE_2D );
-			gl().glDisable( GL_LIGHTING );
-			gl().glDisable( GL_COLOR_MATERIAL );
-			gl().glDisable( GL_DEPTH_TEST );
-		}
-
-		{	// brighter background squares
-			gl().glColor4f( 0.3f, 0.3f, 0.3f, 1.f );
-			gl().glDepthMask( GL_FALSE );
-			gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-			gl().glDisable( GL_CULL_FACE );
-
-			CellPos cellPos = g_ModelBrowser.constructCellPos();
-			gl().glBegin( GL_QUADS );
-			for( std::size_t i = g_ModelBrowser.m_currentFolder->m_files.size(); i != 0; --i ){
-				const Vector3 origin = cellPos.getOrigin();
-				const float minx = origin.x() - cellPos.getCellSize();
-				const float maxx = origin.x() + cellPos.getCellSize();
-				const float minz = origin.z() - cellPos.getCellSize();
-				const float maxz = origin.z() + cellPos.getCellSize();
-				gl().glVertex3f( minx, 0, maxz );
-				gl().glVertex3f( minx, 0, minz );
-				gl().glVertex3f( maxx, 0, minz );
-				gl().glVertex3f( maxx, 0, maxz );
-				++cellPos;
-			}
-			gl().glEnd();
-		}
-
-		// one directional light source directly behind the viewer
-		{
-			GLfloat inverse_cam_dir[4], ambient[4], diffuse[4];
-
-			ambient[0] = ambient[1] = ambient[2] = 0.4f;
-			ambient[3] = 1.0f;
-			diffuse[0] = diffuse[1] = diffuse[2] = 0.4f;
-			diffuse[3] = 1.0f;
-
-			inverse_cam_dir[0] = -m_view.getViewDir()[0];
-			inverse_cam_dir[1] = -m_view.getViewDir()[1];
-			inverse_cam_dir[2] = -m_view.getViewDir()[2];
-			inverse_cam_dir[3] = 0;
-
-			gl().glLightfv( GL_LIGHT0, GL_POSITION, inverse_cam_dir );
-
-			gl().glLightfv( GL_LIGHT0, GL_AMBIENT, ambient );
-			gl().glLightfv( GL_LIGHT0, GL_DIFFUSE, diffuse );
-
-			gl().glEnable( GL_LIGHT0 );
-		}
+		// Phase 6: directional light as push constant
 
 		{
 			ModelRenderer renderer( globalstate );
@@ -970,39 +899,20 @@ void ModelBrowser_render(){
 			renderer.render( m_modelview, m_projection );
 		}
 
-		{	// prepare for 2d stuff
-			gl().glColor4f( 1, 1, 1, 1 );
-			gl().glDisable( GL_BLEND );
-
-			gl().glClientActiveTexture( GL_TEXTURE0 );
-			gl().glActiveTexture( GL_TEXTURE0 );
-
-			gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-			gl().glDisableClientState( GL_NORMAL_ARRAY );
-			gl().glDisableClientState( GL_COLOR_ARRAY );
-
-			gl().glDisable( GL_TEXTURE_2D );
-			gl().glDisable( GL_LIGHTING );
-			gl().glDisable( GL_COLOR_MATERIAL );
-			gl().glDisable( GL_DEPTH_TEST );
-			gl().glLineWidth( 1 );
-		}
 		{	// render model file names
 			CellPos cellPos = g_ModelBrowser.constructCellPos();
 			for( const CopiedString& string : g_ModelBrowser.m_currentFolder->m_files ){
 				const Vector3 pos = cellPos.getTextPos();
 				if( m_view.TestPoint( pos ) ){
-					gl().glRasterPos3f( pos.x(), pos.y(), pos.z() );
+					// Phase 6: draw text via QPainter / Vulkan text pass
+					(void)pos;
 					GlobalOpenGL().drawString( string.c_str() );
 				}
 				++cellPos;
 			}
 		}
 	}
-
-	// bind back to the default texture so that we don't have problems
-	// elsewhere using/modifying texture maps between contexts
-	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+	// Phase 6: no glBindTexture reset needed
 }
 
 
@@ -1026,7 +936,9 @@ public:
 protected:
 	void initializeGL() override
 	{
-		glwidget_context_created( *this );
+		// Phase 6: pass the native QWindow* to create the Vulkan surface.
+		if ( QWindow* w = this->windowHandle() )
+			glwidget_context_created( w );
 	}
 	void resizeGL( int w, int h ) override
 	{

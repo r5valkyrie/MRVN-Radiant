@@ -21,20 +21,19 @@
 
 #pragma once
 
+#include <cstdint>
 #include "generic/vector.h"
 typedef Vector3 Colour3;
-typedef unsigned int GLuint;
 class LoadImageCallback;
 
-// describes a GL texture
+/// Describes a GPU texture (2-D or cube-map).
 struct qtexture_t
 {
-	qtexture_t( const LoadImageCallback& load, const char* name ) : load( load ), name( name ){
-	}
+	qtexture_t( const LoadImageCallback& load, const char* name ) : load( load ), name( name ){}
 	const LoadImageCallback& load;
 	const char* name;
 	std::size_t width, height;
-	GLuint texture_number; // gl bind number
-	Colour3 color; // for flat shade mode
+	uint32_t    texture_number; ///< Index into g_vkTextures[] (0 = invalid / not loaded)
+	Colour3     color;          ///< Average colour for flat-shade mode
 	int surfaceFlags, contentFlags, value;
 };

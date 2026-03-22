@@ -208,8 +208,7 @@ void sphere_draw_fill( const Vector3& origin, float radius, const Vector3 radiiP
 		verts[i] = vector3_added( origin, vector3_scaled( radiiPoints[i], radius ) );
 	}
 	vbo_upload( verts, sizeof( verts ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-	gl().glDrawArrays( GL_TRIANGLE_STRIP, 0, SPHERE_FILL_POINTS );
+	// Phase 7: vkCmdBindVertexBuffers + vkCmdDraw( cmd, SPHERE_FILL_POINTS, 1, 0, 0 );
 }
 
 	#elif 0 // triangles
@@ -463,11 +462,7 @@ void sphere_draw_wire( const Vector3& origin, float radius, const Vector3 radiiP
 		verts[i] = vector3_added( origin, vector3_scaled( radiiPoints[i], radius ) );
 	}
 	vbo_upload( verts, sizeof( verts ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-	for( int j = 0; j < 3; ++j )
-	{
-		gl().glDrawArrays( GL_LINE_LOOP, j * SPHERE_WIRE_SIDES, SPHERE_WIRE_SIDES );
-	}
+	// Phase 7: vkCmdBindVertexBuffers + for each circle: vkCmdDraw( cmd, SPHERE_WIRE_SIDES, 1, j*SPHERE_WIRE_SIDES, 0 );
 }
 
 void light_draw_radius_wire( const Vector3& origin, const std::array<float, 3>& envelope, const Vector3 radiiPoints[SPHERE_WIRE_POINTS] ){
@@ -499,8 +494,7 @@ void light_draw_box_lines( const Vector3& origin, const Vector3 points[8] ){
 		origin, points[7],
 	};
 	vbo_upload( verts, sizeof( verts ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-	gl().glDrawArrays( GL_LINES, 0, 16 );
+	// Phase 7: vkCmdBindVertexBuffers + vkCmdDraw( cmd, 16, 1, 0, 0 );
 }
 
 void light_vertices( const AABB& aabb_light, Vector3 points[6] ){
@@ -563,11 +557,7 @@ void light_draw( const AABB& aabb_light, RenderStateFlags state ){
 			{ normals[4], points[1] }, { normals[4], points[3] }, { normals[4], points[2] },
 		};
 		vbo_upload( triVerts, sizeof( triVerts ) );
-		gl().glEnableClientState( GL_NORMAL_ARRAY );
-		gl().glNormalPointer( GL_FLOAT, sizeof( NV ), 0 );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( NV ), reinterpret_cast<const void*>( offsetof( NV, vertex ) ) );
-		gl().glDrawArrays( GL_TRIANGLES, 0, 24 );
-		gl().glDisableClientState( GL_NORMAL_ARRAY );
+		// Phase 7: vkCmdBindVertexBuffers + vkCmdDraw( cmd, 24, 1, 0, 0 );
 	}
 	else
 	{
@@ -584,9 +574,8 @@ void light_draw( const AABB& aabb_light, RenderStateFlags state ){
 		};
 #if 1
 		vbo_upload( points, 6 * sizeof( Vector3 ) );
-		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
 		ibo_upload( indices, sizeof( indices ) );
-		gl().glDrawElements( GL_TRIANGLES, 24, RenderIndexTypeID, 0 );
+		// Phase 7: vkCmdBindVertexBuffers + vkCmdBindIndexBuffer + vkCmdDrawIndexed( cmd, 24, 1, 0, 0, 0 );
 #else
 		gl().glBegin( GL_TRIANGLES );
 		for ( unsigned int i = 0; i < sizeof( indices ) / sizeof( index_t ); ++i )
@@ -910,10 +899,8 @@ public:
 	RenderLightCenter( const Vector3& center, EntityClass& eclass ) : m_center( center ), m_eclass( eclass ){
 	}
 	void render( RenderStateFlags state ) const {
-		gl().glColor3fv( vector3_to_array( m_eclass.color ) );
 		vbo_upload( vector3_to_array( m_center ), sizeof( Vector3 ) );
-		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
-		gl().glDrawArrays( GL_POINTS, 0, 1 );
+		// Phase 7: push entity color to push-constants + vkCmdDraw( cmd, 1, 1, 0, 0 );
 	}
 };
 

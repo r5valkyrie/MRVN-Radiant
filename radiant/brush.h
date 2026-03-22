@@ -83,83 +83,13 @@ inline bool texdef_sane( const texdef_t& texdef ){
 
 inline void Winding_DrawWireframe( const Winding& winding, StaticVBO& staticVBO ){
 	staticVBO.uploadVertices( winding.points.data(), winding.numpoints * sizeof( WindingVertex ) );
-	gl().glVertexPointer( 3, GL_DOUBLE, sizeof( WindingVertex ),
-	                      reinterpret_cast<const void*>( offsetof( WindingVertex, vertex ) ) );
-	gl().glDrawArrays( GL_LINE_LOOP, 0, GLsizei( winding.numpoints ) );
+	// Phase 6: vkCmdBindVertexBuffers + vkCmdDraw( cmd, winding.numpoints, 1, 0, 0 );
 }
 
 inline void Winding_Draw( const Winding& winding, const Vector3& normal, RenderStateFlags state, StaticVBO& staticVBO ){
 	staticVBO.uploadVertices( winding.points.data(), winding.numpoints * sizeof( WindingVertex ) );
-	gl().glVertexPointer( 3, GL_DOUBLE, sizeof( WindingVertex ),
-	                      reinterpret_cast<const void*>( offsetof( WindingVertex, vertex ) ) );
-
-	if ( ( state & RENDER_BUMP ) != 0 ) {
-		Vector3 normals[64]; // faces rarely exceed 64 vertices
-		const std::size_t n = std::min( winding.numpoints, std::size_t( 64 ) );
-		for ( std::size_t i = 0; i < n; ++i )
-		{
-			normals[i] = normal;
-		}
-		gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
-		gl().glNormalPointer( GL_FLOAT, sizeof( Vector3 ), normals );
-		staticVBO.bindVBO();
-		gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( WindingVertex ),
-		                            reinterpret_cast<const void*>( offsetof( WindingVertex, texcoord ) ) );
-		gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( WindingVertex ),
-		                            reinterpret_cast<const void*>( offsetof( WindingVertex, tangent ) ) );
-		gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( WindingVertex ),
-		                            reinterpret_cast<const void*>( offsetof( WindingVertex, bitangent ) ) );
-		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, GLsizei( n ) );
-	}
-	else if ( state & RENDER_LIGHTING ) {
-		Vector3 normals[64];
-		const std::size_t n = std::min( winding.numpoints, std::size_t( 64 ) );
-		for ( std::size_t i = 0; i < n; ++i )
-		{
-			normals[i] = normal;
-		}
-		gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
-		gl().glNormalPointer( GL_FLOAT, sizeof( Vector3 ), normals );
-		staticVBO.bindVBO();
-
-		if ( state & RENDER_TEXTURE ) {
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( WindingVertex ),
-			                        reinterpret_cast<const void*>( offsetof( WindingVertex, texcoord ) ) );
-		}
-		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, GLsizei( winding.numpoints ) );
-	}
-	else {
-		if ( state & RENDER_TEXTURE ) {
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( WindingVertex ),
-			                        reinterpret_cast<const void*>( offsetof( WindingVertex, texcoord ) ) );
-		}
-		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, GLsizei( winding.numpoints ) );
-	}
-
-#if 0
-	const Winding& winding = winding;
-
-	if ( state & RENDER_FILL ) {
-		gl().glBegin( GL_POLYGON );
-	}
-	else
-	{
-		gl().glBegin( GL_LINE_LOOP );
-	}
-
-	if ( state & RENDER_LIGHTING ) {
-		gl().glNormal3fv( normal );
-	}
-
-	for ( int i = 0; i < winding.numpoints; ++i )
-	{
-		if ( state & RENDER_TEXTURE ) {
-			gl().glTexCoord2fv( &winding.points[i][3] );
-		}
-		gl().glVertex3fv( winding.points[i] );
-	}
-	gl().glEnd();
-#endif
+	// Phase 6: vkCmdBindVertexBuffers (WindingVertex layout: pos, texcoord, tangent, bitangent)
+	// then vkCmdDraw( cmd, winding.numpoints, 1, 0, 0 ).
 }
 
 
@@ -1460,21 +1390,10 @@ class RenderableWireframe : public OpenGLRenderable
 {
 public:
 	void render( RenderStateFlags state ) const {
-#if 1
 		m_staticVBO.uploadVertices( m_vertices, m_vertexCount * sizeof( DepthTestedPointVertex ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( DepthTestedPointVertex ),
-		                      reinterpret_cast<const void*>( offsetof( DepthTestedPointVertex, vertex ) ) );
 		m_staticVBO.uploadIndices( m_faceVertex.data(), ( m_size << 1 ) * sizeof( RenderIndex ) );
-		gl().glDrawElements( GL_LINES, GLsizei( m_size << 1 ), RenderIndexTypeID, 0 );
-#else
-		gl().glBegin( GL_LINES );
-		for ( std::size_t i = 0; i < m_size; ++i )
-		{
-			gl().glVertex3fv( &m_vertices[m_faceVertex[i].first].vertex.x );
-			gl().glVertex3fv( &m_vertices[m_faceVertex[i].second].vertex.x );
-		}
-		gl().glEnd();
-#endif
+		// Phase 6: vkCmdBindVertexBuffers + vkCmdBindIndexBuffer
+		//          + vkCmdDrawIndexed( cmd, GLsizei(m_size<<1), 1, 0, 0, 0 );
 	}
 
 	Array<EdgeRenderIndices> m_faceVertex;
@@ -3183,8 +3102,7 @@ public:
 			lineverts[1] = vector3_added( lineverts[0], vector3_scaled( m_plane.normal(), Brush::m_maxWorldCoord * 4 ) );
 
 			vbo_upload( lineverts, sizeof( lineverts ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-			gl().glDrawArrays( GL_LINES, 0, GLsizei( 2 ) );
+			// Phase 6: vkCmdBindVertexBuffers + vkCmdDraw( cmd, 2, 1, 0, 0 );
 		}
 	}
 

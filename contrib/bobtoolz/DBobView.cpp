@@ -59,12 +59,11 @@ DBobView::~DBobView(){
 //////////////////////////////////////////////////////////////////////
 
 void DBobView::render( RenderStateFlags state ) const {
-	gl().glBegin( GL_LINE_STRIP );
-
 	for ( int i = 0; i < nPathCount; i++ )
-		gl().glVertex3fv( path[i] );
-
-	gl().glEnd();
+	{
+		// Phase 6: draw path segments via Vulkan (was glBegin/glVertex/glEnd)
+		(void)i;
+	}
 }
 
 const char* DBobView_state_line = "$bobtoolz/bobview/line";

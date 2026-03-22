@@ -24,9 +24,10 @@
 #include "debugging/debugging.h"
 
 #include "itextures.h"
-#include "igl.h"
+#include "ivk.h"
+#include "igl.h"            // GlobalOpenGLModuleRef alias
 #include "preferencesystem.h"
-#include "qgl.h"
+#include "vktexture.h"
 
 #include "texturelib.h"
 #include "container/hashfunc.h"
@@ -62,67 +63,28 @@ enum TextureCompressionFormat
 
 struct texture_globals_t
 {
-	// RIANT
-	// texture compression format
 	TextureCompressionFormat m_nTextureCompressionFormat;
-
 	float fGamma;
 
-	bool bTextureCompressionSupported; // is texture compression supported by hardware?
-	GLint texture_components;
-
-	// temporary values that should be initialised only once at run-time
-	bool m_bOpenGLCompressionSupported;
-	bool m_bS3CompressionSupported;
-
-	texture_globals_t( GLint components ) :
+	texture_globals_t() :
 		m_nTextureCompressionFormat( TEXTURECOMPRESSION_NONE ),
-		fGamma( 1.0f ),
-		bTextureCompressionSupported( false ),
-		texture_components( components ),
-		m_bOpenGLCompressionSupported( false ),
-		m_bS3CompressionSupported( false ){
-	}
+		fGamma( 1.0f ){}
 };
 
-texture_globals_t g_texture_globals( GL_RGBA );
+texture_globals_t g_texture_globals;
 
-void SetTexParameters( ETexturesMode mode ){
+// Map ETexturesMode to our VkTexFilter enum (used when uploading new textures)
+static VkTexFilter texModeToFilter( ETexturesMode mode )
+{
 	switch ( mode )
 	{
-	case eTextures_NEAREST:
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-		break;
-	case eTextures_NEAREST_MIPMAP_NEAREST:
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-		break;
-	case eTextures_NEAREST_MIPMAP_LINEAR:
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-		break;
-	case eTextures_LINEAR:
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		break;
-	case eTextures_LINEAR_MIPMAP_NEAREST:
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		break;
+	case eTextures_NEAREST:                 return VK_TEX_NEAREST;
+	case eTextures_NEAREST_MIPMAP_NEAREST:  return VK_TEX_NEAREST_MIPMAP_NEAREST;
+	case eTextures_NEAREST_MIPMAP_LINEAR:   return VK_TEX_NEAREST_MIPMAP_LINEAR;
+	case eTextures_LINEAR:                  return VK_TEX_LINEAR;
+	case eTextures_LINEAR_MIPMAP_NEAREST:   return VK_TEX_LINEAR_MIPMAP_NEAREST;
 	case eTextures_LINEAR_MIPMAP_LINEAR:
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-		break;
-	default:
-		globalErrorStream() << "invalid texture mode\n";
-	}
-}
-
-void SetTexAnisotropy( bool anisotropy ){
-	float maxAniso = QGL_maxTextureAnisotropy();
-	if ( maxAniso > 1 ) {
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, anisotropy ? maxAniso : 1.f );
+	default:                                return VK_TEX_LINEAR_MIPMAP_LINEAR;
 	}
 }
 
@@ -155,11 +117,9 @@ void ResampleGamma( float fGamma ){
 	}
 }
 
-int max_tex_size = 0;
 int g_Textures_mipLevel = 0;
 
-/// \brief This function does the actual processing of raw RGBA data into a GL texture.
-/// It will also resample to power-of-two dimensions, generate the mipmaps and adjust gamma.
+/// Upload RGBA pixels to a Vulkan 2-D texture; gamma-correct first.
 void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHeight ){
 	static float fGamma = -1;
 	float total[3];
@@ -170,12 +130,11 @@ void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHe
 		ResampleGamma( fGamma );
 	}
 
-	q->width = nWidth;
+	q->width  = nWidth;
 	q->height = nHeight;
 
 	total[0] = total[1] = total[2] = 0.0f;
 
-	// resample texture gamma according to user settings
 	for ( int i = 0; i < ( nCount * 4 ); i += 4 )
 	{
 		for ( int j = 0; j < 3; j++ )
@@ -190,76 +149,12 @@ void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHe
 	q->color[1] = total[1] / ( nCount * 255 );
 	q->color[2] = total[2] / ( nCount * 255 );
 
-	gl().glGenTextures( 1, &q->texture_number );
-
-	gl().glBindTexture( GL_TEXTURE_2D, q->texture_number );
-
-	SetTexParameters( g_texture_mode );
-	SetTexAnisotropy( g_TextureAnisotropy );
-#if 1
-	gl().glTexParameteri( GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE );
-	gl().glTexImage2D( GL_TEXTURE_2D, 0, g_texture_globals.texture_components, nWidth, nHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, pPixels );
-
-	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, std::min( g_Textures_mipLevel, static_cast<int>( log2( static_cast<float>( std::max( nWidth, nHeight ) ) ) ) ) );
-
-	gl().glBindTexture( GL_TEXTURE_2D, 0 );
-#else
-	int gl_width = 1;
-	while ( gl_width < nWidth )
-		gl_width <<= 1;
-
-	int gl_height = 1;
-	while ( gl_height < nHeight )
-		gl_height <<= 1;
-
-	byte  *outpixels = 0;
-	bool resampled = false;
-	if ( !( gl_width == nWidth && gl_height == nHeight ) ) {
-		resampled = true;
-		outpixels = (byte *)malloc( gl_width * gl_height * 4 );
-		R_ResampleTexture( pPixels, nWidth, nHeight, outpixels, gl_width, gl_height, 4 );
-	}
-	else
-	{
-		outpixels = pPixels;
-	}
-
-	const int target_width = std::max( std::min( gl_width >> g_Textures_mipLevel, max_tex_size ), 1 );
-	const int target_height = std::max( std::min( gl_height >> g_Textures_mipLevel, max_tex_size ), 1 );
-
-	while ( gl_width > target_width || gl_height > target_height )
-	{
-		GL_MipReduce( outpixels, outpixels, gl_width, gl_height, target_width, target_height );
-
-		if ( gl_width > target_width ) {
-			gl_width >>= 1;
-		}
-		if ( gl_height > target_height ) {
-			gl_height >>= 1;
-		}
-	}
-
-	int mip = 0;
-	gl().glTexImage2D( GL_TEXTURE_2D, mip++, g_texture_globals.texture_components, gl_width, gl_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, outpixels );
-	while ( gl_width > 1 || gl_height > 1 )
-	{
-		GL_MipReduce( outpixels, outpixels, gl_width, gl_height, 1, 1 );
-
-		if ( gl_width > 1 ) {
-			gl_width >>= 1;
-		}
-		if ( gl_height > 1 ) {
-			gl_height >>= 1;
-		}
-
-		gl().glTexImage2D( GL_TEXTURE_2D, mip++, g_texture_globals.texture_components, gl_width, gl_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, outpixels );
-	}
-
-	gl().glBindTexture( GL_TEXTURE_2D, 0 );
-	if ( resampled ) {
-		free( outpixels );
-	}
-#endif
+	q->texture_number = VKTexture_create2D(
+	    pPixels,
+	    static_cast<uint32_t>( nWidth ),
+	    static_cast<uint32_t>( nHeight ),
+	    texModeToFilter( g_texture_mode ),
+	    g_TextureAnisotropy );
 }
 
 #if 0
@@ -343,7 +238,6 @@ void qtexture_realise( qtexture_t& texture, const TextureKey& key ){
 				texture.value = image->getValue();
 				image->release();
 				globalOutputStream() << "Loaded Texture: \"" << key.second << "\"\n";
-				GlobalOpenGL_debugAssertNoErrors();
 			}
 			else
 			{
@@ -352,42 +246,33 @@ void qtexture_realise( qtexture_t& texture, const TextureKey& key ){
 		}
 		else {
 			Image *images[6]{};
-			/* load in order, so that Q3 cubemap is seamless in openGL, but rotated & flipped; fix misorientation in shader later */
+			/* load in order: _ft _bk _up _dn _rt _lf — fix orientation in shader */
 			const char *suffixes[] = { "_ft", "_bk", "_up", "_dn", "_rt", "_lf" };
 			for( int i = 0; i < 6; ++i ){
 				images[i] = key.first.loadImage( StringStream<64>( key.second, suffixes[i] ) );
 			}
 			if( std::all_of( images, images + std::size( images ), []( const Image *img ){ return img != nullptr; } ) ){
-				gl().glGenTextures( 1, &texture.texture_number );
-				gl().glBindTexture( GL_TEXTURE_CUBE_MAP, texture.texture_number );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_GENERATE_MIPMAP, GL_FALSE );
-
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0 );
-				gl().glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, 0); //this or mipmaps are required for samplerCube to work
-				// fix non quadratic, varying sizes; GL_TEXTURE_CUBE_MAP requires this
-				unsigned int size = 0;
+				// Normalise all faces to the same square size
+				uint32_t size = 0;
 				for( const auto img : images )
 					size = std::max( { size, img->getWidth(), img->getHeight() } );
+
+				std::vector<std::vector<byte>> resampledFaces( 6 );
+				const unsigned char* facePtrs[6];
 				for( int i = 0; i < 6; ++i ){
 					const Image& img = *images[i];
-					byte *pix = img.getRGBAPixels();
 					if( img.getWidth() != size || img.getHeight() != size ){
-						pix = static_cast<byte*>( malloc( size * size * 4 ) );
-						R_ResampleTexture( img.getRGBAPixels(), img.getWidth(), img.getHeight(), pix, size, size, 4 );
+						resampledFaces[i].resize( size * size * 4 );
+						R_ResampleTexture( img.getRGBAPixels(), img.getWidth(), img.getHeight(),
+						                   resampledFaces[i].data(), size, size, 4 );
+						facePtrs[i] = resampledFaces[i].data();
+					} else {
+						facePtrs[i] = img.getRGBAPixels();
 					}
-					gl().glTexImage2D( GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, g_texture_globals.texture_components, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix );
-					if( pix != img.getRGBAPixels() )
-						free( pix );
 				}
 
-				gl().glBindTexture( GL_TEXTURE_CUBE_MAP, 0 );
+				texture.texture_number = VKTexture_createCubeMap( facePtrs, size );
 				globalOutputStream() << "Loaded Skybox: \"" << key.second << "\"\n";
-				GlobalOpenGL_debugAssertNoErrors();
 			}
 			else
 			{
@@ -400,9 +285,9 @@ void qtexture_realise( qtexture_t& texture, const TextureKey& key ){
 }
 
 void qtexture_unrealise( qtexture_t& texture ){
-	if ( GlobalOpenGL().contextValid && texture.texture_number != 0 ) {
-		gl().glDeleteTextures( 1, &texture.texture_number );
-		GlobalOpenGL_debugAssertNoErrors();
+	if ( GlobalVulkan().contextValid && texture.texture_number != 0 ) {
+		VKTexture_destroy( texture.texture_number );
+		texture.texture_number = 0;
 	}
 }
 
@@ -497,58 +382,6 @@ public:
 	}
 	void realise(){
 		if ( --m_unrealised == 0 ) {
-			g_texture_globals.bTextureCompressionSupported = false;
-
-			if ( GlobalOpenGL().ARB_texture_compression() ) {
-				g_texture_globals.bTextureCompressionSupported = true;
-				g_texture_globals.m_bOpenGLCompressionSupported = true;
-			}
-
-			if ( GlobalOpenGL().EXT_texture_compression_s3tc() ) {
-				g_texture_globals.bTextureCompressionSupported = true;
-				g_texture_globals.m_bS3CompressionSupported = true;
-			}
-
-			switch ( g_texture_globals.texture_components )
-			{
-			case GL_RGBA:
-				break;
-			case GL_COMPRESSED_RGBA_ARB:
-				if ( !g_texture_globals.m_bOpenGLCompressionSupported ) {
-					globalOutputStream() << "OpenGL extension GL_ARB_texture_compression not supported by current graphics drivers\n";
-					g_texture_globals.m_nTextureCompressionFormat = TEXTURECOMPRESSION_NONE;
-					g_texture_globals.texture_components = GL_RGBA;
-				}
-				break;
-			case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-			case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-			case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-				if ( !g_texture_globals.m_bS3CompressionSupported ) {
-					globalOutputStream() << "OpenGL extension GL_EXT_texture_compression_s3tc not supported by current graphics drivers\n";
-					if ( g_texture_globals.m_bOpenGLCompressionSupported ) {
-						g_texture_globals.m_nTextureCompressionFormat = TEXTURECOMPRESSION_RGBA;
-						g_texture_globals.texture_components = GL_COMPRESSED_RGBA_ARB;
-					}
-					else
-					{
-						g_texture_globals.m_nTextureCompressionFormat = TEXTURECOMPRESSION_NONE;
-						g_texture_globals.texture_components = GL_RGBA;
-					}
-				}
-				break;
-			default:
-				globalOutputStream() << "Unknown texture compression selected, reverting\n";
-				g_texture_globals.m_nTextureCompressionFormat = TEXTURECOMPRESSION_NONE;
-				g_texture_globals.texture_components = GL_RGBA;
-				break;
-			}
-
-
-			gl().glGetIntegerv( GL_MAX_TEXTURE_SIZE, &max_tex_size );
-			if ( max_tex_size == 0 ) {
-				max_tex_size = 1024;
-			}
-
 			for ( qtextures_t::iterator i = m_qtextures.begin(); i != m_qtextures.end(); ++i )
 			{
 				if ( !( *i ).value.empty() ) {
@@ -601,18 +434,11 @@ void Textures_setModeChangedNotify( const Callback& notify ){
 }
 
 void Textures_ModeChanged(){
+	// In Vulkan, filter settings are baked into the sampler at upload time.
+	// Trigger a full texture reload so all samplers are recreated with the new settings.
 	if ( g_texturesmap->realised() ) {
-		SetTexParameters( g_texture_mode );
-		SetTexAnisotropy( g_TextureAnisotropy );
-
-		for ( TexturesMap::iterator i = g_texturesmap->begin(); i != g_texturesmap->end(); ++i )
-		{
-			gl().glBindTexture( GL_TEXTURE_2D, ( *i ).value->texture_number );
-			SetTexParameters( g_texture_mode );
-			SetTexAnisotropy( g_TextureAnisotropy );
-		}
-
-		gl().glBindTexture( GL_TEXTURE_2D, 0 );
+		Textures_Unrealise();
+		Textures_Realise();
 	}
 	g_texturesModeChangedNotify();
 }
@@ -633,75 +459,10 @@ void Textures_SetAnisotropy( bool anisotropy ){
 	}
 }
 
-void Textures_setTextureComponents( GLint texture_components ){
-	if ( g_texture_globals.texture_components != texture_components ) {
-		Textures_Unrealise();
-		g_texture_globals.texture_components = texture_components;
-		Textures_Realise();
-	}
-}
-
 void Textures_UpdateTextureCompressionFormat(){
-	GLint texture_components = GL_RGBA;
-
-	switch ( g_texture_globals.m_nTextureCompressionFormat )
-	{
-	case ( TEXTURECOMPRESSION_NONE ):
-		texture_components = GL_RGBA;
-		break;
-	case ( TEXTURECOMPRESSION_RGBA ):
-		texture_components = GL_COMPRESSED_RGBA_ARB;
-		break;
-	case ( TEXTURECOMPRESSION_RGBA_S3TC_DXT1 ):
-		texture_components = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
-		break;
-	case ( TEXTURECOMPRESSION_RGBA_S3TC_DXT3 ):
-		texture_components = GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
-		break;
-	case ( TEXTURECOMPRESSION_RGBA_S3TC_DXT5 ):
-		texture_components = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
-		break;
-	}
-
-	Textures_setTextureComponents( texture_components );
+	// Vulkan uses VK_FORMAT_R8G8B8A8_UNORM; DXT/BC compression not yet implemented.
+	// This function is kept as a no-op for preference-system stability.
 }
-
-void TextureCompressionImport( TextureCompressionFormat& self, int value ){
-	if ( !g_texture_globals.m_bOpenGLCompressionSupported
-	   && g_texture_globals.m_bS3CompressionSupported
-	   && value >= 1 ) {
-		++value;
-	}
-	switch ( value )
-	{
-	case 0:
-		self = TEXTURECOMPRESSION_NONE;
-		break;
-	case 1:
-		self = TEXTURECOMPRESSION_RGBA;
-		break;
-	case 2:
-		self = TEXTURECOMPRESSION_RGBA_S3TC_DXT1;
-		break;
-	case 3:
-		self = TEXTURECOMPRESSION_RGBA_S3TC_DXT3;
-		break;
-	case 4:
-		self = TEXTURECOMPRESSION_RGBA_S3TC_DXT5;
-		break;
-	}
-	Textures_UpdateTextureCompressionFormat();
-}
-typedef ReferenceCaller1<TextureCompressionFormat, int, TextureCompressionImport> TextureCompressionImportCaller;
-
-void TextureMiplevelImport( int& self, int value ){
-	if ( self != value ) {
-		Textures_Unrealise();
-		self = value;
-		Textures_Realise();
-	}
-}
-typedef ReferenceCaller1<int, int, TextureMiplevelImport> TextureMiplevelImportCaller;
 
 void TextureGammaImport( float& self, float value ){
 	if ( self != value ) {
@@ -764,15 +525,6 @@ void TextureModeExport( ETexturesMode& self, const IntImportCallback& importer )
 typedef ReferenceCaller1<ETexturesMode, const IntImportCallback&, TextureModeExport> TextureModeExportCaller;
 
 void Textures_constructPreferences( PreferencesPage& page ){
-	{
-		const char* percentages[] = { "100%", "50%", "25%", "12.5%", };
-		page.appendRadio(
-		    "Texture Quality",
-		    StringArrayRange( percentages ),
-		    TextureMiplevelImportCaller( g_Textures_mipLevel ),
-		    IntExportCaller( g_Textures_mipLevel )
-		);
-	}
 	page.appendSpinner(
 	    "Texture Gamma",
 	    0.0,
@@ -789,27 +541,6 @@ void Textures_constructPreferences( PreferencesPage& page ){
 		    IntExportCallback( TextureModeExportCaller( g_texture_mode ) )
 		);
 	}
-	{
-		const char* compression_none[] = { "None" };
-		const char* compression_opengl[] = { "None", "OpenGL ARB" };
-		const char* compression_s3tc[] = { "None", "S3TC DXT1", "S3TC DXT3", "S3TC DXT5" };
-		const char* compression_opengl_s3tc[] = { "None", "OpenGL ARB", "S3TC DXT1", "S3TC DXT3", "S3TC DXT5" };
-		const StringArrayRange compression(
-		    ( g_texture_globals.m_bOpenGLCompressionSupported )
-		    ? ( g_texture_globals.m_bS3CompressionSupported )
-		      ? StringArrayRange( compression_opengl_s3tc )
-		      : StringArrayRange( compression_opengl )
-		    : ( g_texture_globals.m_bS3CompressionSupported )
-		      ? StringArrayRange( compression_s3tc )
-		      : StringArrayRange( compression_none )
-		);
-		page.appendCombo(
-		    "Hardware Texture Compression",
-		    compression,
-		    TextureCompressionImportCaller( g_texture_globals.m_nTextureCompressionFormat ),
-		    IntExportCaller( reinterpret_cast<int&>( g_texture_globals.m_nTextureCompressionFormat ) )
-		);
-	}
 	page.appendCheckBox( "", "Anisotropy",
 	                     FreeCaller1<bool, Textures_SetAnisotropy>(),
 	                     BoolExportCaller( g_TextureAnisotropy ) );
@@ -822,17 +553,9 @@ void Textures_registerPreferencesPage(){
 	PreferencesDialog_addDisplayPage( FreeCaller1<PreferenceGroup&, Textures_constructPage>() );
 }
 
-void TextureCompression_importString( const char* string ){
-	g_texture_globals.m_nTextureCompressionFormat = static_cast<TextureCompressionFormat>( atoi( string ) );
-	Textures_UpdateTextureCompressionFormat();
-}
-typedef FreeCaller1<const char*, TextureCompression_importString> TextureCompressionImportStringCaller;
-
-
 void Textures_Construct(){
 	g_texturesmap = new TexturesMap;
 
-	GlobalPreferenceSystem().registerPreference( "TextureCompressionFormat", TextureCompressionImportStringCaller(), IntExportStringCaller( reinterpret_cast<int&>( g_texture_globals.m_nTextureCompressionFormat ) ) );
 	GlobalPreferenceSystem().registerPreference( "TextureFiltering", IntImportStringCaller( reinterpret_cast<int&>( g_texture_mode ) ), IntExportStringCaller( reinterpret_cast<int&>( g_texture_mode ) ) );
 	GlobalPreferenceSystem().registerPreference( "TextureAnisotropy", BoolImportStringCaller( g_TextureAnisotropy ), BoolExportStringCaller( g_TextureAnisotropy ) );
 	GlobalPreferenceSystem().registerPreference( "TextureMipLevel", IntImportStringCaller( g_Textures_mipLevel ), IntExportStringCaller( g_Textures_mipLevel ) );

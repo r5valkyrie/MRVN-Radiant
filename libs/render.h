@@ -22,127 +22,173 @@
 #pragma once
 
 /// \file
-/// \brief High-level constructs for efficient OpenGL rendering.
+/// \brief High-level constructs for efficient Vulkan rendering.
+///
+/// Drop-in replacements for the old OpenGL VBO/IBO helpers.  The streaming
+/// buffers (vbo_upload / ibo_upload) write into the persistently-mapped
+/// VkStreamBuffer inside VulkanBinding.  Bind the buffers to a command buffer
+/// with vkCmdBindVertexBuffers / vkCmdBindIndexBuffer (offset = 0) immediately
+/// after uploading.
 
 #include "irender.h"
-#include "igl.h"
+#include "igl.h"            // VulkanBinding, GlobalVulkan()
+#include "ivkcontext.h"     // VKContext_beginTransferCmd / VKContext_endTransferCmd
+#include "radiant/vktexture.h"  // VKTexture_destroy
 
 #include "container/array.h"
 #include "math/vector.h"
 #include "math/pi.h"
 
+#include <cstring>
 #include <vector>
+#include <cstdint>
 
-typedef unsigned int RenderIndex;
-const GLenum RenderIndexTypeID = GL_UNSIGNED_INT;
+// RenderIndex is still uint32_t; the VkIndexType constant is VK_INDEX_TYPE_UINT32.
+typedef uint32_t RenderIndex;
+static constexpr uint32_t RenderIndexTypeID = 0u;  ///< placeholder; use VK_INDEX_TYPE_UINT32 at bind-time
 
-/// \brief Upload vertex data to the streaming VBO using buffer orphaning (GL_STREAM_DRAW).
-/// After this call, GL_ARRAY_BUFFER is bound to the streaming VBO.
-/// Vertex attribute pointers should use byte offsets (not CPU pointers).
-inline void vbo_upload( const void* data, GLsizeiptr sizeBytes ){
-	gl().glBindBuffer( GL_ARRAY_BUFFER, GlobalOpenGL().m_streamVBO );
-	gl().glBufferData( GL_ARRAY_BUFFER, sizeBytes, data, GL_STREAM_DRAW );
+// ── Streaming upload helpers ──────────────────────────────────────────────────
+
+/// Upload vertex data to the streaming vertex buffer.
+/// The GPU buffer (GlobalVulkan().m_streamVB.buffer) is ready to bind at
+/// offset 0 immediately after this call.
+inline void vbo_upload( const void* data, std::size_t sizeBytes )
+{
+	VkStreamBuffer& buf = GlobalVulkan().m_streamVB;
+	ASSERT_MESSAGE( sizeBytes <= buf.capacity, "Stream VB overflow" );
+	std::memcpy( buf.mapped, data, sizeBytes );
 }
 
-/// \brief Upload index data to the streaming IBO using buffer orphaning.
-/// After this call, GL_ELEMENT_ARRAY_BUFFER is bound to the streaming IBO.
-/// glDrawElements index pointer should be a byte offset (typically 0).
-inline void ibo_upload( const void* data, GLsizeiptr sizeBytes ){
-	gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, GlobalOpenGL().m_streamIBO );
-	gl().glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeBytes, data, GL_STREAM_DRAW );
+/// Upload index data to the streaming index buffer.
+/// The GPU buffer (GlobalVulkan().m_streamIB.buffer) is ready to bind at
+/// offset 0 immediately after this call.
+inline void ibo_upload( const void* data, std::size_t sizeBytes )
+{
+	VkStreamBuffer& buf = GlobalVulkan().m_streamIB;
+	ASSERT_MESSAGE( sizeBytes <= buf.capacity, "Stream IB overflow" );
+	std::memcpy( buf.mapped, data, sizeBytes );
 }
 
-/// \brief Unbind streaming VBO and IBO, restoring client-side vertex array mode.
-inline void vbo_unbind(){
-	gl().glBindBuffer( GL_ARRAY_BUFFER, 0 );
-	gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, 0 );
-}
+/// No-op in Vulkan: buffers are explicitly bound via vkCmdBindVertexBuffers.
+inline void vbo_unbind() {}
 
-/// \brief RAII wrapper for a static GPU buffer (GL_STATIC_DRAW).
-/// Upload once when data changes, then just bind on subsequent frames.
+// ── StaticVBO ─────────────────────────────────────────────────────────────────
+
+/// RAII wrapper for a static GPU vertex + index buffer (uploaded once,
+/// re-used across frames).  Uses GPU-only memory with a CPU staging transfer.
 class StaticVBO
 {
-	GLuint m_vbo = 0;
-	GLuint m_ibo = 0;
-	bool m_vboDirty = true;
-	bool m_iboDirty = true;
+	VkBuffer      m_vbo         = VK_NULL_HANDLE;
+	VmaAllocation m_vboAlloc    = VK_NULL_HANDLE;
+	VkBuffer      m_ibo         = VK_NULL_HANDLE;
+	VmaAllocation m_iboAlloc    = VK_NULL_HANDLE;
+	bool          m_vboDirty    = true;
+	bool          m_iboDirty    = true;
+
+	static void uploadToGPU( const void*     data,
+	                         std::size_t     sizeBytes,
+	                         VkBufferUsageFlags usage,
+	                         VkBuffer&       outBuf,
+	                         VmaAllocation&  outAlloc )
+	{
+		VulkanBinding& vk = GlobalVulkan();
+
+		// Create / replace the GPU-side buffer
+		if ( outBuf != VK_NULL_HANDLE )
+		{
+			vmaDestroyBuffer( vk.allocator, outBuf, outAlloc );
+		}
+
+		// Create staging buffer (CPU-visible)
+		VkBufferCreateInfo stageCI = {};
+		stageCI.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		stageCI.size  = sizeBytes;
+		stageCI.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+		VmaAllocationCreateInfo stageAllocCI = {};
+		stageAllocCI.usage = VMA_MEMORY_USAGE_AUTO;
+		stageAllocCI.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+		                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+		VkBuffer      stageBuf;
+		VmaAllocation stageAlloc;
+		VmaAllocationInfo stageInfo;
+		vmaCreateBuffer( vk.allocator, &stageCI, &stageAllocCI, &stageBuf, &stageAlloc, &stageInfo );
+		std::memcpy( stageInfo.pMappedData, data, sizeBytes );
+
+		// Create GPU-only destination buffer
+		VkBufferCreateInfo dstCI = {};
+		dstCI.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		dstCI.size  = sizeBytes;
+		dstCI.usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+		VmaAllocationCreateInfo dstAllocCI = {};
+		dstAllocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+		vmaCreateBuffer( vk.allocator, &dstCI, &dstAllocCI, &outBuf, &outAlloc, nullptr );
+
+		// Copy via single-shot command buffer
+		VkCommandBuffer cmd = VKContext_beginTransferCmd();
+		VkBufferCopy region = { 0, 0, sizeBytes };
+		vkCmdCopyBuffer( cmd, stageBuf, outBuf, 1, &region );
+		VKContext_endTransferCmd( cmd );
+
+		vmaDestroyBuffer( vk.allocator, stageBuf, stageAlloc );
+	}
+
 public:
 	StaticVBO() = default;
-	~StaticVBO(){
-		destroy();
-	}
-	StaticVBO( const StaticVBO& ) = delete;
+	~StaticVBO() { destroy(); }
+
+	StaticVBO( const StaticVBO& )            = delete;
 	StaticVBO& operator=( const StaticVBO& ) = delete;
-	StaticVBO( StaticVBO&& other ) noexcept
-		: m_vbo( other.m_vbo ), m_ibo( other.m_ibo ), m_vboDirty( other.m_vboDirty ), m_iboDirty( other.m_iboDirty ){
-		other.m_vbo = 0;
-		other.m_ibo = 0;
+
+	StaticVBO( StaticVBO&& o ) noexcept
+		: m_vbo( o.m_vbo ), m_vboAlloc( o.m_vboAlloc ),
+		  m_ibo( o.m_ibo ), m_iboAlloc( o.m_iboAlloc ),
+		  m_vboDirty( o.m_vboDirty ), m_iboDirty( o.m_iboDirty )
+	{
+		o.m_vbo = o.m_ibo = VK_NULL_HANDLE;
+		o.m_vboAlloc = o.m_iboAlloc = VK_NULL_HANDLE;
 	}
-	StaticVBO& operator=( StaticVBO&& other ) noexcept {
+
+	StaticVBO& operator=( StaticVBO&& o ) noexcept
+	{
 		destroy();
-		m_vbo = other.m_vbo; m_ibo = other.m_ibo; m_vboDirty = other.m_vboDirty; m_iboDirty = other.m_iboDirty;
-		other.m_vbo = 0; other.m_ibo = 0;
+		m_vbo = o.m_vbo; m_vboAlloc = o.m_vboAlloc;
+		m_ibo = o.m_ibo; m_iboAlloc = o.m_iboAlloc;
+		m_vboDirty = o.m_vboDirty; m_iboDirty = o.m_iboDirty;
+		o.m_vbo = o.m_ibo = VK_NULL_HANDLE;
+		o.m_vboAlloc = o.m_iboAlloc = VK_NULL_HANDLE;
 		return *this;
 	}
 
-	void markDirty(){
-		m_vboDirty = true;
-		m_iboDirty = true;
+	void markDirty() { m_vboDirty = true; m_iboDirty = true; }
+
+	void uploadVertices( const void* data, std::size_t sizeBytes )
+	{
+		if ( !m_vboDirty ) return;
+		uploadToGPU( data, sizeBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_vbo, m_vboAlloc );
+		m_vboDirty = false;
 	}
 
-	/// Upload vertex data and bind. Skips upload if not dirty.
-	void uploadVertices( const void* data, GLsizeiptr sizeBytes ){
-		if ( m_vbo == 0 ){
-			gl().glGenBuffers( 1, &m_vbo );
-		}
-		gl().glBindBuffer( GL_ARRAY_BUFFER, m_vbo );
-		if ( m_vboDirty ){
-			gl().glBufferData( GL_ARRAY_BUFFER, sizeBytes, data, GL_STATIC_DRAW );
-			m_vboDirty = false;
-		}
+	void uploadIndices( const void* data, std::size_t sizeBytes )
+	{
+		if ( !m_iboDirty ) return;
+		uploadToGPU( data, sizeBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_ibo, m_iboAlloc );
+		m_iboDirty = false;
 	}
 
-	/// Upload index data and bind. Skips upload if not dirty.
-	void uploadIndices( const void* data, GLsizeiptr sizeBytes ){
-		if ( m_ibo == 0 ){
-			gl().glGenBuffers( 1, &m_ibo );
-		}
-		gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, m_ibo );
-		if ( m_iboDirty ){
-			gl().glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeBytes, data, GL_STATIC_DRAW );
-			m_iboDirty = false;
-		}
-	}
+	VkBuffer vbo() const { return m_vbo; }
+	VkBuffer ibo() const { return m_ibo; }
+	bool     isDirty() const { return m_vboDirty || m_iboDirty; }
 
-	/// Bind VBO without uploading.
-	void bindVBO() const {
-		gl().glBindBuffer( GL_ARRAY_BUFFER, m_vbo );
-	}
-
-	/// Bind IBO without uploading.
-	void bindIBO() const {
-		gl().glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, m_ibo );
-	}
-
-	bool isDirty() const {
-		return m_vboDirty || m_iboDirty;
-	}
-
-	void destroy(){
-		if ( m_vbo != 0 ){
-			if ( GlobalOpenGL().contextValid ){
-				gl().glDeleteBuffers( 1, &m_vbo );
-			}
-			m_vbo = 0;
-		}
-		if ( m_ibo != 0 ){
-			if ( GlobalOpenGL().contextValid ){
-				gl().glDeleteBuffers( 1, &m_ibo );
-			}
-			m_ibo = 0;
-		}
-		m_vboDirty = true;
-		m_iboDirty = true;
+	void destroy()
+	{
+		if ( !GlobalVulkan().contextValid ) { m_vbo = m_ibo = VK_NULL_HANDLE; m_vboAlloc = m_iboAlloc = VK_NULL_HANDLE; return; }
+		VmaAllocator alloc = GlobalVulkan().allocator;
+		if ( m_vbo ) { vmaDestroyBuffer( alloc, m_vbo, m_vboAlloc ); m_vbo = VK_NULL_HANDLE; }
+		if ( m_ibo ) { vmaDestroyBuffer( alloc, m_ibo, m_iboAlloc ); m_ibo = VK_NULL_HANDLE; }
+		m_vboDirty = m_iboDirty = true;
 	}
 };
 
@@ -887,8 +933,8 @@ struct DepthTestedPointVertex
 	DepthTestedPointVertex(){
 	}
 	~DepthTestedPointVertex(){
-		if( query != 0 )
-			gl().glDeleteQueries( 1, &query );
+		// Phase 6: release occlusion-query object via vkDestroyQueryPool
+		query = 0;
 	}
 	DepthTestedPointVertex( Vertex3f _vertex )
 		: colour( Colour4b( 255, 255, 255, 255 ) ), vertex( _vertex ){
@@ -950,14 +996,13 @@ inline ArbitraryMeshVertex arbitrarymeshvertex_quantised( const ArbitraryMeshVer
 }
 
 
-/// \brief Uploads \p array to the streaming VBO and sets up the OpenGL colour and vertex arrays for PointVertex data.
+/// \brief Uploads \p array to the streaming VBO.
+/// Phase 6: after uploading, call vkCmdBindVertexBuffers with g_streamVB and the
+/// returned offset to bind both colour and vertex attributes (interleaved layout).
 template<typename PointVertex_t>
 inline void pointvertex_gl_array( const PointVertex_t* array, GLsizei count ){
 	vbo_upload( array, count * sizeof( PointVertex_t ) );
-	gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex_t ),
-	                     reinterpret_cast<const void*>( offsetof( PointVertex_t, colour ) ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex_t ),
-	                      reinterpret_cast<const void*>( offsetof( PointVertex_t, vertex ) ) );
+	// Phase 6: vkCmdBindVertexBuffers( cmd, 0, 1, &g_streamVB.buffer, &lastVboOffset );
 }
 
 template<typename PointVertex_t>
@@ -970,14 +1015,8 @@ public:
 		: m_array( array ), m_mode( mode ){
 	}
 	void render( RenderStateFlags state ) const {
-#define NV_DRIVER_BUG 0
-#if NV_DRIVER_BUG
-		gl().glColorPointer( 4, GL_UNSIGNED_BYTE, 0, 0 );
-		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
-		gl().glDrawArrays( GL_TRIANGLE_FAN, 0, 0 );
-#endif
 		pointvertex_gl_array( m_array.data(), GLsizei( m_array.size() ) );
-		gl().glDrawArrays( m_mode, 0, GLsizei( m_array.size() ) );
+		// Phase 6: vkCmdDraw( g_renderCmdBuffer, GLsizei(m_array.size()), 1, 0, 0 );
 	}
 };
 
@@ -991,8 +1030,9 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
+		if ( m_vector.empty() ) return;
 		pointvertex_gl_array( &m_vector.front(), GLsizei( m_vector.size() ) );
-		gl().glDrawArrays( m_mode, 0, GLsizei( m_vector.size() ) );
+		// Phase 6: vkCmdDraw( g_renderCmdBuffer, GLsizei(m_vector.size()), 1, 0, 0 );
 	}
 
 	std::size_t size() const {
@@ -1023,8 +1063,8 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
-		pointvertex_gl_array( m_vertices.data(), m_vertices.size() );
-		gl().glDrawArrays( m_mode, 0, m_vertices.size() );
+		pointvertex_gl_array( m_vertices.data(), GLsizei( m_vertices.size() ) );
+		// Phase 6: vkCmdDraw( g_renderCmdBuffer, GLsizei(m_vertices.size()), 1, 0, 0 );
 	}
 };
 
@@ -1039,28 +1079,9 @@ public:
 	}
 
 	void render( RenderStateFlags state ) const {
-#if 1
 		pointvertex_gl_array( m_vertices.data(), GLsizei( m_vertices.size() ) );
 		ibo_upload( m_indices.data(), m_indices.size() * sizeof( RenderIndex ) );
-		gl().glDrawElements( m_mode, GLsizei( m_indices.size() ), RenderIndexTypeID, 0 );
-#else
-		gl().glBegin( m_mode );
-		if ( state & RENDER_COLOURARRAY != 0 ) {
-			for ( std::size_t i = 0; i < m_indices.size(); ++i )
-			{
-				gl().glColor4ubv( &m_vertices[m_indices[i]].colour.r );
-				gl().glVertex3fv( &m_vertices[m_indices[i]].vertex.x );
-			}
-		}
-		else
-		{
-			for ( std::size_t i = 0; i < m_indices.size(); ++i )
-			{
-				gl().glVertex3fv( &m_vertices[m_indices[i]].vertex.x );
-			}
-		}
-		gl().glEnd();
-#endif
+		// Phase 6: vkCmdBindIndexBuffer + vkCmdDrawIndexed( g_renderCmdBuffer, GLsizei(m_indices.size()), 1, 0, 0, 0 );
 	}
 };
 
@@ -1073,31 +1094,13 @@ public:
 		: m_array( array ), m_mode( mode ){
 	}
 	void render( RenderStateFlags state ) const {
-		if( state & RENDER_COLOURWRITE ){ // render depending on visibility
-			for( auto& p : m_array ){
-				GLuint sampleCount;
-				gl().glGetQueryObjectuiv( p.query, GL_QUERY_RESULT, &sampleCount );
-				if ( sampleCount == 0 ){
-					p.colour = colour_occluded;
-				}
-				else{
-					p.colour = colour_vertex;
-				}
-			}
-			pointvertex_gl_array( m_array.data(), GLsizei( m_array.size() ) );
-			gl().glDrawArrays( m_mode, 0, GLsizei( m_array.size() ) );
+		// Phase 6: replace GL occlusion queries with VkQueryPool (VK_QUERY_TYPE_OCCLUSION).
+		// For now, render all vertices as fully visible.
+		for( auto& p : m_array ){
+			p.colour = colour_vertex;
 		}
-		else{ // test visibility
-			for( auto& p : m_array ){
-				if( p.query == 0 )
-					gl().glGenQueries( 1, &p.query );
-				gl().glBeginQuery( GL_SAMPLES_PASSED, p.query );
-				vbo_upload( &p.vertex, sizeof( p.vertex ) );
-				gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
-				gl().glDrawArrays( m_mode, 0, 1 );
-				gl().glEndQuery( GL_SAMPLES_PASSED );
-			}
-		}
+		pointvertex_gl_array( m_array.data(), GLsizei( m_array.size() ) );
+		// Phase 6: vkCmdDraw( g_renderCmdBuffer, GLsizei(m_array.size()), 1, 0, 0 );
 	}
 };
 
@@ -1376,48 +1379,28 @@ class RenderTextLabel : public OpenGLRenderable
 	unsigned int width;
 	unsigned int height;
 public:
-	GLuint tex = 0;
+	uint32_t tex = 0;
 	unsigned int subTex = 0;
 	Vector2 screenPos;
 	~RenderTextLabel(){
 		texFree();
 	}
 	void texAlloc( const char* text, const Vector3& color01 ){
-		gl().glGenTextures( 1, &tex );
-		if( tex > 0 ){
-			const BasicVector3<unsigned char> colour = color01 * 255.f;
-			GlobalOpenGL().m_font->renderString( text, tex, colour.data(), width, height );
-		}
+		if( tex != 0 ) VKTexture_destroy( tex );
+		tex = 0;
+		const BasicVector3<unsigned char> colour = color01 * 255.f;
+		GlobalOpenGL().m_font->renderString( text, tex, colour.data(), width, height );
 	}
 	void texFree(){
-		if( tex > 0 ){
-			gl().glDeleteTextures( 1, &tex );
+		if( tex != 0 ){
+			VKTexture_destroy( tex );
 			tex = 0;
 		}
 	}
 	void render( RenderStateFlags state ) const {
-		if( tex > 0 ){
-			gl().glBindTexture( GL_TEXTURE_2D, tex );
-			const float verts[4][2] = { { screenPos.x(), screenPos.y() },
-			                            { screenPos.x(), screenPos.y() + height + .01f },
-			                            { screenPos.x() + width + .01f, screenPos.y() + height + .01f },
-			                            { screenPos.x() + width + .01f, screenPos.y() } };
-			const float coords[4][2] = { { subTex / 3.f, 1 },
-			                             { subTex / 3.f, 0 },
-			                             { ( subTex + 1 ) / 3.f, 0 },
-			                             { ( subTex + 1 ) / 3.f, 1 } };
-			// Interleaved pos+texcoord for VBO upload
-			struct TextVert { float x, y, s, t; };
-			const TextVert textVerts[4] = {
-				{ verts[0][0], verts[0][1], coords[0][0], coords[0][1] },
-				{ verts[1][0], verts[1][1], coords[1][0], coords[1][1] },
-				{ verts[2][0], verts[2][1], coords[2][0], coords[2][1] },
-				{ verts[3][0], verts[3][1], coords[3][0], coords[3][1] },
-			};
-			vbo_upload( textVerts, sizeof( textVerts ) );
-			gl().glVertexPointer( 2, GL_FLOAT, sizeof( TextVert ), 0 );
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( TextVert ), reinterpret_cast<const void*>( 2 * sizeof( float ) ) );
-			gl().glDrawArrays( GL_QUADS, 0, 4 );
+		if( tex != 0 ){
+			// Phase 6: bind tex descriptor set and emit textured quad via streaming VB
+			// For now the draw call is deferred until the Vulkan text-quad pipeline is wired up
 		}
 	}
 };

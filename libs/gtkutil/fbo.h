@@ -2,62 +2,39 @@
    Copyright (C) 2001-2006, William Joseph.
    All Rights Reserved.
 
-   This file is part of GtkRadiant.
+   Vulkan port — MRVN-Radiant contributors.
 
-   GtkRadiant is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
-
-   GtkRadiant is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with GtkRadiant; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+   Licensed under the GNU General Public License v2 or later.
  */
 
 #pragma once
 
-#include <QOpenGLFramebufferObject>
-#include "debugging/debugging.h"
-
+/// Stub FBO class for the Vulkan migration.
+/// In Vulkan, framebuffer objects are replaced by render passes + VkFramebuffer.
+/// This stub maintains the same interface so call-sites compile while Phase 6
+/// wires up the real Vulkan render-pass framebuffer.
 class FBO
 {
-	QOpenGLFramebufferObject *m_fbo{};
 public:
 	const int m_samples;
 
-	FBO( int w, int h, bool hasDepth, int samples ) : m_samples( samples )
+	FBO( int /*w*/, int /*h*/, bool /*hasDepth*/, int samples ) : m_samples( samples )
 	{
-		ASSERT_MESSAGE( QOpenGLFramebufferObject::hasOpenGLFramebufferObjects(), "QOpenGLFramebufferObject::hasOpenGLFramebufferObjects()" );
-		ASSERT_MESSAGE( QOpenGLFramebufferObject::hasOpenGLFramebufferBlit(), "QOpenGLFramebufferObject::hasOpenGLFramebufferBlit()" );
-
-		QOpenGLFramebufferObjectFormat format;
-		if( hasDepth )
-			format.setAttachment( QOpenGLFramebufferObject::Attachment::Depth );
-		format.setSamples( samples );
-		m_fbo = new QOpenGLFramebufferObject( w, h, format );
-
-		ASSERT_MESSAGE( m_fbo->isValid(), "m_fbo->isValid()" );
+		// Phase 6: create VkFramebuffer with matching dimensions and sample count.
 	}
 	FBO( FBO&& ) noexcept = delete;
 	~FBO(){
-		delete m_fbo;
+		// Phase 6: destroy VkFramebuffer.
 	}
 	bool bind(){
-		if( m_fbo->format().samples() )
-			gl().glEnable( GL_MULTISAMPLE );
-		else
-			gl().glDisable( GL_MULTISAMPLE );
-		return m_fbo->bind();
+		// Phase 6: begin render pass.
+		return true;
 	}
 	bool release(){
-		return m_fbo->release();
+		// Phase 6: end render pass.
+		return true;
 	}
 	void blit(){
-		QOpenGLFramebufferObject::blitFramebuffer( nullptr, m_fbo );
+		// Phase 6: resolve MSAA via vkCmdResolveImage or a blit subpass.
 	}
 };

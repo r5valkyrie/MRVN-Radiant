@@ -63,8 +63,7 @@ inline void arrow_draw( const Vector3& origin, const Vector3& direction_forward,
 		tip4, tip1,
 	};
 	vbo_upload( verts, sizeof( verts ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-	gl().glDrawArrays( GL_LINES, 0, 18 );
+	// Phase 6: vkCmdBindVertexBuffers + vkCmdDraw( cmd, 18, 1, 0, 0 );
 }
 
 class RenderableArrow : public OpenGLRenderable
@@ -111,16 +110,8 @@ inline void aabb_draw_wire( const Vector3 points[8] ){
 	};
 #if 1
 	vbo_upload( points, 8 * sizeof( Vector3 ) );
-	gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
 	ibo_upload( indices, sizeof( indices ) );
-	gl().glDrawElements( GL_LINES, sizeof( indices ) / sizeof( indices[0] ), GL_UNSIGNED_INT, 0 );
-#else
-	gl().glBegin( GL_LINES );
-	for ( std::size_t i = 0; i < sizeof( indices ) / sizeof( indices[0] ); ++i )
-	{
-		gl().glVertex3fv( vector3_to_array( points[indices[i]] ) );
-	}
-	gl().glEnd();
+	// Phase 6: vkCmdBindVertexBuffers + vkCmdBindIndexBuffer + vkCmdDrawIndexed( cmd, 26, 1, 0, 0, 0 );
 #endif
 }
 
@@ -135,9 +126,7 @@ inline void aabb_draw_flatshade( const Vector3 points[8] ){
 		{ aabb_normals[5], points[7] }, { aabb_normals[5], points[6] }, { aabb_normals[5], points[5] }, { aabb_normals[5], points[4] },
 	};
 	vbo_upload( quads, sizeof( quads ) );
-	gl().glNormalPointer( GL_FLOAT, sizeof( NV ), reinterpret_cast<const void*>( offsetof( NV, n ) ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( NV ), reinterpret_cast<const void*>( offsetof( NV, v ) ) );
-	gl().glDrawArrays( GL_QUADS, 0, 24 );
+	// Phase 6: vkCmdBindVertexBuffers + vkCmdDraw( cmd, 24, 1, 0, 0 );
 }
 
 inline void aabb_draw_wire( const AABB& aabb ){
@@ -184,10 +173,7 @@ inline void aabb_draw_textured( const AABB& aabb ){
 		{ aabb_normals[5], aabb_texcoord_botleft[0], aabb_texcoord_botleft[1], points[4] },
 	};
 	vbo_upload( quads, sizeof( quads ) );
-	gl().glNormalPointer( GL_FLOAT, sizeof( NTV ), reinterpret_cast<const void*>( offsetof( NTV, n ) ) );
-	gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( NTV ), reinterpret_cast<const void*>( offsetof( NTV, s ) ) );
-	gl().glVertexPointer( 3, GL_FLOAT, sizeof( NTV ), reinterpret_cast<const void*>( offsetof( NTV, v ) ) );
-	gl().glDrawArrays( GL_QUADS, 0, 24 );
+	// Phase 6: vkCmdBindVertexBuffers + vkCmdDraw( cmd, 24, 1, 0, 0 );
 }
 
 inline void aabb_draw_solid( const AABB& aabb, RenderStateFlags state ){

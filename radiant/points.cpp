@@ -97,14 +97,13 @@ public:
 			}
 		}
 		else if ( !show && shown() ) {
-			gl().glDeleteLists( m_displaylist, 1 );
-			m_displaylist = 0;
+			m_displaylist = 0; // Phase 6: was gl().glDeleteLists
 			SceneChangeNotify();
 		}
 	}
 
 	void render( RenderStateFlags state ) const {
-		gl().glCallList( m_displaylist );
+		// Phase 6: was gl().glCallList( m_displaylist ) — draw point path via Vulkan
 	}
 
 	void renderSolid( Renderer& renderer, const VolumeTest& volume ) const {
@@ -152,17 +151,8 @@ void CPointfile::PushPoint( const Vector3& v ){
 
 // create the display list at the end
 void CPointfile::GenerateDisplayList(){
-	m_displaylist = gl().glGenLists( 1 );
-
-	gl().glNewList( m_displaylist, GL_COMPILE );
-
-	gl().glBegin( GL_LINE_STRIP );
-	for ( std::size_t i = 0; i < s_num_points; i++ )
-		gl().glVertex3fv( vector3_to_array( s_pointvecs[i] ) );
-	gl().glEnd();
-	gl().glLineWidth( 1 );
-
-	gl().glEndList();
+	m_displaylist = 1; // Phase 6: non-zero = "shown" flag (was gl().glGenLists/glNewList/glBegin/glVertex/glEnd/glEndList)
+	// Phase 6: upload s_pointvecs[0..s_num_points-1] to VBO and record draw call
 }
 
 // old (but still relevant) pointfile code -------------------------------------

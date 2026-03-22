@@ -2067,11 +2067,22 @@ void OpenGLFont_select(){
 
 
 void GlobalGL_sharedContextCreated(){
-	// report OpenGL information
-	globalOutputStream() << "GL_VENDOR: " << reinterpret_cast<const char*>( gl().glGetString( GL_VENDOR ) ) << '\n';
-	globalOutputStream() << "GL_RENDERER: " << reinterpret_cast<const char*>( gl().glGetString( GL_RENDERER ) ) << '\n';
-	globalOutputStream() << "GL_VERSION: " << reinterpret_cast<const char*>( gl().glGetString( GL_VERSION ) ) << '\n';
-	globalOutputStream() << "GL_EXTENSIONS: " << reinterpret_cast<const char*>( gl().glGetString( GL_EXTENSIONS ) ) << '\n';
+	// Report Vulkan device information (replaces the old glGetString calls)
+	{
+		VkPhysicalDeviceProperties props = {};
+		if ( GlobalVulkan().physDevice != VK_NULL_HANDLE )
+			vkGetPhysicalDeviceProperties( GlobalVulkan().physDevice, &props );
+
+		const uint32_t apiVer = props.apiVersion;
+		char apiBuf[32];
+		snprintf( apiBuf, sizeof( apiBuf ), "%u.%u.%u",
+		          VK_VERSION_MAJOR( apiVer ), VK_VERSION_MINOR( apiVer ), VK_VERSION_PATCH( apiVer ) );
+
+		globalOutputStream() << "VK_DEVICE:  " << props.deviceName << '\n';
+		globalOutputStream() << "VK_DRIVER:  " << props.driverVersion << '\n';
+		globalOutputStream() << "VK_API:     " << apiBuf << '\n';
+		globalOutputStream() << "VK_VENDOR:  " << props.vendorID << '\n';
+	}
 
 	QGL_sharedContextCreated( GlobalOpenGL() );
 

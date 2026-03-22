@@ -380,20 +380,28 @@ void DoAbout(){
 		}
 		{
 			{
-				auto frame = new QGroupBox( "OpenGL Properties" );
+				auto frame = new QGroupBox( "Vulkan Properties" );
 				vbox->addWidget( frame );
 				{
 					auto form = new QFormLayout( frame );
-					form->addRow( "Vendor:", new QLabel( reinterpret_cast<const char*>( gl().glGetString( GL_VENDOR ) ) ) );
-					form->addRow( "Version:", new QLabel( reinterpret_cast<const char*>( gl().glGetString( GL_VERSION ) ) ) );
-					form->addRow( "Renderer:", new QLabel( reinterpret_cast<const char*>( gl().glGetString( GL_RENDERER ) ) ) );
+					// Phase 6: query VkPhysicalDeviceProperties for device name/driver version.
+					const VulkanBinding& vk = GlobalVulkan();
+					VkPhysicalDeviceProperties props = {};
+					if ( vk.physDevice != VK_NULL_HANDLE )
+						vkGetPhysicalDeviceProperties( vk.physDevice, &props );
+					form->addRow( "Device:",  new QLabel( props.deviceName ) );
+					form->addRow( "API:",     new QLabel( QString( "Vulkan %1.%2" )
+					    .arg( VK_VERSION_MAJOR( props.apiVersion ) )
+					    .arg( VK_VERSION_MINOR( props.apiVersion ) ) ) );
+					form->addRow( "Driver:",  new QLabel( QString::number( props.driverVersion ) ) );
 				}
 			}
 			{
-				auto frame = new QGroupBox( "OpenGL Extensions" );
+				auto frame = new QGroupBox( "Vulkan Extensions" );
 				vbox->addWidget( frame );
 				{
-					auto textView = new QPlainTextEdit( reinterpret_cast<const char*>( gl().glGetString( GL_EXTENSIONS ) ) );
+					// Phase 6: enumerate vkEnumerateDeviceExtensionProperties
+					auto textView = new QPlainTextEdit( "(Phase 6: Vulkan extension list)" );
 					textView->setReadOnly( true );
 					auto box = new QVBoxLayout( frame );
 					box->addWidget( textView );

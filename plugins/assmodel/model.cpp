@@ -104,50 +104,9 @@ public:
 
 	void render( RenderStateFlags state ) const {
 		m_staticVBO.uploadVertices( m_vertices.data(), m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
-		if ( ( state & RENDER_BUMP ) != 0 ) {
-			gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
-			gl().glVertexAttribPointer( c_attr_TexCoord0, 2, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
-			gl().glVertexAttribPointer( c_attr_Tangent, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, tangent ) ) );
-			gl().glVertexAttribPointer( c_attr_Binormal, 3, GL_FLOAT, 0, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, bitangent ) ) );
-		}
-		else
-		{
-			gl().glNormalPointer( GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, normal ) ) );
-			gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, texcoord ) ) );
-		}
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
 		m_staticVBO.uploadIndices( m_indices.data(), m_indices.size() * sizeof( RenderIndex ) );
-		gl().glDrawElements( GL_TRIANGLES, GLsizei( m_indices.size() ), RenderIndexTypeID, 0 );
-
-#if defined( _DEBUG ) && !defined( _DEBUG_QUICKER )
-		GLfloat modelview[16];
-		gl().glGetFloatv( GL_MODELVIEW_MATRIX, modelview ); // I know this is slow as hell, but hey - we're in _DEBUG
-		Matrix4 modelview_inv(
-		    modelview[0], modelview[1], modelview[2], modelview[3],
-		    modelview[4], modelview[5], modelview[6], modelview[7],
-		    modelview[8], modelview[9], modelview[10], modelview[11],
-		    modelview[12], modelview[13], modelview[14], modelview[15] );
-		matrix4_full_invert( modelview_inv );
-		Matrix4 modelview_inv_transposed = matrix4_transposed( modelview_inv );
-
-		vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( ArbitraryMeshVertex ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( ArbitraryMeshVertex ), reinterpret_cast<const void*>( offsetof( ArbitraryMeshVertex, vertex ) ) );
-		std::vector<Vector3> debugLines;
-		debugLines.reserve( m_vertices.size() * 2 );
-		for ( Array<ArbitraryMeshVertex>::const_iterator i = m_vertices.begin(); i != m_vertices.end(); ++i )
-		{
-			Vector3 normal = normal3f_to_vector3( ( *i ).normal );
-			normal = matrix4_transformed_direction( modelview_inv, vector3_normalised( matrix4_transformed_direction( modelview_inv_transposed, normal ) ) ); // do some magic
-			Vector3 normalTransformed = vector3_added( vertex3f_to_vector3( ( *i ).vertex ), vector3_scaled( normal, 8 ) );
-			debugLines.push_back( vertex3f_to_vector3( ( *i ).vertex ) );
-			debugLines.push_back( normalTransformed );
-		}
-		if ( !debugLines.empty() ){
-			vbo_upload( debugLines.data(), debugLines.size() * sizeof( Vector3 ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-			gl().glDrawArrays( GL_LINES, 0, GLsizei( debugLines.size() ) );
-		}
-#endif
+		// Phase 7: bind vertex buffer with ArbitraryMeshVertex layout, bind index buffer,
+		// then vkCmdDrawIndexed( g_renderCmdBuffer, GLsizei(m_indices.size()), 1, 0, 0, 0 ).
 	}
 
 	VolumeIntersectionValue intersectVolume( const VolumeTest& test, const Matrix4& localToWorld ) const {

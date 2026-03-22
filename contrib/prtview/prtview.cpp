@@ -248,6 +248,7 @@ void QERPlug_Dispatch( const char* p, float* vMin, float* vMax, bool bSingleBrus
 
 
 #include "modulesystem/singletonmodule.h"
+#include "igl.h"
 
 class PrtViewPluginDependencies :
 	public GlobalSceneGraphModuleRef,

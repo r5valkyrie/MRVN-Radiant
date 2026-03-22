@@ -260,9 +260,7 @@ public:
 			return;
 		}
 		vbo_upload( m_vertices.data(), m_vertices.size() * sizeof( PointVertex ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, vertex ) ) );
-		gl().glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( PointVertex ), reinterpret_cast<const void*>( offsetof( PointVertex, colour ) ) );
-		gl().glDrawArrays( GL_LINES, 0, m_vertices.size() );
+		// Phase 6: vkCmdBindVertexBuffers + vkCmdDraw( cmd, m_vertices.size(), 1, 0, 0 );
 	}
 
 	void render( Renderer& renderer, const VolumeTest& volume, const Matrix4& localToWorld ) const {

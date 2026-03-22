@@ -1057,11 +1057,11 @@ bool is_translated_vector_key( const char* key ){
 }
 
 CopiedString format_vector3( const Vector3& value ){
-	return StringStream<96>( value[0], ' ', value[1], ' ', value[2] );
+	return StringStream<96>( value[0], ' ', value[1], ' ', value[2] ).c_str();
 }
 
 	CopiedString generate_link_guid(){
-		return StringStream<32>( QString::number( static_cast<qulonglong>( QRandomGenerator::global()->generate64() ), 16 ).toLatin1().constData() );
+		return StringStream<32>( QString::number( static_cast<qulonglong>( QRandomGenerator::global()->generate64() ), 16 ).toLatin1().constData() ).c_str();
 	}
 
 	class PresetStringInputStream : public TextInputStream
@@ -1611,11 +1611,8 @@ public:
 		}
 	}
 	void render(){
-		gl().glViewport( 0, 0, m_width, m_height );
-		gl().glDepthMask( GL_TRUE );
-		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-		gl().glClearColor( 0.19f, 0.19f, 0.19f, 0.f );
-		gl().glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+		// Phase 6: Vulkan render pass setup (viewport, clear, matrix upload)
+		// gl().glViewport/glClear/glMatrixMode removed
 
 		if( m_instances.empty() ){
 			return;
@@ -1667,24 +1664,8 @@ public:
 		View view( true );
 		view.Construct( projection, modelview, m_width, m_height );
 
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &projection ) );
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &modelview ) );
-
-		GLfloat inverse_cam_dir[4], ambient[4], diffuse[4];
-		ambient[0] = ambient[1] = ambient[2] = 0.45f;
-		ambient[3] = 1.0f;
-		diffuse[0] = diffuse[1] = diffuse[2] = 0.45f;
-		diffuse[3] = 1.0f;
-		inverse_cam_dir[0] = -view.getViewDir()[0];
-		inverse_cam_dir[1] = -view.getViewDir()[1];
-		inverse_cam_dir[2] = -view.getViewDir()[2];
-		inverse_cam_dir[3] = 0;
-		gl().glLightfv( GL_LIGHT0, GL_POSITION, inverse_cam_dir );
-		gl().glLightfv( GL_LIGHT0, GL_AMBIENT, ambient );
-		gl().glLightfv( GL_LIGHT0, GL_DIFFUSE, diffuse );
-		gl().glEnable( GL_LIGHT0 );
+		// Phase 6: pass matrices to Vulkan push constants
+		// gl().glMatrixMode/glLoadMatrixf/glLightfv/glEnable(GL_LIGHT0) removed
 
 		PreviewModelRenderer renderer( globalstate );
 		for( scene::Instance* instance : m_instances ){
@@ -1693,7 +1674,7 @@ public:
 			}
 		}
 		renderer.render( modelview, projection );
-		gl().glBindTexture( GL_TEXTURE_2D, 0 );
+		// Phase 6: gl().glBindTexture removed
 	}
 };
 
@@ -1704,7 +1685,7 @@ PresetModelPreviewWidget::~PresetModelPreviewWidget(){
 }
 
 void PresetModelPreviewWidget::initializeGL(){
-	glwidget_context_created( *this );
+	glwidget_context_created( this->windowHandle() );
 	m_preview.onContextCreated();
 }
 

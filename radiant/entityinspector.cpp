@@ -240,7 +240,7 @@ Entity* pick_zipline_rest_point_target( const SelectedEntityRef& selected, const
 }
 
 CopiedString format_vector3_precise( const Vector3& value ){
-	return StringStream<96>( value[0], ' ', value[1], ' ', value[2] );
+	return StringStream<96>( value[0], ' ', value[1], ' ', value[2] ).c_str();
 }
 
 void zipline_write_rest_points( Entity& target, const Vector3& start, const Vector3& end, int count ){

@@ -1590,60 +1590,12 @@ void Patch::ConstructPrefab( const AABB& aabb, EPatchPrefab eType, int axis, std
 }
 
 void Patch::RenderDebug( RenderStateFlags state ) const {
-	for ( std::size_t i = 0; i < m_tess.m_numStrips; i++ )
-	{
-		gl().glBegin( GL_QUAD_STRIP );
-		for ( std::size_t j = 0; j < m_tess.m_lenStrips; j++ )
-		{
-			gl().glNormal3fv( normal3f_to_array( ( m_tess.m_vertices.data() + m_tess.m_indices[i * m_tess.m_lenStrips + j] )->normal ) );
-			gl().glTexCoord2fv( texcoord2f_to_array( ( m_tess.m_vertices.data() + m_tess.m_indices[i * m_tess.m_lenStrips + j] )->texcoord ) );
-			gl().glVertex3fv( vertex3f_to_array( ( m_tess.m_vertices.data() + m_tess.m_indices[i * m_tess.m_lenStrips + j] )->vertex ) );
-		}
-		gl().glEnd();
-	}
+	// Phase 6: RenderDebug replaced by Vulkan debug overlay.
+	(void)state;
 }
 
 void RenderablePatchSolid::RenderNormals() const {
-	const std::size_t width = m_tess.m_numStrips + 1;
-	const std::size_t height = m_tess.m_lenStrips >> 1;
-	gl().glBegin( GL_LINES );
-	for ( std::size_t i = 0; i < width; i++ )
-	{
-		for ( std::size_t j = 0; j < height; j++ )
-		{
-			{
-				Vector3 vNormal(
-				    vector3_added(
-				        vertex3f_to_vector3( ( m_tess.m_vertices.data() + ( j * width + i ) )->vertex ),
-				        vector3_scaled( normal3f_to_vector3( ( m_tess.m_vertices.data() + ( j * width + i ) )->normal ), 8 )
-				    )
-				);
-				gl().glVertex3fv( vertex3f_to_array( ( m_tess.m_vertices.data() + ( j * width + i ) )->vertex ) );
-				gl().glVertex3fv( &vNormal[0] );
-			}
-			{
-				Vector3 vNormal(
-				    vector3_added(
-				        vertex3f_to_vector3( ( m_tess.m_vertices.data() + ( j * width + i ) )->vertex ),
-				        vector3_scaled( normal3f_to_vector3( ( m_tess.m_vertices.data() + ( j * width + i ) )->tangent ), 8 )
-				    )
-				);
-				gl().glVertex3fv( vertex3f_to_array( ( m_tess.m_vertices.data() + ( j * width + i ) )->vertex ) );
-				gl().glVertex3fv( &vNormal[0] );
-			}
-			{
-				Vector3 vNormal(
-				    vector3_added(
-				        vertex3f_to_vector3( ( m_tess.m_vertices.data() + ( j * width + i ) )->vertex ),
-				        vector3_scaled( normal3f_to_vector3( ( m_tess.m_vertices.data() + ( j * width + i ) )->bitangent ), 8 )
-				    )
-				);
-				gl().glVertex3fv( vertex3f_to_array( ( m_tess.m_vertices.data() + ( j * width + i ) )->vertex ) );
-				gl().glVertex3fv( &vNormal[0] );
-			}
-		}
-	}
-	gl().glEnd();
+	// Phase 6: normal/tangent/bitangent debug lines rendered via Vulkan debug overlay.
 }
 
 #define DEGEN_0a  0x01

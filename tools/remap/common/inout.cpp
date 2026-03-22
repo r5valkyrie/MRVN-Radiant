@@ -34,7 +34,12 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#ifdef WIN32
 #include <io.h>
+#else
+#include <unistd.h>
+#include <sys/ioctl.h>
+#endif
 #include "generic/vector.h"
 
 #ifdef WIN32

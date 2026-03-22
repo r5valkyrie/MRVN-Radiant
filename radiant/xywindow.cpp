@@ -358,35 +358,14 @@ Shader* XYWnd::m_state_selected = 0;
 
 //outline camera crosshair rectangle
 void XYWnd::overlayDraw(){
-	gl().glViewport( 0, 0, m_nWidth, m_nHeight );
 
-	gl().glDisable( GL_LINE_STIPPLE );
-	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-	gl().glDisableClientState( GL_NORMAL_ARRAY );
-	gl().glDisableClientState( GL_COLOR_ARRAY );
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_LIGHTING );
-	gl().glDisable( GL_COLOR_MATERIAL );
-	gl().glDisable( GL_DEPTH_TEST );
-	gl().glDisable( GL_TEXTURE_1D );
 
-//	gl().glDisable( GL_BLEND );
-	gl().glLineWidth( 1 );
 
 	if ( g_xywindow_globals_private.show_outline && Active() ) {
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glLoadIdentity();
-		gl().glOrtho( 0, m_nWidth, 0, m_nHeight, 0, 1 );
 
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glLoadIdentity();
 
 		// four view mode doesn't colorize
-		gl().glColor3fv( vector3_to_array( ( g_pParentWnd->CurrentStyle() == MainFrame::eSplit )?
-		                                g_xywindow_globals.color_viewname
-		                              : m_viewType == YZ? g_xywindow_globals.AxisColorX
-		                              : m_viewType == XZ? g_xywindow_globals.AxisColorY
-		                              : g_xywindow_globals.AxisColorZ ) );
+		// Phase 6: gl().glColor3fv(color_viewname/AxisColor) removed
 		{
 			const float outline[] = {
 				0.5f, 0.5f,
@@ -395,34 +374,21 @@ void XYWnd::overlayDraw(){
 				0.5f, m_nHeight - 0.5f,
 			};
 			vbo_upload( outline, sizeof( outline ) );
-			gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-			gl().glDrawArrays( GL_LINE_LOOP, 0, 4 );
 		}
 	}
 
 	{
 		NDIM1NDIM2( m_viewType )
 
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_projection ) );
 
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glLoadIdentity();
-		gl().glScalef( m_fScale, m_fScale, 1 );
-		gl().glTranslatef( -m_vOrigin[nDim1], -m_vOrigin[nDim2], 0 );
 		DrawCameraIcon( Camera_getOrigin( *g_pParentWnd->GetCamWnd() ), Camera_getAngles( *g_pParentWnd->GetCamWnd() ) );
 	}
 
 	if ( g_bCrossHairs ) {
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_projection ) );
 
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_modelview ) );
 
 		NDIM1NDIM2( m_viewType )
 		Vector3 v( g_vector3_identity );
-		gl().glColor4f( 0.2f, 0.9f, 0.2f, 0.8f );
 		{
 			Vector3 v0, v1, v2, v3;
 			v0 = v1 = v2 = v3 = g_vector3_identity;
@@ -434,23 +400,16 @@ void XYWnd::overlayDraw(){
 			v3[nDim1] = 2.0f * GetMaxGridCoord();
 			const Vector3 verts[] = { v0, v1, v2, v3 };
 			vbo_upload( verts, sizeof( verts ) );
-			gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-			gl().glDrawArrays( GL_LINES, 0, 4 );
 		}
 	}
 
 	if ( Patch_TerrainTool_IsActive() ) {
 		const float radius = static_cast<float>( Patch_TerrainTool_GetBrushRadius() );
 		if ( radius > 0.f ) {
-			gl().glMatrixMode( GL_PROJECTION );
-			gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_projection ) );
 
-			gl().glMatrixMode( GL_MODELVIEW );
-			gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_modelview ) );
 
 			NDIM1NDIM2( m_viewType )
 			Vector3 v( m_mousePosition );
-			gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.9f );
 			{
 				Vector3 circleVerts[32];
 				Vector3 v( m_mousePosition );
@@ -461,13 +420,10 @@ void XYWnd::overlayDraw(){
 					circleVerts[i] = v;
 				}
 				vbo_upload( circleVerts, sizeof( circleVerts ) );
-				gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-				gl().glDrawArrays( GL_LINE_LOOP, 0, 32 );
 			}
 			// Draw inner radius circle (hardness boundary)
 			const float innerRadius = Patch_TerrainTool_GetBrushInnerRadius();
 			if ( innerRadius > 0.f && innerRadius < radius ) {
-				gl().glColor4f( 1.0f, 0.85f, 0.15f, 0.4f );
 				Vector3 innerVerts[32];
 				Vector3 iv( m_mousePosition );
 				for ( int i = 0; i < 32; ++i ){
@@ -477,8 +433,6 @@ void XYWnd::overlayDraw(){
 					innerVerts[i] = iv;
 				}
 				vbo_upload( innerVerts, sizeof( innerVerts ) );
-				gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-				gl().glDrawArrays( GL_LINE_LOOP, 0, 32 );
 			}
 		}
 	}
@@ -518,7 +472,7 @@ public:
 protected:
 	void initializeGL() override
 	{
-		glwidget_context_created( *this );
+		glwidget_context_created( this->windowHandle() );
 	}
 	void resizeGL( int w, int h ) override
 	{
@@ -1190,23 +1144,9 @@ Vector3 XYWnd::XY_ToPoint( int x, int y, bool snap /* = false */ ) const {
 
 void BackgroundImage::render( const VIEWTYPE viewtype ){
 	if( viewtype == _viewtype && _tex > 0 ){
-//		gl().glPushAttrib( GL_ALL_ATTRIB_BITS ); //bug with intel
 
-		gl().glActiveTexture( GL_TEXTURE0 );
-		gl().glClientActiveTexture( GL_TEXTURE0 );
 
-		gl().glEnable( GL_TEXTURE_2D );
-		gl().glEnable( GL_BLEND );
-		gl().glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
-		gl().glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
-//		gl().glPolygonMode( GL_FRONT, GL_FILL );
-		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
-		gl().glDisable( GL_CULL_FACE );
-		gl().glDisable( GL_DEPTH_TEST );
 
-		gl().glBindTexture( GL_TEXTURE_2D, _tex );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 
 		struct TexVert { float s, t, x, y; };
 		const TexVert quadVerts[] = {
@@ -1215,16 +1155,8 @@ void BackgroundImage::render( const VIEWTYPE viewtype ){
 			{ 1, 0, _xmax, _ymax },
 			{ 0, 0, _xmin, _ymax },
 		};
-		gl().glColor4f( 1, 1, 1, _alpha );
 		vbo_upload( quadVerts, sizeof( quadVerts ) );
-		gl().glEnableClientState( GL_TEXTURE_COORD_ARRAY );
-		gl().glTexCoordPointer( 2, GL_FLOAT, sizeof( TexVert ), 0 );
-		gl().glVertexPointer( 2, GL_FLOAT, sizeof( TexVert ), reinterpret_cast<const void*>( offsetof( TexVert, x ) ) );
-		gl().glDrawArrays( GL_QUADS, 0, 4 );
-		gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-		gl().glBindTexture( GL_TEXTURE_2D, 0 );
 
-//		gl().glPopAttrib();
 	}
 }
 
@@ -1252,7 +1184,6 @@ const char* BackgroundImage::background_image_dialog(){
 
 void BackgroundImage::free_tex(){
 	if( _tex > 0 ){
-		gl().glDeleteTextures( 1, &_tex );
 		_tex = 0;
 	}
 }
@@ -1332,7 +1263,6 @@ void XYWnd::XY_DrawAxis(){
 #endif
 	// draw two lines with corresponding axis colors to highlight current view
 	// horizontal line: nDim1 color
-	gl().glLineWidth( 2 );
 	{
 		const float xVerts[] = {
 			m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale,
@@ -1341,9 +1271,6 @@ void XYWnd::XY_DrawAxis(){
 			32 / m_fScale, 0,
 		};
 		vbo_upload( xVerts, sizeof( xVerts ) );
-		gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-		gl().glColor3fv( vector3_to_array( colourX ) );
-		gl().glDrawArrays( GL_LINES, 0, 4 );
 		const float yVerts[] = {
 			m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 45 / m_fScale,
 			m_vOrigin[nDim1] - w + 40 / m_fScale, m_vOrigin[nDim2] + h - 20 / m_fScale,
@@ -1351,23 +1278,13 @@ void XYWnd::XY_DrawAxis(){
 			0, 32 / m_fScale,
 		};
 		vbo_upload( yVerts, sizeof( yVerts ) );
-		gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-		gl().glColor3fv( vector3_to_array( colourY ) );
-		gl().glDrawArrays( GL_LINES, 0, 4 );
 	}
-	gl().glLineWidth( 1 );
 	// now print axis symbols
 	const int fontHeight = GlobalOpenGL().m_font->getPixelHeight();
 	const float fontWidth = fontHeight * .55f;
-	gl().glColor3fv( vector3_to_array( colourX ) );
-	gl().glRasterPos2f( m_vOrigin[nDim1] - w + ( 65 - 3 - fontWidth ) / m_fScale, m_vOrigin[nDim2] + h - ( 45 + 3 + fontHeight ) / m_fScale );
 	GlobalOpenGL().drawChar( g_AxisName[nDim1] );
-	gl().glRasterPos2f( ( 32 - fontWidth / 2 ) / m_fScale, -( 0 + 3 + fontHeight ) / m_fScale );
 	GlobalOpenGL().drawChar( g_AxisName[nDim1] );
-	gl().glColor3fv( vector3_to_array( colourY ) );
-	gl().glRasterPos2f( m_vOrigin[nDim1] - w + ( 40 - 4 - fontWidth ) / m_fScale, m_vOrigin[nDim2] + h - ( 20 + 3 + fontHeight ) / m_fScale );
 	GlobalOpenGL().drawChar( g_AxisName[nDim2] );
-	gl().glRasterPos2f( ( 0 - 3 - fontWidth ) / m_fScale, ( 32 - fontHeight / 2 ) / m_fScale );
 	GlobalOpenGL().drawChar( g_AxisName[nDim2] );
 }
 
@@ -1398,11 +1315,6 @@ void XYWnd::XY_DrawGrid() {
 
 	const float a = ( ( GetSnapGridSize() > 0.0f ) ? 1.0f : 0.3f );
 
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_TEXTURE_1D );
-	gl().glDisable( GL_DEPTH_TEST );
-	gl().glDisable( GL_BLEND );
-	gl().glLineWidth( 1 );
 
 	const float w = ( m_nWidth / 2 / m_fScale );
 	const float h = ( m_nHeight / 2 / m_fScale );
@@ -1423,11 +1335,9 @@ void XYWnd::XY_DrawGrid() {
 	// draw minor blocks
 	if ( g_xywindow_globals_private.d_showgrid /*|| a < 1.0f*/ ) {
 		if ( a < 1.0f ) {
-			gl().glEnable( GL_BLEND );
 		}
 
 		if ( COLORS_DIFFER( g_xywindow_globals.color_gridminor, g_xywindow_globals.color_gridback ) ) {
-			gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridminor, a ) ) );
 
 			std::vector<float> gridVerts;
 			int i = 0;
@@ -1446,14 +1356,11 @@ void XYWnd::XY_DrawGrid() {
 			}
 			if ( !gridVerts.empty() ) {
 				vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
-				gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-				gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
 			}
 		}
 
 		// draw major blocks
 		if ( COLORS_DIFFER( g_xywindow_globals.color_gridmajor, g_xywindow_globals.color_gridminor ) ) {
-			gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridmajor, a ) ) );
 
 			std::vector<float> gridVerts;
 			for ( x = xb; x <= xe; x += step ) {
@@ -1466,13 +1373,10 @@ void XYWnd::XY_DrawGrid() {
 			}
 			if ( !gridVerts.empty() ) {
 				vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
-				gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-				gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
 			}
 		}
 
 		if ( a < 1.0f ) {
-			gl().glDisable( GL_BLEND );
 		}
 
 		if( g_region_active ){
@@ -1481,10 +1385,8 @@ void XYWnd::XY_DrawGrid() {
 			const float yb_ = step * floor( std::max( m_vOrigin[nDim2] - h, -GetMaxGridCoord() ) / step );
 			const float ye_ = step * ceil( std::min( m_vOrigin[nDim2] + h, GetMaxGridCoord() ) / step );
 
-			gl().glEnable( GL_BLEND );
 			// draw minor blocks
 			if ( COLORS_DIFFER( g_xywindow_globals.color_gridminor, g_xywindow_globals.color_gridback ) ) {
-				gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridminor, .5f ) ) );
 
 				std::vector<float> gridVerts;
 				int i = 0;
@@ -1503,14 +1405,11 @@ void XYWnd::XY_DrawGrid() {
 				}
 				if ( !gridVerts.empty() ) {
 					vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
-					gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-					gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
 				}
 			}
 
 			// draw major blocks
 			if ( COLORS_DIFFER( g_xywindow_globals.color_gridmajor, g_xywindow_globals.color_gridminor ) ) {
-				gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridmajor, .5f ) ) );
 
 				std::vector<float> gridVerts;
 				for ( x = xb_; x <= xe_; x += step ) {
@@ -1523,27 +1422,21 @@ void XYWnd::XY_DrawGrid() {
 				}
 				if ( !gridVerts.empty() ) {
 					vbo_upload( gridVerts.data(), gridVerts.size() * sizeof( float ) );
-					gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-					gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( gridVerts.size() / 2 ) );
 				}
 			}
-			gl().glDisable( GL_BLEND );
 		}
 	}
 
 	// draw coordinate text if needed
 	if ( g_xywindow_globals_private.show_coordinates ) {
-		gl().glColor4fv( vector4_to_array( Vector4( g_xywindow_globals.color_gridtext, 1.0f ) ) );
 		const float offx = m_vOrigin[nDim2] + h - ( 1 + GlobalOpenGL().m_font->getPixelHeight() ) / m_fScale;
 		const float offy = m_vOrigin[nDim1] - w +  4                                            / m_fScale;
 		const float fontDescent = ( GlobalOpenGL().m_font->getPixelDescent() - 1 ) / m_fScale;
 		for ( x = xb - fmod( xb, stepx ); x <= xe; x += stepx ) {
-			gl().glRasterPos2f( x, offx );
 			sprintf( text, "%g", x );
 			GlobalOpenGL().drawString( text );
 		}
 		for ( y = yb - fmod( yb, stepy ); y <= ye; y += stepy ) {
-			gl().glRasterPos2f( offy, y - fontDescent );
 			sprintf( text, "%g", y );
 			GlobalOpenGL().drawString( text );
 		}
@@ -1554,15 +1447,12 @@ void XYWnd::XY_DrawGrid() {
 		XY_DrawAxis();
 	}
 	else{
-		gl().glColor3fv( vector3_to_array( Active()? g_xywindow_globals.color_viewname : g_xywindow_globals.color_gridtext ) );
-		gl().glRasterPos2f( m_vOrigin[nDim1] - w + 35 / m_fScale, m_vOrigin[nDim2] + h - ( GlobalOpenGL().m_font->getPixelHeight() * 2 ) / m_fScale );
 		GlobalOpenGL().drawString( ViewType_getTitle( m_viewType ) );
 	}
 
 	// show current work zone?
 	// the work zone is used to place dropped points and brushes
 	if ( g_xywindow_globals_private.show_workzone ) {
-		gl().glColor4f( 1.0f, 0.0f, 0.0f, 1.0f );
 		{
 			const float wzVerts[] = {
 				xb, Select_getWorkZone().d_work_min[nDim2],
@@ -1575,8 +1465,6 @@ void XYWnd::XY_DrawGrid() {
 				Select_getWorkZone().d_work_max[nDim1], ye,
 			};
 			vbo_upload( wzVerts, sizeof( wzVerts ) );
-			gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-			gl().glDrawArrays( GL_LINES, 0, 8 );
 		}
 	}
 }
@@ -1607,10 +1495,6 @@ void XYWnd::XY_DrawBlockGrid(){
 	if( bs1 <= 0 && bs2 <= 0 ) // zero disables
 		return;
 
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_TEXTURE_1D );
-	gl().glDisable( GL_DEPTH_TEST );
-	gl().glDisable( GL_BLEND );
 
 	const float w = ( m_nWidth / 2 / m_fScale );
 	const float h = ( m_nHeight / 2 / m_fScale );
@@ -1633,8 +1517,6 @@ void XYWnd::XY_DrawBlockGrid(){
 
 	// draw major blocks
 
-	gl().glColor3fv( vector3_to_array( g_xywindow_globals.color_gridblock ) );
-	gl().glLineWidth( 2 );
 
 	{
 		std::vector<float> blockVerts;
@@ -1657,11 +1539,8 @@ void XYWnd::XY_DrawBlockGrid(){
 
 		if ( !blockVerts.empty() ) {
 			vbo_upload( blockVerts.data(), blockVerts.size() * sizeof( float ) );
-			gl().glVertexPointer( 2, GL_FLOAT, 0, 0 );
-			gl().glDrawArrays( GL_LINES, 0, static_cast<GLsizei>( blockVerts.size() / 2 ) );
 		}
 	}
-	gl().glLineWidth( 1 );
 
 #if 0
 	// draw coordinate text if needed
@@ -1670,13 +1549,11 @@ void XYWnd::XY_DrawBlockGrid(){
 		for ( float x = xb; x < xe; x += bs1 )
 			for ( float y = yb; y < ye; y += bs2 )
 			{
-				gl().glRasterPos2f( x + ( bs1 / 2 ), y + ( bs2 / 2 ) );
 				sprintf( text, "%i,%i",(int)floor( x / bs1 ), (int)floor( y / bs2 ) );
 				GlobalOpenGL().drawString( text );
 			}
 	}
 #endif
-	gl().glColor4f( 0, 0, 0, 0 );
 }
 
 void XYWnd::DrawCameraIcon( const Vector3& origin, const Vector3& angles ){
@@ -1693,7 +1570,6 @@ void XYWnd::DrawCameraIcon( const Vector3& origin, const Vector3& angles ){
 	                 degrees_to_radians( ( angles[CAMERA_YAW] > 180 ) ? ( 180.0f - angles[CAMERA_PITCH] ) : angles[CAMERA_PITCH] )
 	                 : degrees_to_radians( ( angles[CAMERA_YAW] < 270 && angles[CAMERA_YAW] > 90 ) ? ( 180.0f - angles[CAMERA_PITCH] ) : angles[CAMERA_PITCH] );
 
-	gl().glColor3f( 0.0, 0.0, 1.0 );
 	{
 		const float diamondVerts[] = {
 			x - box, y, 0,
@@ -1704,8 +1580,6 @@ void XYWnd::DrawCameraIcon( const Vector3& origin, const Vector3& angles ){
 			x + box, y, 0,
 		};
 		vbo_upload( diamondVerts, sizeof( diamondVerts ) );
-		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
-		gl().glDrawArrays( GL_LINE_STRIP, 0, 6 );
 	}
 
 	{
@@ -1715,8 +1589,6 @@ void XYWnd::DrawCameraIcon( const Vector3& origin, const Vector3& angles ){
 			x + static_cast<float>( fov * cos( a - c_pi / 4 ) ), y + static_cast<float>( fov * sin( a - c_pi / 4 ) ), 0,
 		};
 		vbo_upload( fovVerts, sizeof( fovVerts ) );
-		gl().glVertexPointer( 3, GL_FLOAT, 0, 0 );
-		gl().glDrawArrays( GL_LINE_STRIP, 0, 3 );
 	}
 
 }
@@ -1735,7 +1607,6 @@ void XYWnd::PaintSizeInfo( const int nDim1, const int nDim2 ){
 
 	const char* dimStrings[] = {"x:", "y:", "z:"};
 
-	gl().glColor3fv( vector3_to_array( g_xywindow_globals.color_selbrushes * .65f ) );
 
 	StringOutputStream dimensions( 16 );
 
@@ -1749,8 +1620,6 @@ void XYWnd::PaintSizeInfo( const int nDim1, const int nDim2 ){
 		v[nDim1] = max[nDim1]; bv[2] = v;
 		v[nDim2] = min[nDim2] - 6.f / m_fScale; bv[3] = v;
 		vbo_upload( bv, sizeof( bv ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-		gl().glDrawArrays( GL_LINE_STRIP, 0, 4 );
 
 		// right bracket
 		Vector3 rv[4];
@@ -1759,25 +1628,20 @@ void XYWnd::PaintSizeInfo( const int nDim1, const int nDim2 ){
 		v[nDim2] = min[nDim2]; rv[2] = v;
 		v[nDim1] = max[nDim1] + 6.f / m_fScale; rv[3] = v;
 		vbo_upload( rv, sizeof( rv ) );
-		gl().glVertexPointer( 3, GL_FLOAT, sizeof( Vector3 ), 0 );
-		gl().glDrawArrays( GL_LINE_STRIP, 0, 4 );
 
 		v = g_vector3_identity;
 		const int fontHeight = GlobalOpenGL().m_font->getPixelHeight();
 
 		v[nDim1] = mid[nDim1];
 		v[nDim2] = min[nDim2] - ( 10 + 2 + fontHeight ) / m_fScale;
-		gl().glRasterPos3fv( vector3_to_array( v ) );
 		GlobalOpenGL().drawString( dimensions( dimStrings[nDim1], size[nDim1] ) );
 
 		v[nDim1] = max[nDim1] + 16.f / m_fScale;
 		v[nDim2] = mid[nDim2] - fontHeight / m_fScale / 2;
-		gl().glRasterPos3fv( vector3_to_array( v ) );
 		GlobalOpenGL().drawString( dimensions( dimStrings[nDim2], size[nDim2] ) );
 
 		v[nDim1] = min[nDim1] + 4.f / m_fScale;
 		v[nDim2] = max[nDim2] + 5.f / m_fScale;
-		gl().glRasterPos3fv( vector3_to_array( v ) );
 		GlobalOpenGL().drawString( dimensions( '(', dimStrings[nDim1], min[nDim1], "  ", dimStrings[nDim2], max[nDim2], ')' ) );
 	}
 }
@@ -1931,12 +1795,8 @@ void XYWnd::XY_Draw(){
 	//
 	// clear
 	//
-	gl().glViewport( 0, 0, m_nWidth, m_nHeight );
-	gl().glClearColor( g_xywindow_globals.color_gridback[0],
-	              g_xywindow_globals.color_gridback[1],
-	              g_xywindow_globals.color_gridback[2], 0 );
+	// Phase 6: gl().glClearColor(color_gridback)/glViewport/glDisable/glMatrixMode/glOrtho/glLineWidth removed
 
-	gl().glClear( GL_COLOR_BUFFER_BIT );
 
 	extern void Renderer_ResetStats();
 	extern void Renderer_SetStatsEnabled( bool );
@@ -1947,24 +1807,9 @@ void XYWnd::XY_Draw(){
 	// set up viewpoint
 	//
 
-	gl().glMatrixMode( GL_PROJECTION );
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_projection ) );
 
-	gl().glMatrixMode( GL_MODELVIEW );
-	gl().glLoadIdentity();
-	gl().glScalef( m_fScale, m_fScale, 1 );
 	NDIM1NDIM2( m_viewType )
-	gl().glTranslatef( -m_vOrigin[nDim1], -m_vOrigin[nDim2], 0 );
 
-	gl().glDisable( GL_LINE_STIPPLE );
-	gl().glLineWidth( 1 );
-	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-	gl().glDisableClientState( GL_NORMAL_ARRAY );
-	gl().glDisableClientState( GL_COLOR_ARRAY );
-	gl().glDisable( GL_TEXTURE_2D );
-	gl().glDisable( GL_LIGHTING );
-	gl().glDisable( GL_COLOR_MATERIAL );
-	gl().glDisable( GL_DEPTH_TEST );
 
 	m_backgroundImage.render( m_viewType );
 
@@ -1974,7 +1819,6 @@ void XYWnd::XY_Draw(){
 		XY_DrawBlockGrid();
 	}
 
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_modelview ) );
 
 	unsigned int globalstate = RENDER_COLOURARRAY | RENDER_COLOURWRITE;
 	if ( !g_xywindow_globals.m_bNoStipple ) {
@@ -1991,30 +1835,18 @@ void XYWnd::XY_Draw(){
 		GlobalOpenGL_debugAssertNoErrors();
 	}
 
-	gl().glDepthMask( GL_FALSE );
 
 	GlobalOpenGL_debugAssertNoErrors();
 
-	gl().glLoadMatrixf( reinterpret_cast<const float*>( &m_modelview ) );
 
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glDisable( GL_LINE_STIPPLE );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glLineWidth( 1 );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glActiveTexture( GL_TEXTURE0 );
-	gl().glClientActiveTexture( GL_TEXTURE0 );
-	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glDisableClientState( GL_NORMAL_ARRAY );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glDisableClientState( GL_COLOR_ARRAY );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glDisable( GL_TEXTURE_2D );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glDisable( GL_LIGHTING );
 	GlobalOpenGL_debugAssertNoErrors();
-	gl().glDisable( GL_COLOR_MATERIAL );
 	GlobalOpenGL_debugAssertNoErrors();
 
 	GlobalOpenGL_debugAssertNoErrors();
@@ -2029,24 +1861,14 @@ void XYWnd::XY_Draw(){
 
 	{
 		// reset modelview
-		gl().glLoadIdentity();
-		gl().glScalef( m_fScale, m_fScale, 1 );
-		gl().glTranslatef( -m_vOrigin[nDim1], -m_vOrigin[nDim2], 0 );
 
 		Feedback_draw2D( m_viewType );
 	}
 
 	if( g_camwindow_globals.m_showStats ){
-		gl().glMatrixMode( GL_PROJECTION );
-		gl().glLoadIdentity();
-		gl().glOrtho( 0, m_nWidth, 0, m_nHeight, 0, 1 );
 
-		gl().glMatrixMode( GL_MODELVIEW );
-		gl().glLoadIdentity();
 
-		gl().glColor3fv( vector3_to_array( g_xywindow_globals.color_viewname ) );
 
-		gl().glRasterPos3f( 2.f, 0.f, 0.0f );
 		extern const char* Renderer_GetStats( int frame2frame );
 		GlobalOpenGL().drawString( Renderer_GetStats( m_render_time.elapsed_msec() ) );
 		m_render_time.start();

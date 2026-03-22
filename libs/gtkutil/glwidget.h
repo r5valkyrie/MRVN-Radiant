@@ -1,30 +1,36 @@
 /*
-   Copyright (C) 2001-2006, William Joseph.
-   All Rights Reserved.
+   glwidget.h — Vulkan window context management.
 
-   This file is part of GtkRadiant.
+   Replaces the old QOpenGLWidget-based context.
+   Callers create a QWindow with VulkanSurface type and call
+   glwidget_context_created() on first expose.
 
-   GtkRadiant is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
+   Copyright (C) 2001-2006, William Joseph — original file.
+   Vulkan port — MRVN-Radiant contributors.
 
-   GtkRadiant is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with GtkRadiant; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+   Licensed under the GNU General Public License v2 or later.
  */
 
 #pragma once
 
+class QVulkanInstance;
+class QWindow;
+
+/// Create the shared QVulkanInstance.  Must be called before any QWindow is
+/// shown.  Mirrors the old glwidget_setDefaultFormat() which set the OpenGL
+/// surface format.
 void glwidget_setDefaultFormat();
-void glwidget_context_created( class QOpenGLWidget& widget );
+
+/// Called when the first Vulkan window becomes visible.  Initialises the
+/// Vulkan device / swapchain and fires GLWidget_sharedContextCreated.
+void glwidget_context_created( QWindow* window );
+
+/// Called when the last Vulkan window is destroyed.
 void glwidget_context_destroyed();
 
+/// Returns the application-wide QVulkanInstance (never null after
+/// glwidget_setDefaultFormat() returns successfully).
+QVulkanInstance* glwidget_vulkanInstance();
 
-extern void ( *GLWidget_sharedContextCreated )();
+extern void ( *GLWidget_sharedContextCreated  )();
 extern void ( *GLWidget_sharedContextDestroyed )();

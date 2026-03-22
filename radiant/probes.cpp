@@ -85,49 +85,8 @@ public:
     
     void GenerateDisplayList() {
         if (m_num_probes == 0) return;
-        
-        m_displaylist = gl().glGenLists(1);
-        gl().glNewList(m_displaylist, GL_COMPILE);
-        
-        // Draw probes as colored points with size
-        gl().glPointSize(8.0f);
-        gl().glBegin(GL_POINTS);
-        for (std::size_t i = 0; i < m_num_probes; i++) {
-            // Use probe's ambient color, brightened for visibility
-            float r = std::min(1.0f, m_probes[i].color[0] * 2.0f + 0.2f);
-            float g = std::min(1.0f, m_probes[i].color[1] * 2.0f + 0.2f);
-            float b = std::min(1.0f, m_probes[i].color[2] * 2.0f + 0.2f);
-            gl().glColor3f(r, g, b);
-            gl().glVertex3fv(vector3_to_array(m_probes[i].position));
-        }
-        gl().glEnd();
-        
-        // Also draw small crosses at each probe for better visibility
-        gl().glLineWidth(2.0f);
-        gl().glBegin(GL_LINES);
-        const float crossSize = 24.0f;
-        for (std::size_t i = 0; i < m_num_probes; i++) {
-            float r = std::min(1.0f, m_probes[i].color[0] * 2.0f + 0.2f);
-            float g = std::min(1.0f, m_probes[i].color[1] * 2.0f + 0.2f);
-            float b = std::min(1.0f, m_probes[i].color[2] * 2.0f + 0.2f);
-            gl().glColor3f(r, g, b);
-            
-            const Vector3& p = m_probes[i].position;
-            // X axis
-            gl().glVertex3f(p[0] - crossSize, p[1], p[2]);
-            gl().glVertex3f(p[0] + crossSize, p[1], p[2]);
-            // Y axis
-            gl().glVertex3f(p[0], p[1] - crossSize, p[2]);
-            gl().glVertex3f(p[0], p[1] + crossSize, p[2]);
-            // Z axis
-            gl().glVertex3f(p[0], p[1], p[2] - crossSize);
-            gl().glVertex3f(p[0], p[1], p[2] + crossSize);
-        }
-        gl().glEnd();
-        gl().glLineWidth(1.0f);
-        gl().glPointSize(1.0f);
-        
-        gl().glEndList();
+        m_displaylist = 1; // Phase 6: non-zero = "shown" flag (was gl().glGenLists/glNewList/glBegin/glVertex/glEnd/glEndList)
+        // Phase 6: upload point+color data to VBO, record draw calls for points and crosses
     }
     
     bool shown() const {
@@ -141,9 +100,7 @@ public:
     void show(bool show);
     
     void render(RenderStateFlags state) const {
-        if (m_displaylist != 0) {
-            gl().glCallList(m_displaylist);
-        }
+        // Phase 6: was gl().glCallList(m_displaylist) — draw probes via Vulkan
     }
     
     void renderSolid(Renderer& renderer, const VolumeTest& volume) const {
@@ -238,8 +195,7 @@ void CProbeFile::show(bool show) {
         }
     }
     else if (!show && shown()) {
-        gl().glDeleteLists(m_displaylist, 1);
-        m_displaylist = 0;
+        m_displaylist = 0; // Phase 6: was gl().glDeleteLists
         SceneChangeNotify();
     }
 }

@@ -101,11 +101,8 @@ void DTrainDrawer::render( RenderStateFlags state ) const {
 	for ( std::list<splinePoint_t* >::const_iterator sp = m_splineList.begin(); sp != m_splineList.end(); sp++ ) {
 		splinePoint_t* pSP = ( *sp );
 
-		gl().glBegin( GL_LINE_STRIP );
 		for ( std::list<DPoint >::const_iterator v = pSP->m_vertexList.begin(); v != pSP->m_vertexList.end(); v++ ) {
-			gl().glVertex3fv( ( *v )._pnt );
 		}
-		gl().glEnd();
 
 	}
 }
