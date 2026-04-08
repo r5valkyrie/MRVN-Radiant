@@ -147,14 +147,21 @@ void ApexLegends::EmitWorldLights() {
         Vector3 normal = ApexLegends::vector3_from_angles(angles);
 
         // Light color/intensity - format is "R G B brightness" (4 values)
-        // Final intensity = (R * brightness) / (255 * 255)
+        // VRAD LightForString: intensity = pow(c/255, 2.2)*255 for each channel,
+        // then scaled by (brightness / 255.0) if 4th component present.
+        // Final intensity = linearRGB * (brightness / 255)
         Vector3 intensity(1.0f, 1.0f, 1.0f);
         const char* lightVal = e.valueForKey("_light");
         if (lightVal) {
             float r, g, b, brightness = 255.0f;
             if (sscanf(lightVal, "%f %f %f %f", &r, &g, &b, &brightness) >= 3) {
-                // Scale by brightness and normalize
-                intensity = Vector3(r, g, b) * (brightness / 65025.0f);  // 65025 = 255*255
+                // sRGB to linear conversion (VRAD g_bConvertLightsourceGamma)
+                float lr = std::pow(r / 255.0f, 2.2f) * 255.0f;
+                float lg = std::pow(g / 255.0f, 2.2f) * 255.0f;
+                float lb = std::pow(b / 255.0f, 2.2f) * 255.0f;
+                // VRAD LightForString: scale by brightness/255
+                // Then /255 for ExportDirectLightsToWorldLights (worldlight scale)
+                intensity = Vector3(lr, lg, lb) * (brightness / (255.0f * 255.0f));
             }
         }
 
@@ -162,12 +169,17 @@ void ApexLegends::EmitWorldLights() {
             // light_environment creates TWO lights: emit_skyambient and emit_skylight
             
             // Get ambient color - format is "R G B brightness" (4 values)
-            Vector3 ambientIntensity = intensity * 0.1f;  // Default to 10% of sun if not specified
+            Vector3 ambientIntensity = intensity * 0.5f;  // Default to 50% of sun (VRAD behavior)
             const char* ambientVal = e.valueForKey("_ambient");
             if (ambientVal) {
                 float r, g, b, brightness = 255.0f;
                 if (sscanf(ambientVal, "%f %f %f %f", &r, &g, &b, &brightness) >= 3) {
-                    ambientIntensity = Vector3(r, g, b) * (brightness / 65025.0f);
+                    // sRGB to linear conversion (VRAD LightForString)
+                    float lr = std::pow(r / 255.0f, 2.2f) * 255.0f;
+                    float lg = std::pow(g / 255.0f, 2.2f) * 255.0f;
+                    float lb = std::pow(b / 255.0f, 2.2f) * 255.0f;
+                    // LightForString * brightness/255, then /255 for worldlight scale
+                    ambientIntensity = Vector3(lr, lg, lb) * (brightness / (255.0f * 255.0f));
                 }
             }
 
@@ -255,15 +267,33 @@ void ApexLegends::EmitWorldLights() {
             float constantAttn = e.floatForKey("_constant_attn");
             float linearAttn = e.floatForKey("_linear_attn");
             float quadraticAttn = e.floatForKey("_quadratic_attn");
-            if (quadraticAttn == 0.0f && !e.valueForKey("_quadratic_attn")) {
-                quadraticAttn = 1.0f;  // Default to 1.0 if not specified
-            }
             
-            // If distance-based falloff is specified, convert to attenuation
+            // If distance-based falloff is specified, convert to attenuation coefficients
+            // At d50, brightness = 50%: 1/(c + q*d50²) = 0.5 → with c=1: q = 1/d50²
             if (fiftyPercent > 0 && zeroPercent > 0) {
-                // Use distance values for radius calculation
-                // The radius field stores the zero percent distance
                 distance = zeroPercent;
+                constantAttn = 1.0f;
+                linearAttn = 0.0f;
+                quadraticAttn = 1.0f / (fiftyPercent * fiftyPercent);
+            } else {
+                // Explicit attenuation path (VRAD SetLightFalloffParams)
+                // Clamp near-zero values
+                if (constantAttn < 1e-6f) constantAttn = 0.0f;
+                if (linearAttn < 1e-6f) linearAttn = 0.0f;
+                if (quadraticAttn < 1e-6f) quadraticAttn = 0.0f;
+                
+                // If no attenuation specified at all, default to constant=1 (VRAD behavior)
+                if (constantAttn == 0.0f && linearAttn == 0.0f && quadraticAttn == 0.0f) {
+                    constantAttn = 1.0f;
+                }
+                
+                // VRAD pre-scales intensity so that the brightness value represents
+                // what you see at 100 units distance. This is critical for lights
+                // with quadratic_attn=1 (otherwise they'd be nearly invisible).
+                float ratio = constantAttn + 100.0f * linearAttn + 10000.0f * quadraticAttn;
+                if (ratio > 0) {
+                    intensity = intensity * ratio;
+                }
             }
             
             // Parse flags from entity properties
@@ -301,9 +331,9 @@ void ApexLegends::EmitWorldLights() {
             if (type == emit_spotlight) {
                 float innerCone = e.floatForKey("_inner_cone");
                 float outerCone = e.floatForKey("_cone");
-                // Defaults if not specified
-                if (innerCone == 0.0f && !e.valueForKey("_inner_cone")) innerCone = 40.0f;
-                if (outerCone == 0.0f && !e.valueForKey("_cone")) outerCone = 45.0f;
+                // Defaults if not specified (VRAD defaults: inner=10, outer=inner)
+                if (innerCone == 0.0f && !e.valueForKey("_inner_cone")) innerCone = 10.0f;
+                if (outerCone == 0.0f && !e.valueForKey("_cone")) outerCone = innerCone;
                 light.stopdot = std::cos(degrees_to_radians(innerCone));
                 light.stopdot2 = std::cos(degrees_to_radians(outerCone));
                 light.exponent = exponent;

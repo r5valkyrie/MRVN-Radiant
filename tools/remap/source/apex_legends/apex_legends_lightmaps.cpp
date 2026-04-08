@@ -52,9 +52,90 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// Quintic smooth hermite interpolation (Perlin's smootherstep)
+// Maps [0,1] → [0,1] with zero first and second derivatives at endpoints
+// Used by VRAD for smooth light fade-to-zero at radius boundary
+static inline float QuinticInterp(float t) {
+    t = std::max(0.0f, std::min(1.0f, t));
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+// Compute light fade factor based on distance and radius
+// Returns 1.0 inside the light's range, smoothly fades to 0.0 at radius
+// When radius > 0 and we can derive d50 from quadratic_attn:
+//   startFade = 0.75 * radius + 0.25 * d50
+//   endFade = radius
+// This matches VRAD's hard falloff behavior
+static inline float ComputeLightFade(float dist, const WorldLight_t &light) {
+    if (light.radius <= 0) return 1.0f;
+    if (dist >= light.radius) return 0.0f;
+
+    // Derive d50 from quadratic attenuation: q = 1/d50², so d50 = 1/sqrt(q)
+    float startFade = light.radius;
+    if (light.quadratic_attn > 0) {
+        float d50 = 1.0f / std::sqrt(light.quadratic_attn);
+        startFade = 0.75f * light.radius + 0.25f * d50;
+    } else {
+        startFade = 0.75f * light.radius;  // Fallback: start fade at 75% of radius
+    }
+
+    if (dist <= startFade) return 1.0f;
+
+    // Quintic interpolation from 1.0 at startFade to 0.0 at radius
+    float t = (dist - startFade) / (light.radius - startFade);
+    return 1.0f - QuinticInterp(t);
+}
+
+// Minimum distance clamp to prevent light intensity blowup at very close range
+// VRAD uses dist = max(dist, 1.0) to cap attenuation denominator
+static constexpr float MIN_LIGHT_DIST = 1.0f;
+
+// Number of jittered sun rays for soft sun shadows (VRAD uses 30)
+static constexpr int NUM_SOFT_SUN_RAYS = 16;
+
+// Pre-compute a set of jittered sun ray directions for soft shadows.
+// Uses a golden-angle spiral on a cone defined by sunAngularExtent.
+// Returns the number of rays that face the normal (NdotL > 0).
+static int BuildSoftSunRays(const Vector3 &sunDir, float angularExtent, const Vector3 &normal,
+                            Vector3 *outDirs, float *outNdotLs, int maxRays) {
+    // Build tangent frame from sunDir
+    Vector3 up = (std::fabs(sunDir[2]) < 0.99f) ? Vector3(0, 0, 1) : Vector3(1, 0, 0);
+    Vector3 tangent, bitangent;
+    tangent = vector3_cross(up, sunDir);
+    float tLen = vector3_length(tangent);
+    if (tLen < 0.001f) {
+        tangent = Vector3(1, 0, 0);
+    } else {
+        tangent = tangent * (1.0f / tLen);
+    }
+    bitangent = vector3_cross(sunDir, tangent);
+
+    // Golden angle for good 2D distribution
+    const float goldenAngle = 2.399963f; // 2*PI*(1 - 1/phi)
+    int count = 0;
+    for (int i = 0; i < maxRays; i++) {
+        float angle = i * goldenAngle;
+        // Radius: sqrt distribution for uniform disk area coverage
+        float r = angularExtent * std::sqrt((i + 0.5f) / maxRays);
+        float dx = std::cos(angle) * r;
+        float dy = std::sin(angle) * r;
+        Vector3 dir = sunDir + tangent * dx + bitangent * dy;
+        float len = vector3_length(dir);
+        if (len > 0.001f) dir = dir * (1.0f / len);
+
+        float ndotl = vector3_dot(normal, dir);
+        if (ndotl > 0) {
+            outDirs[count] = dir;
+            outNdotLs[count] = ndotl;
+            count++;
+        }
+    }
+    return count;
+}
+
 // Maximum lightmap page dimensions
-constexpr uint16_t MAX_LIGHTMAP_WIDTH = 1024;
-constexpr uint16_t MAX_LIGHTMAP_HEIGHT = 1024;
+constexpr uint16_t MAX_LIGHTMAP_WIDTH = 4096;
+constexpr uint16_t MAX_LIGHTMAP_HEIGHT = 4096;
 
 // Lightmap texel density (units per texel)
 constexpr float LIGHTMAP_SAMPLE_SIZE = 16.0f;
@@ -64,7 +145,7 @@ constexpr int MIN_LIGHTMAP_WIDTH = 4;
 constexpr int MIN_LIGHTMAP_HEIGHT = 4;
 
 // Radiosity settings
-constexpr int RADIOSITY_BOUNCES = 0;        // Number of light bounces (0 = direct only)
+constexpr int RADIOSITY_BOUNCES = 4;        // Number of light bounces (0 = direct only)
 constexpr float RADIOSITY_SCALE = 0.5f;     // Energy retention per bounce
 constexpr int RADIOSITY_SAMPLES = 32;       // Hemisphere samples for indirect lighting
 
@@ -690,6 +771,7 @@ struct SkyEnvironment {
     Vector3 sunDir;
     Vector3 sunColor;
     float sunIntensity;
+    float sunAngularExtent;   // sin(SunSpreadAngle) for soft sun shadows (0 = hard)
     bool valid;
 };
 static SkyEnvironment GetSkyEnvironment();
@@ -724,13 +806,35 @@ static TexelLighting_t ComputeLightingAtPoint(const Vector3 &worldPos, const Vec
     Vector3 directLight(0, 0, 0);
     float aoFactor = 1.0f;
 
-    // Sun: trace shadow ray
+    // Sun: trace shadow ray(s) — soft shadows when SunSpreadAngle > 0
     if (sky.valid) {
         Vector3 sunDir = sky.sunDir * -1.0f;
-        float sunNdotL = vector3_dot(sampleNormal, sunDir);
-        if (sunNdotL > 0) {
-            if (!TraceRayAgainstMeshes(worldPos, sunDir, 65536.0f)) {
-                directLight = directLight + sky.sunColor * (sunNdotL * sky.sunIntensity);
+        if (sky.sunAngularExtent > 0.0f) {
+            // Soft sun: multiple jittered rays
+            Vector3 softDirs[NUM_SOFT_SUN_RAYS];
+            float softNdotLs[NUM_SOFT_SUN_RAYS];
+            int numRays = BuildSoftSunRays(sunDir, sky.sunAngularExtent, sampleNormal,
+                                           softDirs, softNdotLs, NUM_SOFT_SUN_RAYS);
+            if (numRays > 0) {
+                float totalContrib = 0.0f;
+                Vector3 totalSun(0, 0, 0);
+                for (int r = 0; r < numRays; r++) {
+                    if (!TraceRayAgainstMeshes(worldPos, softDirs[r], 65536.0f)) {
+                        totalSun = totalSun + sky.sunColor * (softNdotLs[r] * sky.sunIntensity);
+                        totalContrib += 1.0f;
+                    }
+                }
+                if (totalContrib > 0.0f) {
+                    directLight = directLight + totalSun * (1.0f / numRays);
+                }
+            }
+        } else {
+            // Hard sun: single ray
+            float sunNdotL = vector3_dot(sampleNormal, sunDir);
+            if (sunNdotL > 0) {
+                if (!TraceRayAgainstMeshes(worldPos, sunDir, 65536.0f)) {
+                    directLight = directLight + sky.sunColor * (sunNdotL * sky.sunIntensity);
+                }
             }
         }
     }
@@ -741,12 +845,18 @@ static TexelLighting_t ComputeLightingAtPoint(const Vector3 &worldPos, const Vec
         if (light.flags & WORLDLIGHT_FLAG_REALTIME) continue;
 
         Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
+        Vector3 toLight = lightPos - worldPos;
+        float dist = vector3_length(toLight);
+        if (dist < 0.001f) continue;
+
+        // Smooth fade at radius boundary (VRAD quintic smoothstep)
+        float fadeFactor = ComputeLightFade(dist, light);
+        if (fadeFactor <= 0.0f) continue;
+
+        // Clamp distance for attenuation evaluation to prevent blowup at close range
+        float evalDist = std::max(dist, MIN_LIGHT_DIST);
 
         if (light.type == emit_point) {
-            Vector3 toLight = lightPos - worldPos;
-            float dist = vector3_length(toLight);
-            if (dist < 0.001f) continue;
-
             Vector3 lightDir = toLight / dist;
             float NdotL = vector3_dot(sampleNormal, lightDir);
             if (NdotL > 0) {
@@ -755,18 +865,14 @@ static TexelLighting_t ComputeLightingAtPoint(const Vector3 &worldPos, const Vec
                 float atten = 1.0f;
                 if (light.quadratic_attn > 0 || light.linear_attn > 0) {
                     atten = 1.0f / (light.constant_attn +
-                                   light.linear_attn * dist +
-                                   light.quadratic_attn * dist * dist);
+                                   light.linear_attn * evalDist +
+                                   light.quadratic_attn * evalDist * evalDist);
                 } else {
-                    atten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                    atten = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
                 }
-                directLight = directLight + light.intensity * NdotL * atten * 100.0f;
+                directLight = directLight + light.intensity * NdotL * atten * fadeFactor;
             }
         } else if (light.type == emit_spotlight) {
-            Vector3 toLight = lightPos - worldPos;
-            float dist = vector3_length(toLight);
-            if (dist < 0.001f) continue;
-
             Vector3 lightDir = toLight / dist;
             float NdotL = vector3_dot(sampleNormal, lightDir);
             if (NdotL > 0) {
@@ -774,12 +880,24 @@ static TexelLighting_t ComputeLightingAtPoint(const Vector3 &worldPos, const Vec
                 if (spotDot > light.stopdot2) {
                     if (TraceRayAgainstMeshes(worldPos, lightDir, dist - 1.0f)) continue;
 
+                    // Cone falloff: interpolate between inner and outer cone
                     float spotAtten = 1.0f;
                     if (spotDot < light.stopdot) {
                         spotAtten = (spotDot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                        if (spotAtten > 0 && light.exponent != 0.0f && light.exponent != 1.0f)
+                            spotAtten = std::pow(spotAtten, light.exponent);
                     }
-                    float distAtten = 1.0f / (1.0f + dist * dist * 0.0001f);
-                    directLight = directLight + light.intensity * NdotL * spotAtten * distAtten * 100.0f;
+                    // Distance attenuation (same formula as point lights)
+                    float distAtten = 1.0f;
+                    if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+                        distAtten = 1.0f / (light.constant_attn +
+                                           light.linear_attn * evalDist +
+                                           light.quadratic_attn * evalDist * evalDist);
+                    } else {
+                        distAtten = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
+                    }
+                    // Multiply by direction cosine (angular distribution)
+                    directLight = directLight + light.intensity * NdotL * spotAtten * distAtten * spotDot * fadeFactor;
                 }
             }
         }
@@ -803,13 +921,13 @@ static TexelLighting_t ComputeLightingAtPoint(const Vector3 &worldPos, const Vec
     }
 
     // Direct channel: sun + point/spot lights + ambient fill (AO-modulated)
-    // Official data shows shadow direct ~200-250 linear, sunlit ~4M linear
+    // Values at worldlight scale (intensity/255) for correct encoding
     Vector3 ambientFill = sky.ambientColor * (sky.ambientIntensity * aoFactor);
     result.direct = directLight + ambientFill;
 
-    // Indirect channel: ambient/bounce lighting modulated by AO
-    // Official data shows indirect ~130 linear at exp=0
-    result.indirect = sky.ambientColor * (sky.ambientIntensity * aoFactor * INDIRECT_AMBIENT_SCALE);
+    // Indirect channel: neutral gray modulated by AO (matching official data)
+    // Official lightmaps show flat (127,127,127,exp=0) = 0.498 across all texels
+    result.indirect = Vector3(0.5f, 0.5f, 0.5f) * aoFactor;
 
     return result;
 }
@@ -980,14 +1098,16 @@ void ApexLegends::ComputeLightmapLighting() {
         // Per-texel bookkeeping
         struct TexelRayInfo {
             int firstRayIdx;
-            int numSunRays;    // 0 or 1
+            int numSunRays;    // 0, 1, or NUM_SOFT_SUN_RAYS
             int numLightRays;
             int numAoRays;
-            float sunNdotL;
+            float sunNdotL;    // Used for single hard sun ray
+            int firstSunNdotLIdx; // Index into sunNdotLs array for soft sun rays
             int firstLightContribIdx;
         };
         std::vector<TexelRayInfo> texelInfo(numTexels);
         std::vector<Vector3> lightContribs;  // pre-computed color per light shadow ray
+        std::vector<float> sunNdotLs;        // per-ray NdotL for soft sun shadows
         
         for (int texelIdx = 0; texelIdx < numTexels; texelIdx++) {
             int x = texelIdx % surf.rect.width;
@@ -1000,17 +1120,35 @@ void ApexLegends::ComputeLightmapLighting() {
             info.numLightRays = 0;
             info.numAoRays = 0;
             info.sunNdotL = 0;
+            info.firstSunNdotLIdx = 0;
             info.firstLightContribIdx = static_cast<int>(lightContribs.size());
             
-            // Sun shadow ray
+            // Sun shadow ray(s) — soft shadows when SunSpreadAngle > 0
             if (sky.valid) {
-                float ndotl = vector3_dot(sampleNormal, sunDir);
-                info.sunNdotL = ndotl;
-                if (ndotl > 0) {
-                    rayOrigins.push_back(worldPos);
-                    rayDirs.push_back(sunDir);
-                    rayMaxDists.push_back(65536.0f);
-                    info.numSunRays = 1;
+                if (sky.sunAngularExtent > 0.0f) {
+                    Vector3 softDirs[NUM_SOFT_SUN_RAYS];
+                    float softNdotL[NUM_SOFT_SUN_RAYS];
+                    int numRays = BuildSoftSunRays(sunDir, sky.sunAngularExtent, sampleNormal,
+                                                   softDirs, softNdotL, NUM_SOFT_SUN_RAYS);
+                    if (numRays > 0) {
+                        info.firstSunNdotLIdx = static_cast<int>(sunNdotLs.size());
+                        for (int r = 0; r < numRays; r++) {
+                            rayOrigins.push_back(worldPos);
+                            rayDirs.push_back(softDirs[r]);
+                            rayMaxDists.push_back(65536.0f);
+                            sunNdotLs.push_back(softNdotL[r]);
+                        }
+                        info.numSunRays = numRays;
+                    }
+                } else {
+                    float ndotl = vector3_dot(sampleNormal, sunDir);
+                    info.sunNdotL = ndotl;
+                    if (ndotl > 0) {
+                        rayOrigins.push_back(worldPos);
+                        rayDirs.push_back(sunDir);
+                        rayMaxDists.push_back(65536.0f);
+                        info.numSunRays = 1;
+                    }
                 }
             }
             
@@ -1020,12 +1158,18 @@ void ApexLegends::ComputeLightmapLighting() {
                 if (light.flags & WORLDLIGHT_FLAG_REALTIME) continue;
                 
                 Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
-                
+                Vector3 toLight = lightPos - worldPos;
+                float dist = vector3_length(toLight);
+                if (dist < 0.001f) continue;
+
+                // Smooth fade at radius boundary (VRAD quintic smoothstep)
+                float fadeFactor = ComputeLightFade(dist, light);
+                if (fadeFactor <= 0.0f) continue;
+
+                // Clamp distance for attenuation evaluation to prevent blowup
+                float evalDist = std::max(dist, MIN_LIGHT_DIST);
+
                 if (light.type == emit_point) {
-                    Vector3 toLight = lightPos - worldPos;
-                    float dist = vector3_length(toLight);
-                    if (dist < 0.001f) continue;
-                    
                     Vector3 lightDir = toLight / dist;
                     float NdotL = vector3_dot(sampleNormal, lightDir);
                     if (NdotL <= 0) continue;
@@ -1033,23 +1177,19 @@ void ApexLegends::ComputeLightmapLighting() {
                     float atten;
                     if (light.quadratic_attn > 0 || light.linear_attn > 0) {
                         atten = 1.0f / (light.constant_attn +
-                                       light.linear_attn * dist +
-                                       light.quadratic_attn * dist * dist);
+                                       light.linear_attn * evalDist +
+                                       light.quadratic_attn * evalDist * evalDist);
                     } else {
-                        atten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                        atten = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
                     }
                     
                     rayOrigins.push_back(worldPos);
                     rayDirs.push_back(lightDir);
                     rayMaxDists.push_back(dist - 1.0f);
-                    lightContribs.push_back(light.intensity * NdotL * atten * 100.0f);
+                    lightContribs.push_back(light.intensity * NdotL * atten * fadeFactor);
                     info.numLightRays++;
                     
                 } else if (light.type == emit_spotlight) {
-                    Vector3 toLight = lightPos - worldPos;
-                    float dist = vector3_length(toLight);
-                    if (dist < 0.001f) continue;
-                    
                     Vector3 lightDir = toLight / dist;
                     float NdotL = vector3_dot(sampleNormal, lightDir);
                     if (NdotL <= 0) continue;
@@ -1057,16 +1197,28 @@ void ApexLegends::ComputeLightmapLighting() {
                     float spotDot = vector3_dot(-lightDir, light.normal);
                     if (spotDot <= light.stopdot2) continue;
                     
+                    // Cone falloff: interpolate between inner and outer cone
                     float spotAtten = 1.0f;
                     if (spotDot < light.stopdot) {
                         spotAtten = (spotDot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                        if (spotAtten > 0 && light.exponent != 0.0f && light.exponent != 1.0f)
+                            spotAtten = std::pow(spotAtten, light.exponent);
                     }
-                    float distAtten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                    // Distance attenuation (same formula as point lights)
+                    float distAtten = 1.0f;
+                    if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+                        distAtten = 1.0f / (light.constant_attn +
+                                           light.linear_attn * evalDist +
+                                           light.quadratic_attn * evalDist * evalDist);
+                    } else {
+                        distAtten = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
+                    }
                     
                     rayOrigins.push_back(worldPos);
                     rayDirs.push_back(lightDir);
                     rayMaxDists.push_back(dist - 1.0f);
-                    lightContribs.push_back(light.intensity * NdotL * spotAtten * distAtten * 100.0f);
+                    // Multiply by direction cosine (angular distribution)
+                    lightContribs.push_back(light.intensity * NdotL * spotAtten * distAtten * spotDot * fadeFactor);
                     info.numLightRays++;
                 }
             }
@@ -1103,10 +1255,24 @@ void ApexLegends::ComputeLightmapLighting() {
             
             // Sun contribution
             if (info.numSunRays > 0) {
-                if (!hitResults[rayIdx]) {
-                    directLight = directLight + sky.sunColor * (info.sunNdotL * sky.sunIntensity);
+                if (info.numSunRays == 1) {
+                    // Hard sun: single ray
+                    if (!hitResults[rayIdx]) {
+                        directLight = directLight + sky.sunColor * (info.sunNdotL * sky.sunIntensity);
+                    }
+                    rayIdx++;
+                } else {
+                    // Soft sun: average multiple jittered rays
+                    Vector3 totalSun(0, 0, 0);
+                    for (int r = 0; r < info.numSunRays; r++) {
+                        if (!hitResults[rayIdx + r]) {
+                            float ndotl = sunNdotLs[info.firstSunNdotLIdx + r];
+                            totalSun = totalSun + sky.sunColor * (ndotl * sky.sunIntensity);
+                        }
+                    }
+                    directLight = directLight + totalSun * (1.0f / info.numSunRays);
+                    rayIdx += info.numSunRays;
                 }
-                rayIdx++;
             }
             
             // Light contributions
@@ -1129,7 +1295,7 @@ void ApexLegends::ComputeLightmapLighting() {
             
             Vector3 ambientFill = sky.ambientColor * (sky.ambientIntensity * aoFactor);
             Vector3 finalDirect = directLight + ambientFill;
-            Vector3 finalIndirect = sky.ambientColor * (sky.ambientIntensity * aoFactor * INDIRECT_AMBIENT_SCALE);
+            Vector3 finalIndirect = Vector3(0.5f, 0.5f, 0.5f) * aoFactor;
             
             int x = texelIdx % surf.rect.width;
             int y = texelIdx / surf.rect.width;
@@ -1197,7 +1363,8 @@ void ApexLegends::ComputeLightmapLighting() {
                     int numSunRays;
                     int numLightRays;
                     int numAoRays;
-                    float sunNdotL;
+                    float sunNdotL;    // Used for single hard sun ray
+                    int firstSunNdotLIdx; // Index into sunNdotLs for soft sun
                     int firstLightContribIdx;
                 };
                 
@@ -1207,6 +1374,7 @@ void ApexLegends::ComputeLightmapLighting() {
                 std::vector<Vector3> rayDirs;
                 std::vector<float>   rayMaxDists;
                 std::vector<Vector3> lightContribs;
+                std::vector<float> sunNdotLsSS;  // per-ray NdotL for soft sun
                 
                 // Reserve a rough estimate to avoid excessive reallocation
                 int estRaysPerSample = 1 + static_cast<int>(ApexLegends::Bsp::worldLights.size()) + AO_HEMISPHERE_RAYS;
@@ -1231,17 +1399,35 @@ void ApexLegends::ComputeLightmapLighting() {
                             info.numLightRays = 0;
                             info.numAoRays = 0;
                             info.sunNdotL = 0;
+                            info.firstSunNdotLIdx = 0;
                             info.firstLightContribIdx = static_cast<int>(lightContribs.size());
                             
-                            // Sun shadow ray
+                            // Sun shadow ray(s) — soft shadows when SunSpreadAngle > 0
                             if (sky.valid) {
-                                float ndotl = vector3_dot(sampleNormal, sunDir);
-                                info.sunNdotL = ndotl;
-                                if (ndotl > 0) {
-                                    rayOrigins.push_back(worldPos);
-                                    rayDirs.push_back(sunDir);
-                                    rayMaxDists.push_back(65536.0f);
-                                    info.numSunRays = 1;
+                                if (sky.sunAngularExtent > 0.0f) {
+                                    Vector3 softDirs[NUM_SOFT_SUN_RAYS];
+                                    float softNdotL[NUM_SOFT_SUN_RAYS];
+                                    int numRays = BuildSoftSunRays(sunDir, sky.sunAngularExtent, sampleNormal,
+                                                                   softDirs, softNdotL, NUM_SOFT_SUN_RAYS);
+                                    if (numRays > 0) {
+                                        info.firstSunNdotLIdx = static_cast<int>(sunNdotLsSS.size());
+                                        for (int r = 0; r < numRays; r++) {
+                                            rayOrigins.push_back(worldPos);
+                                            rayDirs.push_back(softDirs[r]);
+                                            rayMaxDists.push_back(65536.0f);
+                                            sunNdotLsSS.push_back(softNdotL[r]);
+                                        }
+                                        info.numSunRays = numRays;
+                                    }
+                                } else {
+                                    float ndotl = vector3_dot(sampleNormal, sunDir);
+                                    info.sunNdotL = ndotl;
+                                    if (ndotl > 0) {
+                                        rayOrigins.push_back(worldPos);
+                                        rayDirs.push_back(sunDir);
+                                        rayMaxDists.push_back(65536.0f);
+                                        info.numSunRays = 1;
+                                    }
                                 }
                             }
                             
@@ -1251,53 +1437,63 @@ void ApexLegends::ComputeLightmapLighting() {
                                 if (light.flags & WORLDLIGHT_FLAG_REALTIME) continue;
                                 
                                 Vector3 lightPos(light.origin[0], light.origin[1], light.origin[2]);
+                                Vector3 toLight = lightPos - worldPos;
+                                float dist = vector3_length(toLight);
+                                if (dist < 0.001f) continue;
+
+                                // Smooth fade at radius boundary (VRAD quintic smoothstep)
+                                float fadeFactor = ComputeLightFade(dist, light);
+                                if (fadeFactor <= 0.0f) continue;
+
+                                // Clamp distance for attenuation evaluation to prevent blowup
+                                float evalDist = std::max(dist, MIN_LIGHT_DIST);
+                                
+                                Vector3 lightDir = toLight / dist;
+                                float NdotL = vector3_dot(sampleNormal, lightDir);
+                                if (NdotL <= 0) continue;
                                 
                                 if (light.type == emit_point) {
-                                    Vector3 toLight = lightPos - worldPos;
-                                    float dist = vector3_length(toLight);
-                                    if (dist < 0.001f) continue;
-                                    
-                                    Vector3 lightDir = toLight / dist;
-                                    float NdotL = vector3_dot(sampleNormal, lightDir);
-                                    if (NdotL <= 0) continue;
-                                    
                                     float atten;
                                     if (light.quadratic_attn > 0 || light.linear_attn > 0) {
                                         atten = 1.0f / (light.constant_attn +
-                                                       light.linear_attn * dist +
-                                                       light.quadratic_attn * dist * dist);
+                                                       light.linear_attn * evalDist +
+                                                       light.quadratic_attn * evalDist * evalDist);
                                     } else {
-                                        atten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                                        atten = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
                                     }
                                     
                                     rayOrigins.push_back(worldPos);
                                     rayDirs.push_back(lightDir);
                                     rayMaxDists.push_back(dist - 1.0f);
-                                    lightContribs.push_back(light.intensity * NdotL * atten * 100.0f);
+                                    lightContribs.push_back(light.intensity * NdotL * atten * fadeFactor);
                                     info.numLightRays++;
                                     
                                 } else if (light.type == emit_spotlight) {
-                                    Vector3 toLight = lightPos - worldPos;
-                                    float dist = vector3_length(toLight);
-                                    if (dist < 0.001f) continue;
-                                    
-                                    Vector3 lightDir = toLight / dist;
-                                    float NdotL = vector3_dot(sampleNormal, lightDir);
-                                    if (NdotL <= 0) continue;
-                                    
                                     float spotDot = vector3_dot(-lightDir, light.normal);
                                     if (spotDot <= light.stopdot2) continue;
                                     
+                                    // Cone falloff: interpolate between inner and outer cone
                                     float spotAtten = 1.0f;
                                     if (spotDot < light.stopdot) {
                                         spotAtten = (spotDot - light.stopdot2) / (light.stopdot - light.stopdot2);
+                                        if (spotAtten > 0 && light.exponent != 0.0f && light.exponent != 1.0f)
+                                            spotAtten = std::pow(spotAtten, light.exponent);
                                     }
-                                    float distAtten = 1.0f / (1.0f + dist * dist * 0.0001f);
+                                    // Distance attenuation (same formula as point lights)
+                                    float distAtten = 1.0f;
+                                    if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+                                        distAtten = 1.0f / (light.constant_attn +
+                                                           light.linear_attn * evalDist +
+                                                           light.quadratic_attn * evalDist * evalDist);
+                                    } else {
+                                        distAtten = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
+                                    }
                                     
                                     rayOrigins.push_back(worldPos);
                                     rayDirs.push_back(lightDir);
                                     rayMaxDists.push_back(dist - 1.0f);
-                                    lightContribs.push_back(light.intensity * NdotL * spotAtten * distAtten * 100.0f);
+                                    // Multiply by direction cosine (angular distribution)
+                                    lightContribs.push_back(light.intensity * NdotL * spotAtten * distAtten * spotDot * fadeFactor);
                                     info.numLightRays++;
                                 }
                             }
@@ -1342,10 +1538,24 @@ void ApexLegends::ComputeLightmapLighting() {
                         
                         // Sun
                         if (info.numSunRays > 0) {
-                            if (!hitResults[rayIdx]) {
-                                directLight = directLight + sky.sunColor * (info.sunNdotL * sky.sunIntensity);
+                            if (info.numSunRays == 1) {
+                                // Hard sun: single ray
+                                if (!hitResults[rayIdx]) {
+                                    directLight = directLight + sky.sunColor * (info.sunNdotL * sky.sunIntensity);
+                                }
+                                rayIdx++;
+                            } else {
+                                // Soft sun: average multiple jittered rays
+                                Vector3 totalSun(0, 0, 0);
+                                for (int r = 0; r < info.numSunRays; r++) {
+                                    if (!hitResults[rayIdx + r]) {
+                                        float ndotl = sunNdotLsSS[info.firstSunNdotLIdx + r];
+                                        totalSun = totalSun + sky.sunColor * (ndotl * sky.sunIntensity);
+                                    }
+                                }
+                                directLight = directLight + totalSun * (1.0f / info.numSunRays);
+                                rayIdx += info.numSunRays;
                             }
-                            rayIdx++;
                         }
                         
                         // Lights
@@ -1368,7 +1578,7 @@ void ApexLegends::ComputeLightmapLighting() {
                         
                         Vector3 ambientFill = sky.ambientColor * (sky.ambientIntensity * aoFactor);
                         totalDirect = totalDirect + directLight + ambientFill;
-                        totalIndirect = totalIndirect + sky.ambientColor * (sky.ambientIntensity * aoFactor * INDIRECT_AMBIENT_SCALE);
+                        totalIndirect = totalIndirect + Vector3(0.5f, 0.5f, 0.5f) * aoFactor;
                         
                         subIdx++;
                     }
@@ -1423,18 +1633,19 @@ void ApexLegends::ComputeLightmapLighting() {
 /*
     EncodeHDRTexel
     Encode a floating-point linear RGB color to ColorRGBExp32 format.
+    Matches VRAD's VectorToColorRGBExp32 exactly.
     
-    Format (4 bytes): R, G, B mantissa (0-255, linear) + exponent byte.
-    Engine decode: linear = (mantissa / 255) * 2^(byte - 128)
+    Format (4 bytes): R, G, B mantissa (0-255) + signed exponent byte.
+    Engine decode: linear = (mantissa / 255) * 2^(signed_exponent)
     
-    Uses unsigned bias-128 exponent stored in the 4th byte:
-      byte 128 = 2^0   = 1.0x  (neutral)
-      byte 129 = 2^1   = 2.0x  (bright)
-      byte 136 = 2^8   = 256x  (sun direct)
-      byte 127 = 2^-1  = 0.5x  (dim)
-      byte 0   = 2^-128 ≈ 0    (black)
+    Exponent byte is a signed char stored as uint8:
+      byte 0   = 2^0   = 1.0x  (neutral)
+      byte 1   = 2^1   = 2.0x  (bright)
+      byte 8   = 2^8   = 256x  (sun direct)
+      byte 255 = 2^-1  = 0.5x  (dim, 0xFF as int8 = -1)
+      byte 128 = 2^-128 ≈ 0    (black, 0x80 as int8 = -128)
     
-    Mantissa is kept in 128..255 range for precision.
+    Mantissa is normalized so max channel falls in 128-255 range.
 */
 static void EncodeHDRTexel(const Vector3 &color, uint8_t *out) {
     float r = std::max(0.0f, color.x());
@@ -1443,28 +1654,28 @@ static void EncodeHDRTexel(const Vector3 &color, uint8_t *out) {
     float maxComponent = std::max({r, g, b});
     
     if (maxComponent < 1e-12f) {
-        // Near-black: exponent 0 = 2^-128 ≈ 0
         out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0;
         return;
     }
     
-    // Find exponent such that mantissa = color / 2^(exp-128) falls in 0-255 range
-    // We want mantissa in 128-255 for precision
-    int exp = 128 + (int)std::ceil(std::log2(maxComponent));
-    exp = std::max(0, std::min(255, exp));
+    // VRAD's VectorToColorRGBExp32: exponent = ceil(log2(max))
+    // This puts mantissa values in the 0.5-1.0 range (128-255 as bytes)
+    int exponent = (int)std::ceil(std::log2(maxComponent));
     
-    // Scale: mantissa = color * 255 / 2^(exp-128)
-    // Equivalent: mantissa = color * 255 * 2^(128-exp)
-    float scale = 255.0f / std::pow(2.0f, (float)(exp - 128));
+    // Clamp to signed char range (-128 to 127)
+    exponent = std::max(-128, std::min(127, exponent));
     
-    out[0] = (uint8_t)std::min(255, std::max(0, (int)(r * scale + 0.5f)));
-    out[1] = (uint8_t)std::min(255, std::max(0, (int)(g * scale + 0.5f)));
-    out[2] = (uint8_t)std::min(255, std::max(0, (int)(b * scale + 0.5f)));
-    out[3] = (uint8_t)exp;
+    // scalar = 2^(-exponent), normalizes max to [0.5, 1.0]
+    float scalar = std::pow(2.0f, (float)(-exponent));
+    
+    out[0] = (uint8_t)std::min(255, std::max(0, (int)(r * scalar * 255.0f + 0.5f)));
+    out[1] = (uint8_t)std::min(255, std::max(0, (int)(g * scalar * 255.0f + 0.5f)));
+    out[2] = (uint8_t)std::min(255, std::max(0, (int)(b * scalar * 255.0f + 0.5f)));
+    out[3] = (uint8_t)(int8_t)exponent;  // Store as signed char → uint8
 }
 
 // Encode both direct and indirect channels into 8-byte output
-// Both channels use the same bias-128 RGBE format
+// Both channels use VRAD's ColorRGBExp32 format (signed exponent)
 static void EncodeHDRTexelPair(const Vector3 &directColor, const Vector3 &indirectColor, uint8_t *out) {
     EncodeHDRTexel(directColor, out);      // bytes 0-3: direct
     EncodeHDRTexel(indirectColor, out + 4); // bytes 4-7: indirect
@@ -1714,18 +1925,18 @@ static bool ParseLightKey(const char *value, Vector3 &outColor, float &outBright
     
     float r, g, b, brightness;
     if (sscanf(value, "%f %f %f %f", &r, &g, &b, &brightness) == 4) {
-        // Normalize RGB from 0-255 to 0-1 range
-        outColor[0] = r / 255.0f;
-        outColor[1] = g / 255.0f;
-        outColor[2] = b / 255.0f;
+        // sRGB to linear conversion, then normalize to 0-1 range
+        outColor[0] = std::pow(r / 255.0f, 2.2f);
+        outColor[1] = std::pow(g / 255.0f, 2.2f);
+        outColor[2] = std::pow(b / 255.0f, 2.2f);
         outBrightness = brightness;
         return true;
     }
     // Try 3-component format (no brightness)
     if (sscanf(value, "%f %f %f", &r, &g, &b) == 3) {
-        outColor[0] = r / 255.0f;
-        outColor[1] = g / 255.0f;
-        outColor[2] = b / 255.0f;
+        outColor[0] = std::pow(r / 255.0f, 2.2f);
+        outColor[1] = std::pow(g / 255.0f, 2.2f);
+        outColor[2] = std::pow(b / 255.0f, 2.2f);
         outBrightness = 1.0f;
         return true;
     }
@@ -1736,10 +1947,11 @@ static bool ParseLightKey(const char *value, Vector3 &outColor, float &outBright
 static SkyEnvironment GetSkyEnvironment() {
     SkyEnvironment sky;
     sky.ambientColor = Vector3(0.65f, 0.55f, 0.45f);  // Default warm outdoor
-    sky.ambientIntensity = 10.5f;                       // Default ambient HDR intensity
+    sky.ambientIntensity = 100.0f / 255.0f;             // Default ambient (worldlight scale)
     sky.sunDir = Vector3(0.5f, 0.5f, -0.707f);        // Default: sun from upper-right
     sky.sunColor = Vector3(1.0f, 0.95f, 0.85f);       // Default warm sunlight
-    sky.sunIntensity = 10.5f;                         // Default HDR sun intensity
+    sky.sunIntensity = 200.0f / 255.0f;                // Default sun (worldlight scale)
+    sky.sunAngularExtent = 0.0f;                       // Default: hard sun shadows
     sky.valid = false;
     
     bool foundSkyAmbient = false;
@@ -1756,11 +1968,11 @@ static SkyEnvironment GetSkyEnvironment() {
             float brightness;
             if (ParseLightKey(lightValue, lightColor, brightness)) {
                 sky.sunColor = lightColor;
-                // Use raw brightness to produce realistic HDR intensity
-                // Official data shows direct sun exponents of 10-20 (linear values 1K-1M)
-                //sky.sunIntensity = brightness;
+                // Divide by 255 to match worldlight scale (same as VRAD's ExportDirectLightsToWorldLights)
+                // This keeps sun and point light intensities on the same scale in lightmap baking
+                sky.sunIntensity = brightness / 255.0f;
                 foundSkyLight = true;
-                Sys_Printf("  light_environment _light: %s (intensity=%.1f)\n", lightValue, brightness);
+                Sys_Printf("  light_environment _light: %s (intensity=%.4f)\n", lightValue, sky.sunIntensity);
             }
             
             // Get ambient color from _ambient key
@@ -1769,11 +1981,18 @@ static SkyEnvironment GetSkyEnvironment() {
             float ambientBrightness;
             if (ParseLightKey(ambientValue, ambientColor, ambientBrightness)) {
                 sky.ambientColor = ambientColor;
-                //sky.ambientIntensity = ambientBrightness;
+                sky.ambientIntensity = ambientBrightness / 255.0f;
                 foundSkyAmbient = true;
-                Sys_Printf("  light_environment _ambient: %s (intensity=%.1f)\n", ambientValue, ambientBrightness);
+                Sys_Printf("  light_environment _ambient: %s (intensity=%.4f)\n", ambientValue, sky.ambientIntensity);
             }
             
+            // Parse SunSpreadAngle for soft sun shadows (VRAD behavior)
+            float sunSpreadAngle = entity.floatForKey("SunSpreadAngle", "0");
+            if (sunSpreadAngle > 0.0f) {
+                sky.sunAngularExtent = std::sin(sunSpreadAngle * (float)(M_PI / 180.0));
+                Sys_Printf("  SunSpreadAngle: %.1f (extent=%.4f)\n", sunSpreadAngle, sky.sunAngularExtent);
+            }
+
             // Get sun direction from angles or pitch/SunSpreadAngle
             Vector3 angles;
             if (entity.read_keyvalue(angles, "angles")) {
@@ -2042,29 +2261,25 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
         Vector3 surfaceColor;
         float hitDist;
         if (!TraceRayGetSurfaceColor(rayOrigin, dir, LIGHT_PROBE_TRACE_DIST, surfaceColor, hitDist)) {
-            // Ray reached sky - add sky contribution based on direction
+            // Ray reached sky - add sky contribution (normalized 0-1 range)
+            // Probes use normalized colors; SH conversion handles final scaling
             
             // Sky ambient contribution (uniform from all directions)
-            radcolor[i] = radcolor[i] + sky.ambientColor * 0.5f;
+            radcolor[i] = radcolor[i] + sky.ambientColor;
             
             // Sun contribution (directional, only if facing sun)
-            // Sun direction points FROM sun TO world, so we check dot with -sunDir
             float sunDot = vector3_dot(dir, sky.sunDir * -1.0f);
             if (sunDot > 0) {
-                // Add sun color weighted by how directly we're looking at the sun
-                radcolor[i] = radcolor[i] + sky.sunColor * (sunDot * sky.sunIntensity * 0.5f);
+                radcolor[i] = radcolor[i] + sky.sunColor * sunDot;
             }
             
             // Additional hemisphere sky gradient (brighter toward zenith)
             float upDot = dir[2];  // Z is up
             if (upDot > 0) {
-                radcolor[i] = radcolor[i] + sky.ambientColor * (upDot * 0.3f);
+                radcolor[i] = radcolor[i] + sky.ambientColor * (upDot * 0.5f);
             }
         } else {
             // Ray hit geometry - use surface color for bounce lighting
-            // This creates color bleeding (e.g., red walls tint nearby areas red)
-            
-            // Base ambient contribution modulated by surface color (reflectivity)
             Vector3 bounceColor;
             bounceColor[0] = sky.ambientColor[0] * surfaceColor[0];
             bounceColor[1] = sky.ambientColor[1] * surfaceColor[1];
@@ -2073,11 +2288,10 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
             // Distance falloff - closer surfaces contribute more
             float distFactor = 1.0f;
             if (hitDist < 512.0f) {
-                // Nearby surfaces get stronger contribution
                 distFactor = 1.0f + (512.0f - hitDist) / 512.0f * 0.5f;
             }
             
-            // Scale for indirect lighting (typical reflectance ~0.35-0.5)
+            // Normalized bounce (0-1 range)
             radcolor[i] = bounceColor * (0.4f * distFactor);
         }
     }
@@ -2125,12 +2339,19 @@ static void ComputeAmbientFromSphericalSamples(const Vector3 &position,
             continue;  // Light is occluded
         }
         
-        // Distance falloff (inverse square)
-        float falloff = 1.0f / (distSq + 1.0f);
+        // Distance attenuation (matching VRAD formula used in lightmap baking)
+        float evalDist = std::max(dist, 1.0f);
+        float falloff = 1.0f;
+        if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+            falloff = 1.0f / (light.constant_attn +
+                             light.linear_attn * evalDist +
+                             light.quadratic_attn * evalDist * evalDist);
+        } else {
+            falloff = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
+        }
         
-        // Light intensity - already in linear RGB (not 0-255, so don't divide)
-        // Scale down since probe values are typically 0-1 range and lights can be bright
-        Vector3 lightColor = light.intensity * 0.01f;
+        // Light intensity - use raw intensity (VRAD-scale)
+        Vector3 lightColor = light.intensity;
         
         // Add to appropriate cube sides based on direction
         for (int i = 0; i < 6; i++) {
@@ -3365,8 +3586,17 @@ void ApexLegends::EmitLightProbes() {
                 ProbeLightRayInfo info;
                 info.dirToLight = dirToLight;
                 info.dist = dist;
-                info.falloff = 1.0f / (distSq + 1.0f);
-                info.lightColor = light.intensity * 0.01f;
+                
+                // Distance attenuation (VRAD formula)
+                float evalDist = std::max(dist, 1.0f);
+                if (light.quadratic_attn > 0 || light.linear_attn > 0) {
+                    info.falloff = 1.0f / (light.constant_attn +
+                                          light.linear_attn * evalDist +
+                                          light.quadratic_attn * evalDist * evalDist);
+                } else {
+                    info.falloff = 1.0f / (1.0f + evalDist * evalDist * 0.0001f);
+                }
+                info.lightColor = light.intensity;
                 lightRayInfos.push_back(info);
             }
         }
@@ -3436,7 +3666,7 @@ void ApexLegends::EmitLightProbes() {
                     
                     float sunDot = vector3_dot(dir, sky.sunDir * -1.0f);
                     if (sunDot > 0) {
-                        radcolor[d] = radcolor[d] + sky.sunColor * (sunDot * sky.sunIntensity * 0.5f);
+                        radcolor[d] = radcolor[d] + sky.sunColor * (sunDot * 0.5f);
                     }
                     
                     float upDot = dir[2];
@@ -3501,7 +3731,7 @@ void ApexLegends::EmitLightProbes() {
                     radcolor[d] = radcolor[d] + sky.ambientColor * 0.5f;
                     float sunDot = vector3_dot(dir, sky.sunDir * -1.0f);
                     if (sunDot > 0) {
-                        radcolor[d] = radcolor[d] + sky.sunColor * (sunDot * sky.sunIntensity * 0.5f);
+                        radcolor[d] = radcolor[d] + sky.sunColor * (sunDot * 0.5f);
                     }
                     float upDot = dir[2];
                     if (upDot > 0) {
